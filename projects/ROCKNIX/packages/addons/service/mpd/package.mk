@@ -7,6 +7,14 @@
 # time - not something our local-storage product needs anyway) and
 # pulse (conflicts with "no sound server" architecture). Both "samba"
 # and "pulseaudio" dropped from PKG_DEPENDS_TARGET accordingly.
+#
+# Simpleton update, 16 Sep 2026: enables SACD ISO playback via the
+# Anisiutkin decoder plugin, carried as a Tier 1 patch at
+# projects/ROCKNIX/patches/mpd/. DVD-Audio ships in the patch but is
+# left disabled - its code costs nothing when not compiled, and it can
+# be switched on later once its licence, any CPPM/watermark content,
+# and MLP decode performance have been checked. The plugin needs
+# libgcrypt, which is already in PKG_DEPENDS_TARGET below.
 # Everything else below is an exact copy of the original.
 
 PKG_NAME="mpd"
@@ -90,6 +98,8 @@ PKG_MESON_OPTS_TARGET="-Dadplug=disabled \
                        -Dsqlite=enabled \
                        -Dsyslog=disabled \
                        -Dsystemd=disabled \
+                       -Dsacdiso=true \
+                       -Ddvdaiso=false \
 -Dtest=false \
                        -Dtwolame=disabled \
                        -Dupnp=disabled \

@@ -1,0 +1,63 @@
+diff -ruN meta-base/src/decoder/plugins/SacdIsoDecoderPlugin.cxx meta-mod/src/decoder/plugins/SacdIsoDecoderPlugin.cxx
+--- a/src/decoder/plugins/SacdIsoDecoderPlugin.cxx	2026-09-16 00:31:16.601610884 -0400
++++ b/src/decoder/plugins/SacdIsoDecoderPlugin.cxx	2026-09-16 00:31:16.621170459 -0400
+@@ -21,7 +21,7 @@
+ #include <sacd_media.h>
+ #include <sacd_reader.h>
+ #include <sacd_disc.h>
+-#include <sacd_metabase.h>
++/* Simpleton: metabase removed - needs libupnp (ixml) */
+ #include <sacd_dsdiff.h>
+ #include <dst_decoder.h>
+ #include "SacdIsoDecoderPlugin.hxx"
+@@ -62,7 +62,6 @@
+ AllocatedPath                    sacd_path{ nullptr };
+ std::unique_ptr<sacd_media_t>    sacd_media;
+ std::unique_ptr<sacd_reader_t>   sacd_reader;
+-std::unique_ptr<sacd_metabase_t> sacd_metabase;
+ 
+ static unsigned
+ get_subsong(Path path_fs) {
+@@ -95,7 +94,6 @@
+ 		sacd_media->close();
+ 		sacd_media.reset();
+ 	}
+-	sacd_metabase.reset();
+ 	sacd_path.SetNull();
+ 	if (FileExists(curr_path)) {
+ 		if (param_use_stdio) {
+@@ -142,7 +140,6 @@
+ 					tags_file.resize(tags_file.rfind('.') + 1);
+ 					tags_file.append("xml");
+ 				}
+-				sacd_metabase = std::make_unique<sacd_metabase_t>(reinterpret_cast<sacd_disc_t*>(sacd_reader.get()), param_tags_path.empty() ? nullptr : param_tags_path.c_str(), tags_file.empty() ? nullptr : tags_file.c_str());
+ 			}
+ 		}
+ 		sacd_path = curr_path;
+@@ -155,15 +152,9 @@
+ 	auto tag_value = std::to_string(track + 1);
+ 	handler.OnTag(TAG_TRACK, tag_value.c_str());
+ 	handler.OnDuration(SongTime::FromS(sacd_reader->get_duration(track)));
+-	if (sacd_metabase) {
+-		sacd_metabase->get_track_info(track_index + 1, handler);
+-	}
+ 	sacd_reader->get_info(track, handler);
+ 	if (handler.WantPicture()) {
+ 		auto has_albumart{ false };
+-		if (sacd_metabase) {
+-			has_albumart = sacd_metabase->get_albumart(handler);
+-		}
+ 		if (!has_albumart) {
+ 			static constexpr auto art_names = std::array {
+ 				"cover.png",
+diff -ruN meta-base/src/lib/sacdiso/meson.build meta-mod/src/lib/sacdiso/meson.build
+--- a/src/lib/sacdiso/meson.build	2026-09-16 00:31:16.605522799 -0400
++++ b/src/lib/sacdiso/meson.build	2026-09-16 00:31:16.621170459 -0400
+@@ -14,7 +14,6 @@
+   'sacd_disc.cpp',
+   'sacd_dsdiff.cpp',
+   'sacd_media.cpp',
+-  'sacd_metabase.cpp',
+   'scarletbook.cpp',
+   'log_printf.cpp',
+   'libdstdec/binding/dst_decoder.cpp',
