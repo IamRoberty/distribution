@@ -1,0 +1,15 @@
+[Unit]
+Description=Simpleton MPD (bit-perfect audio transport)
+After=network.target sound.target
+ConditionPathExists=/storage/.config/mpd/mpd.conf
+
+[Service]
+Type=forking
+PIDFile=/storage/.mpd/pid
+ExecStartPre=/bin/mkdir -p /storage/music /storage/.mpd/playlists
+ExecStart=/usr/bin/mpd /storage/.config/mpd/mpd.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

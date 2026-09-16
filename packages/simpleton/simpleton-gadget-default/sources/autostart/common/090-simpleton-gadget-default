@@ -1,0 +1,4 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Simpleton dev-mode default: bring up USB gadget networking on every boot.
+/usr/bin/usbgadget network
