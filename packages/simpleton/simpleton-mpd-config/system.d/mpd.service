@@ -7,6 +7,9 @@ Type=forking
 PIDFile=/storage/.mpd/pid
 ExecStartPre=/bin/mkdir -p /storage/music /storage/.mpd/playlists /storage/.config/mpd
 ExecStartPre=/bin/sh -c '[ -f /storage/.config/mpd/mpd.conf ] || cp /usr/config/mpd/mpd.conf /storage/.config/mpd/mpd.conf'
+# Removable cards/drives are mounted by udevil under /var/media (see
+# simpleton-media-mount). One symlink makes them all visible to MPD.
+ExecStartPre=/bin/ln -sfn /var/media /storage/music/Cards
 ExecStart=/usr/bin/mpd /storage/.config/mpd/mpd.conf
 Restart=on-failure
 RestartSec=5

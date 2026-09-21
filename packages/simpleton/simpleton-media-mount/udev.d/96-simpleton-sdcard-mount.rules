@@ -1,0 +1,28 @@
+# SimpletonOS: mount microSD cards (second slot) via udevil.
+#
+# ROCKNIX's own 95-udevil-mount.rules only handles USB storage (sd*/sr*),
+# because ROCKNIX mounts SD cards itself for games. We disable that
+# (see rocknix-automount.service.d/simpleton-disable.conf) and let udevil
+# mount SD cards the same way it mounts USB drives.
+
+SUBSYSTEM!="block", GOTO="simpleton_sdcard_end"
+
+# partitions on SD/eMMC devices only (mmcblk2p1 etc) - never the whole
+# disk, and never eMMC boot/rpmb areas
+KERNEL!="mmcblk[0-9]p[0-9]*", GOTO="simpleton_sdcard_end"
+
+IMPORT{builtin}="blkid"
+ENV{ID_FS_USAGE}!="filesystem", GOTO="simpleton_sdcard_end"
+
+# never touch the card SimpletonOS boots from - its partitions are labelled
+# ROCKNIX (/flash) and STORAGE (/storage). Matching by label rather than by
+# device number, because which slot is mmc1/mmc2 depends on boot order.
+ENV{ID_FS_LABEL}=="ROCKNIX|STORAGE|EFI|BOOT|boot", GOTO="simpleton_sdcard_end"
+
+# mount on insert, unless something already mounted it
+ACTION=="add", PROGRAM="/usr/bin/sh -c '/usr/bin/grep -E ^/dev/%k\  /proc/mounts || true'", RESULT=="", RUN+="/usr/bin/systemctl restart udevil-mount@/dev/%k.service"
+
+# clean unmount on removal
+ACTION=="remove", RUN+="/usr/bin/systemctl stop udevil-mount@/dev/%k.service"
+
+LABEL="simpleton_sdcard_end"
