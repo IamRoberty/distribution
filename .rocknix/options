@@ -1,0 +1,3 @@
+ADDITIONAL_PACKAGES+=" simpleton-gadget-default"
+ADDITIONAL_PACKAGES+=" simpleton-mpd-config"
+ADDITIONAL_PACKAGES+=" simpleton-media-mount"

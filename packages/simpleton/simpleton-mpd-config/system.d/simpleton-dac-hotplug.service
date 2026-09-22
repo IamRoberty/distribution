@@ -1,0 +1,6 @@
+[Unit]
+Description=Simpleton: point MPD at a newly attached USB DAC
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/simpleton-dac-detect --hotplug

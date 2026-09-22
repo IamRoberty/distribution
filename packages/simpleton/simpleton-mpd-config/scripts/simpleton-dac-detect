@@ -1,0 +1,55 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 Simpleton
+#
+# simpleton-dac-detect: point MPD at the attached USB DAC.
+#
+# Reads /proc/asound/cards, finds the first card driven by USB-Audio, and
+# writes it into mpd.conf by NAME (hw:CARD=<name>,DEV=0) - never by card
+# number, which changes from boot to boot.
+#
+# Leaves mpd.conf alone if the DAC it already names is attached, so a
+# choice the user made is kept. Only touches the audio_output "device" line.
+#
+# Run as ExecStartPre of mpd.service (DAC present at power-on), and from
+# udev with --hotplug when a USB sound card appears later; in that case it
+# restarts MPD, but only if it actually changed the setting.
+
+ASOUND="${SIMPLETON_ASOUND:-/proc/asound}"
+CONF="${SIMPLETON_MPD_CONF:-/storage/.config/mpd/mpd.conf}"
+
+[ -f "$CONF" ] || exit 0
+
+current=$(sed -n 's/^[[:space:]]*device[[:space:]]*"\(.*\)".*/\1/p' "$CONF" | head -n 1)
+
+# configured DAC is attached -> nothing to do
+case "$current" in
+  hw:CARD=*)
+    name=${current#hw:CARD=}
+    name=${name%%,*}
+    [ -e "$ASOUND/$name" ] && exit 0
+    ;;
+esac
+
+# first USB audio card, by its short name (the text in [brackets])
+dac=$(awk '/USB-Audio/ {
+         if (match($0, /\[[^]]*\]/)) {
+           s = substr($0, RSTART + 1, RLENGTH - 2)
+           sub(/[ \t]+$/, "", s)
+           print s
+           exit
+         }
+       }' "$ASOUND/cards")
+
+[ -n "$dac" ] || exit 0
+
+new="hw:CARD=$dac,DEV=0"
+[ "$new" = "$current" ] && exit 0
+
+sed -i "s|^\([[:space:]]*device[[:space:]]*\)\".*\"|\1\"$new\"|" "$CONF"
+logger -t simpleton-dac-detect "MPD output set to $new (was: ${current:-none})" 2>/dev/null
+
+if [ "$1" = "--hotplug" ]; then
+  systemctl --no-block try-restart mpd.service
+fi
+exit 0

@@ -31,6 +31,9 @@ makeinstall_target() {
   patchelf --add-rpath '${ORIGIN}/../lib.private' ${INSTALL}/usr/bin/mpd
   patchelf --add-rpath '${ORIGIN}/../lib.private' ${INSTALL}/usr/bin/mpc
 
+  cp ${PKG_DIR}/scripts/simpleton-dac-detect ${INSTALL}/usr/bin
+  chmod 0755 ${INSTALL}/usr/bin/simpleton-dac-detect
+
   mkdir -p ${INSTALL}/usr/config/mpd
   cp ${PKG_DIR}/config/mpd.conf ${INSTALL}/usr/config/mpd/mpd.conf
 }
