@@ -1,69 +1,129 @@
 /*
- * SimpletonOS UI skeleton - bring-up test only.
+ * SimpletonOS UI - entry point.
  *
- * Goal: prove the full chain (cross-compile -> image -> boot -> visible
- * pixels on the real panel) works, before any real screen logic is written
- * on top of it. Draws a solid background and a line of text. Nothing else -
- * no MPD connection, no input handling yet.
+ * Wiring: DRM display -> LVGL; joypad (evdev) -> abstract actions -> either
+ * the LVGL keypad path (navigation, select) or app-level handlers (back,
+ * transport). MPD is reached through mpdc.c. The UI must come up even when
+ * MPD isn't running yet, and keeps retrying it in the background.
  *
- * DRM setup sequence below is copied from the verified v9.5.0 API contract
- * (src/drivers/display/drm/lv_linux_drm.h and .c):
- *   - lv_linux_drm_set_file() does NOT auto-detect a device from NULL; it
- *     open()s whatever path you hand it. lv_linux_drm_find_device_path()
- *     is the actual auto-detect call and must be used explicitly.
- *   - lv_linux_drm_create() registers its own tick source internally
- *     (calls lv_tick_set_cb() itself), so no manual tick setup is needed
- *     for this driver.
- *   - connector_id -1 auto-selects the first available connector and its
- *     preferred/native mode - fine for a single fixed panel or a single
- *     HDMI output, which is all this bring-up test needs.
+ * DRM notes (verified against LVGL v9.5.0):
+ *   - lv_linux_drm_set_file() does NOT auto-detect from NULL; use
+ *     lv_linux_drm_find_device_path() explicitly.
+ *   - lv_linux_drm_create() registers its own tick source.
+ *   - connector_id -1 = first connector, native mode.
+ *
+ * Keypad notes: LVGL's keypad driver moves group focus only on LV_KEY_NEXT /
+ * LV_KEY_PREV, so D-pad down/up are mapped to those; ENTER produces the
+ * PRESSED/CLICKED pair on the focused row. Everything else bypasses LVGL.
  */
 
 #include "lvgl.h"
 #include "src/drivers/display/drm/lv_linux_drm.h"
 
+#include "browser.h"
+#include "input.h"
+#include "mpdc.h"
+#include "theme.h"
+
+#include <poll.h>
 #include <stdio.h>
 #include <unistd.h>
+
+/* ---- keypad bridge: tiny queue of (key, pressed) pairs for the indev ---- */
+
+#define KQ_LEN 32
+static struct { uint32_t key; bool pressed; } kq[KQ_LEN];
+static int kq_head, kq_tail;
+
+static void key_tap(uint32_t key)
+{
+    /* one press + one release; LVGL needs both to register a click */
+    for(int i = 0; i < 2; i++) {
+        int next = (kq_tail + 1) % KQ_LEN;
+        if(next == kq_head) return;
+        kq[kq_tail].key = key;
+        kq[kq_tail].pressed = (i == 0);
+        kq_tail = next;
+    }
+}
+
+static void keypad_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
+{
+    (void)indev;
+    if(kq_head == kq_tail) { data->state = LV_INDEV_STATE_RELEASED; return; }
+    data->key = kq[kq_head].key;
+    data->state = kq[kq_head].pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    kq_head = (kq_head + 1) % KQ_LEN;
+    data->continue_reading = (kq_head != kq_tail);
+}
+
+/* ---- action dispatch ---- */
+
+static void dispatch(ui_action_t a)
+{
+    switch(a) {
+        case ACT_UP:        key_tap(LV_KEY_PREV);  break;
+        case ACT_DOWN:      key_tap(LV_KEY_NEXT);  break;
+        case ACT_LEFT:      key_tap(LV_KEY_LEFT);  break;
+        case ACT_RIGHT:     key_tap(LV_KEY_RIGHT); break;
+        case ACT_SELECT:    key_tap(LV_KEY_ENTER); break;
+        case ACT_PLAYPAUSE: mpd_toggle_pause();    break;
+        case ACT_NEXT:      mpd_next();            break;
+        case ACT_PREV:      mpd_previous();        break;
+        case ACT_VOL_UP:
+        case ACT_VOL_DOWN:  /* Fixed-volume mode: overlay comes with Settings work */ break;
+        default:            browser_handle_action(a); break;
+    }
+}
+
+static void mpd_retry_cb(lv_timer_t * t)
+{
+    (void)t;
+    browser_tick();
+}
 
 int main(void)
 {
     lv_init();
 
     lv_display_t * disp = lv_linux_drm_create();
-    if(disp == NULL) {
-        fprintf(stderr, "simpleton-ui: lv_linux_drm_create() failed\n");
-        return 1;
-    }
+    if(disp == NULL) { fprintf(stderr, "simpleton-ui: lv_linux_drm_create() failed\n"); return 1; }
 
     char * dev_path = lv_linux_drm_find_device_path();
-    if(dev_path == NULL) {
-        fprintf(stderr, "simpleton-ui: no DRM device found (no /dev/dri/cardN with dumb-buffer support)\n");
-        return 1;
-    }
-
+    if(dev_path == NULL) { fprintf(stderr, "simpleton-ui: no DRM device found\n"); return 1; }
     lv_result_t res = lv_linux_drm_set_file(disp, dev_path, -1);
     lv_free(dev_path);
+    if(res != LV_RESULT_OK) { fprintf(stderr, "simpleton-ui: lv_linux_drm_set_file() failed\n"); return 1; }
 
-    if(res != LV_RESULT_OK) {
-        fprintf(stderr, "simpleton-ui: lv_linux_drm_set_file() failed - check LV_LOG output above\n");
-        return 1;
-    }
+    /* Dark default theme with our accent and list font, so anything we
+     * forget to style still lands on the right side of readable. */
+    lv_theme_t * th = lv_theme_default_init(disp, lv_color_hex(UI_COLOR_FOCUS_BG),
+                                            lv_color_hex(UI_COLOR_DIM), true, UI_FONT_LIST);
+    lv_display_set_theme(disp, th);
 
-    /* Solid background */
-    lv_obj_t * scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x101418), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, LV_PART_MAIN);
+    /* Keypad input device bound to one focus group. */
+    lv_group_t * grp = lv_group_create();
+    lv_group_set_default(grp);
+    lv_indev_t * kb = lv_indev_create();
+    lv_indev_set_type(kb, LV_INDEV_TYPE_KEYPAD);
+    lv_indev_set_read_cb(kb, keypad_read_cb);
+    lv_indev_set_group(kb, grp);
 
-    /* One line of centered text, proving font rendering + the draw path work */
-    lv_obj_t * label = lv_label_create(scr);
-    lv_label_set_text(label, "SimpletonOS");
-    lv_obj_set_style_text_color(label, lv_color_hex(0xE8E8E8), LV_PART_MAIN);
-    lv_obj_center(label);
+    if(!input_init()) fprintf(stderr, "simpleton-ui: running without joypad input\n");
 
-    while(1) {
+    mpd_connect();   /* may fail: browser shows "Starting library" and retries */
+    browser_create(lv_screen_active(), grp);
+    lv_timer_create(mpd_retry_cb, 2000, NULL);
+
+    for(;;) {
         uint32_t idle_ms = lv_timer_handler();
-        usleep(idle_ms * 1000);
-    }
+        if(idle_ms > 20) idle_ms = 20;          /* keep hold/repeat timing tight */
 
+        struct pollfd pfd = { .fd = input_fd(), .events = POLLIN };
+        poll(&pfd, input_fd() >= 0 ? 1 : 0, (int)idle_ms);
+
+        input_poll();
+        for(ui_action_t a; (a = input_next_action()) != ACT_NONE;) dispatch(a);
+    }
     return 0;
 }
