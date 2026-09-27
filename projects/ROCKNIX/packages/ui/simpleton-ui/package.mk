@@ -39,6 +39,10 @@ PKG_SHORTDESC="SimpletonOS on-device UI"
 PKG_LONGDESC="LVGL + DRM/KMS user interface for SimpletonOS: MPD-backed folder browser and now-playing screen with album art, joypad navigation and transport control."
 PKG_TOOLCHAIN="manual"
 
+# liblvgl.a is linked statically, so a change to lvgl (e.g. lv_conf.h) must
+# rebuild this package too; without this line the old LVGL stays baked in.
+PKG_NEED_UNPACK="$(get_pkg_directory lvgl)"
+
 make_target() {
   ${CC} ${TARGET_CFLAGS} -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
     -DLV_KCONFIG_IGNORE \
