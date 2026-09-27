@@ -35,6 +35,7 @@ static int depth;                  /* number of frames above root */
 static int root_focus;             /* remembered row at the root listing */
 static mpd_listing_t cur;          /* listing currently on screen */
 static bool waiting_for_mpd;
+static void (*play_cb)(void);
 
 static const char * cur_uri(void) { return depth ? stack[depth - 1].uri : ""; }
 
@@ -186,8 +187,9 @@ static void play_from(int index)
         if(i == index) start = n;
         uris[n++] = cur.items[i].uri;
     }
-    if(n) mpd_play_uris(uris, n, start);
+    bool started = n && mpd_play_uris(uris, n, start);
     free(uris);
+    if(started && play_cb) play_cb();
 }
 
 static void row_click_cb(lv_event_t * e)
@@ -212,9 +214,10 @@ static void row_click_cb(lv_event_t * e)
 
 /* ---------- public ---------- */
 
-void browser_create(lv_obj_t * scr, lv_group_t * group)
+void browser_create(lv_obj_t * scr, lv_group_t * group, void (*on_play)(void))
 {
     grp = group;
+    play_cb = on_play;
 
     lv_obj_set_style_bg_color(scr, lv_color_hex(UI_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
@@ -241,7 +244,7 @@ void browser_create(lv_obj_t * scr, lv_group_t * group)
     lv_obj_set_pos(footer, UI_MARGIN, UI_BASE - UI_FOOTER_H);
     lv_obj_set_style_text_font(footer, UI_FONT_HINT, 0);
     lv_obj_set_style_text_color(footer, lv_color_hex(UI_COLOR_DIM), 0);
-    lv_label_set_text(footer, "A select    B back    Y play/pause    X next");
+    lv_label_set_text(footer, "A select   B back   Y play   X next   Start now playing");
 
     load("", 0);
 }

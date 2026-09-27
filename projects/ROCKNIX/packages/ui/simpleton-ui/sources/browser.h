@@ -10,8 +10,9 @@
 #include "lvgl.h"
 #include "input.h"
 
-/* Build the browser on the given screen and bind it to the keypad group. */
-void browser_create(lv_obj_t * screen, lv_group_t * group);
+/* Build the browser on the given screen and bind it to the keypad group.
+ * `on_play` is called after a track has been started from a row. */
+void browser_create(lv_obj_t * screen, lv_group_t * group, void (*on_play)(void));
 
 /* Handle a non-navigation action (BACK, MENU, ...). UP/DOWN/SELECT are
  * delivered through the LVGL keypad path and never come here. */

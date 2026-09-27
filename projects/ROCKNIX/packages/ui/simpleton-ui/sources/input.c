@@ -140,8 +140,14 @@ static void handle_key(uint16_t code, int32_t value, uint32_t t)
         case KEY_VOLUMEDOWN:
             if(pressed) push(ACT_VOL_DOWN);
             break;
+        case BTN_START:
+            if(pressed) push(ACT_HOME);
+            break;
         default:
-            break;                              /* shoulders, start/select, F: unmapped for now */
+            /* shoulders, select, F: unmapped. Logged once per press so a
+             * button that turns out to use a different code is easy to spot. */
+            if(pressed) fprintf(stderr, "simpleton-ui: input: unmapped key code %u\n", code);
+            break;
     }
 }
 

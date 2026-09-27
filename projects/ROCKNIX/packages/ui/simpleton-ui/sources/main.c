@@ -15,6 +15,12 @@
  * Keypad notes: LVGL's keypad driver moves group focus only on LV_KEY_NEXT /
  * LV_KEY_PREV, so D-pad down/up are mapped to those; ENTER produces the
  * PRESSED/CLICKED pair on the focused row. Everything else bypasses LVGL.
+ *
+ * Screens: the browser lives on the default screen and uses the keypad
+ * group; the now-playing screen is its own lv_obj screen and takes every
+ * action directly (see nowplaying.c). main.c owns the switch between them:
+ * playing a track or pressing Start enters now-playing, B (with the
+ * controls already hidden) returns to the browser at the remembered row.
  */
 
 #include "lvgl.h"
@@ -23,6 +29,7 @@
 #include "browser.h"
 #include "input.h"
 #include "mpdc.h"
+#include "nowplaying.h"
 #include "theme.h"
 
 #include <poll.h>
@@ -57,19 +64,53 @@ static void keypad_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
     data->continue_reading = (kq_head != kq_tail);
 }
 
+/* ---- screens ---- */
+
+static lv_obj_t * browser_scr;
+static bool in_nowplaying;
+
+static void enter_nowplaying(void)
+{
+    if(in_nowplaying) return;
+    in_nowplaying = true;
+    nowplaying_show();
+}
+
+static void leave_nowplaying(void)
+{
+    if(!in_nowplaying) return;
+    in_nowplaying = false;
+    nowplaying_hide();
+    lv_screen_load(browser_scr);
+}
+
 /* ---- action dispatch ---- */
 
 static void dispatch(ui_action_t a)
 {
+    /* transport keys work on every screen */
+    switch(a) {
+        case ACT_PLAYPAUSE: mpd_toggle_pause(); break;
+        case ACT_NEXT:      mpd_next();         break;
+        case ACT_PREV:      mpd_previous();     break;
+        case ACT_HOME:
+            if(in_nowplaying) leave_nowplaying(); else enter_nowplaying();
+            return;
+        default: break;
+    }
+
+    if(in_nowplaying) {
+        if(nowplaying_handle_action(a) == NP_EXIT) leave_nowplaying();
+        return;
+    }
+
     switch(a) {
         case ACT_UP:        key_tap(LV_KEY_PREV);  break;
         case ACT_DOWN:      key_tap(LV_KEY_NEXT);  break;
         case ACT_LEFT:      key_tap(LV_KEY_LEFT);  break;
         case ACT_RIGHT:     key_tap(LV_KEY_RIGHT); break;
         case ACT_SELECT:    key_tap(LV_KEY_ENTER); break;
-        case ACT_PLAYPAUSE: mpd_toggle_pause();    break;
-        case ACT_NEXT:      mpd_next();            break;
-        case ACT_PREV:      mpd_previous();        break;
+        case ACT_PLAYPAUSE: case ACT_NEXT: case ACT_PREV: break;   /* handled above */
         case ACT_VOL_UP:
         case ACT_VOL_DOWN:  /* Fixed-volume mode: overlay comes with Settings work */ break;
         default:            browser_handle_action(a); break;
@@ -112,7 +153,9 @@ int main(void)
     if(!input_init()) fprintf(stderr, "simpleton-ui: running without joypad input\n");
 
     mpd_connect();   /* may fail: browser shows "Starting library" and retries */
-    browser_create(lv_screen_active(), grp);
+    browser_scr = lv_screen_active();
+    browser_create(browser_scr, grp, enter_nowplaying);
+    nowplaying_create();
     lv_timer_create(mpd_retry_cb, 2000, NULL);
 
     for(;;) {

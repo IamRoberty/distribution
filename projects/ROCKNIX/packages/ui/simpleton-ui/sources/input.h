@@ -6,8 +6,9 @@
  * just another producer feeding the same queue, and touches no UI code.
  *
  * Button grammar (settled): A = select (hold: object menu), B = back,
- * Y = play/pause, X = skip (hold: previous). D-pad navigates with software
- * auto-repeat, since the kernel driver ships with autorepeat disabled.
+ * Y = play/pause, X = skip (hold: previous), Start = now-playing screen.
+ * D-pad navigates with software auto-repeat, since the kernel driver ships
+ * with autorepeat disabled.
  */
 #ifndef SIMPLETON_INPUT_H
 #define SIMPLETON_INPUT_H
@@ -28,6 +29,7 @@ typedef enum {
     ACT_PREV,        /* X, long press           */
     ACT_VOL_UP,      /* volume rocker           */
     ACT_VOL_DOWN,
+    ACT_HOME,        /* Start: jump to now-playing */
 } ui_action_t;
 
 /* Open the joypad by its stable by-path name (never by eventN, which moves

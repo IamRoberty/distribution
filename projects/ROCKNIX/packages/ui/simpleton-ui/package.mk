@@ -3,12 +3,17 @@
 #
 # 0.2 (26 Sep 2026): folder browser driven by MPD's lsinfo, joypad input via
 # evdev mapped to abstract actions, transport keys (play/pause, next/prev).
+# 0.3 (27 Sep 2026): now-playing screen with full-bleed album art, decoded on
+# a worker thread by libjpeg-turbo / libpng; format line reads the DAC's real
+# state from /proc/asound.
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
-#   main.c     - display/theme/indev setup, action dispatch, main loop
-#   input.c/h  - evdev joypad + volume rocker -> ui_action_t queue
-#   mpdc.c/h   - minimal MPD text-protocol client (no libmpdclient)
-#   browser.c/h- folder browser screen
-#   theme.h    - shared style tokens
+#   main.c        - display/theme/indev setup, screen switch, action dispatch
+#   input.c/h     - evdev joypad + volume rocker -> ui_action_t queue
+#   mpdc.c/h      - minimal MPD text-protocol client (no libmpdclient)
+#   browser.c/h   - folder browser screen
+#   nowplaying.c/h- now-playing screen
+#   art.c/h       - album art lookup + decode, worker thread
+#   theme.h       - shared style tokens
 #
 # Structure follows kernel-drivers/device-tree-overlays: PKG_TOOLCHAIN="manual"
 # with explicit make_target/makeinstall_target. No CMake for a handful of files.
@@ -20,15 +25,18 @@
 #   - LV_KCONFIG_IGNORE / LV_LVGL_H_INCLUDE_SIMPLE mirror the library build.
 #     lv_conf settings determine struct layouts; a mismatch is an ABI bug,
 #     not a compile error.
+#   - libjpeg-turbo and libpng are ROCKNIX's own packages (shared libs, so
+#     listing them in PKG_DEPENDS_TARGET is what puts the .so in the image).
+#     libpng pulls zlib; -lz is linked explicitly since we link it by hand.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.2"
+PKG_VERSION="0.3"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
-PKG_DEPENDS_TARGET="toolchain lvgl libdrm"
+PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib"
 PKG_SECTION="graphics"
 PKG_SHORTDESC="SimpletonOS on-device UI"
-PKG_LONGDESC="LVGL + DRM/KMS user interface for SimpletonOS: MPD-backed folder browser with joypad navigation and transport control."
+PKG_LONGDESC="LVGL + DRM/KMS user interface for SimpletonOS: MPD-backed folder browser and now-playing screen with album art, joypad navigation and transport control."
 PKG_TOOLCHAIN="manual"
 
 make_target() {
@@ -37,12 +45,18 @@ make_target() {
     -DLV_LVGL_H_INCLUDE_SIMPLE \
     -I$(get_install_dir lvgl)/usr/include/lvgl \
     -I$(get_install_dir libdrm)/usr/include/libdrm \
+    -I$(get_install_dir libjpeg-turbo)/usr/include \
+    -I$(get_install_dir libpng)/usr/include \
     -o ${PKG_BUILD}/simpleton-ui \
     ${PKG_BUILD}/main.c ${PKG_BUILD}/input.c ${PKG_BUILD}/mpdc.c ${PKG_BUILD}/browser.c \
+    ${PKG_BUILD}/nowplaying.c ${PKG_BUILD}/art.c \
     ${TARGET_LDFLAGS} \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \
-    -llvgl -ldrm -lm
+    -L$(get_install_dir libjpeg-turbo)/usr/lib \
+    -L$(get_install_dir libpng)/usr/lib \
+    -L$(get_install_dir zlib)/usr/lib \
+    -llvgl -ldrm -ljpeg -lpng16 -lz -lpthread -lm
 }
 
 makeinstall_target() {
