@@ -28,7 +28,10 @@
     KERNEL_MAKE_EXTRACMD=" $(get_kernel_make_extracmd)"
 
   # Kernel cmdline
-    EXTRA_CMDLINE="quiet console=ttyS2,1500000 console=tty0 systemd.debug_shell=ttyS2"
+  # SimpletonOS: per-DAC USB audio quirks. DSD_RAW makes the kernel treat the
+  # DAC raw-data "SPECIAL" format as native DSD. Entries are VID:PID:FLAGS,
+  # separated by ";". 32bb:0004 = HiBy FC4 (confirmed native DSD64 27 Sep 2026).
+    EXTRA_CMDLINE="quiet console=ttyS2,1500000 console=tty0 systemd.debug_shell=ttyS2 snd_usb_audio.quirk_flags=32bb:0004:DSD_RAW"
 
   # Bootloader to use (syslinux / u-boot)
     BOOTLOADER="u-boot"
