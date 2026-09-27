@@ -1,0 +1,17 @@
+[Unit]
+Description=SimpletonOS UI
+Before=graphical.target
+After=multi-user.target rocknix-automount.service
+ConditionKernelCommandLine=!installer
+StartLimitIntervalSec=0
+
+[Service]
+Environment=HOME=/storage
+WorkingDirectory=/storage
+ExecStart=/usr/bin/simpleton-ui
+Restart=always
+RestartSec=2
+
+[Install]
+Alias=display-manager.service
+WantedBy=graphical.target
