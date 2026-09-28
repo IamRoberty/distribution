@@ -1,0 +1,20 @@
+# SimpletonOS theme. One colourway is picked at random per track (never the same twice in a row).
+name Pastel
+design cassette
+accent D98AA3
+font 1 Jost-Medium.ttf caps
+font 2 Jost-Bold.ttf caps
+font 3 Jost-Medium.ttf mixed
+colourway background=5B1A18 shell=F1BB7B label=FD6467 text=5B1A18 ; Grand Budapest
+colourway background=CEAB07 shell=D5D5D3 label=F3DF6C text=24281A ; Moonrise 1
+colourway background=899DA4 shell=DC863B label=FAEFD1 text=C93312 ; Royal 1
+colourway background=798E87 shell=CCC591 label=C27D38 text=29211F ; Moonrise 2
+colourway background=02401B shell=A2A475 label=D8B70A text=02401B ; Cavalcanti
+colourway background=74A089 shell=F8AFA8 label=FDDDA0 text=9A8822 ; Royal 2
+colourway background=7294D4 shell=E6A0C4 label=C6CDF7 text=7294D4 ; Grand Budapest 2
+colourway background=85D4E3 shell=F4B5BD label=FAD77B text=9C964A ; Moonrise 3
+colourway background=446455 shell=D3DDDC label=FDD262 text=446455 ; Chevalier
+colourway background=3B9AB2 shell=78B7C5 label=EBCC2A text=F21A00 ; Zissou
+colourway background=46ACC8 shell=DD8D29 label=E2D200 text=B40F20 ; Fantastic Fox
+colourway background=5BBCD6 shell=F2AD00 label=00A08A text=FAEFD1 ; Darjeeling
+colourway background=35274A shell=EABE94 label=0B775E text=E1BD6D ; Rushmore

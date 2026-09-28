@@ -46,7 +46,7 @@ enum { BT_FAV = 0, BT_INFO, BT_MORE, BT_COUNT };
 
 static lv_obj_t * scr;
 static lv_obj_t * art_img;
-static lv_obj_t * placeholder;        /* shown when there is no art       */
+static lv_obj_t * placeholder;        /* plain fallback: only when the themed placeholder can't render */
 static lv_obj_t * placeholder_letter;
 static lv_obj_t * overlay;
 static lv_obj_t * title_lbl, * artist_lbl, * format_lbl;
@@ -351,7 +351,7 @@ static void status_timer_cb(lv_timer_t * t)
         update_text();
         /* keep the previous cover up until the new one is decoded: within
          * one album that's the same picture, so there is no flash */
-        if(s.file[0]) art_request(s.file);
+        if(s.file[0]) art_request(s.file, s.artist, s.album, s.title);
         else show_placeholder();
         last_dac_read_ms = 0;               /* re-read the DAC right away */
     }

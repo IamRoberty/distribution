@@ -6,6 +6,9 @@
 # 0.3 (27 Sep 2026): now-playing screen with full-bleed album art, decoded on
 # a worker thread by libjpeg-turbo / libpng; format line reads the DAC's real
 # state from /proc/asound.
+# 0.4 (28 Sep 2026): designed placeholder art for tracks without a cover -
+# themed cassette tinted per colourway, tags written on the label. Assets
+# (layers, fonts, themes) ship from sources/share to /usr/share/simpleton.
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
 #   main.c        - display/theme/indev setup, screen switch, action dispatch
 #   input.c/h     - evdev joypad + volume rocker -> ui_action_t queue
@@ -13,7 +16,10 @@
 #   browser.c/h   - folder browser screen
 #   nowplaying.c/h- now-playing screen
 #   art.c/h       - album art lookup + decode, worker thread
+#   placeholder.c/h - themed placeholder art (tint + label text, stb_truetype)
+#   stb_truetype.h- vendored, public domain (github.com/nothings/stb)
 #   theme.h       - shared style tokens
+#   share/        - placeholder layers, OFL fonts, theme files
 #
 # Structure follows kernel-drivers/device-tree-overlays: PKG_TOOLCHAIN="manual"
 # with explicit make_target/makeinstall_target. No CMake for a handful of files.
@@ -30,7 +36,7 @@
 #     libpng pulls zlib; -lz is linked explicitly since we link it by hand.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.3"
+PKG_VERSION="0.4"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib"
@@ -53,7 +59,7 @@ make_target() {
     -I$(get_install_dir libpng)/usr/include \
     -o ${PKG_BUILD}/simpleton-ui \
     ${PKG_BUILD}/main.c ${PKG_BUILD}/input.c ${PKG_BUILD}/mpdc.c ${PKG_BUILD}/browser.c \
-    ${PKG_BUILD}/nowplaying.c ${PKG_BUILD}/art.c \
+    ${PKG_BUILD}/nowplaying.c ${PKG_BUILD}/art.c ${PKG_BUILD}/placeholder.c \
     ${TARGET_LDFLAGS} \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \
@@ -64,8 +70,9 @@ make_target() {
 }
 
 makeinstall_target() {
-  mkdir -p ${INSTALL}/usr/bin
+  mkdir -p ${INSTALL}/usr/bin ${INSTALL}/usr/share/simpleton
   cp -a ${PKG_BUILD}/simpleton-ui ${INSTALL}/usr/bin
+  cp -a ${PKG_BUILD}/share/. ${INSTALL}/usr/share/simpleton/
 }
 
 post_install() {

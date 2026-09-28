@@ -1,0 +1,6 @@
+# size W H
+size 1080 1080
+# text cx baseline cap room  (master pixels; text is centred on cx, sits on baseline, capital height cap, may span up to room)
+text 540.0 260 48 750
+text 539.5 307 24 843
+text 539.5 549 37 832

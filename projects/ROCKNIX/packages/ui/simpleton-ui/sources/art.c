@@ -13,6 +13,7 @@
 #define _GNU_SOURCE          /* asprintf */
 #include "art.h"
 #include "mpdc.h"
+#include "placeholder.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -45,6 +46,7 @@ static pthread_cond_t  cv   = PTHREAD_COND_INITIALIZER;
 
 /* request slot (latest wins) */
 static char *   req_uri;
+static char     req_artist[256], req_album[256], req_title[256];
 static unsigned req_gen;
 
 /* result slot */
@@ -414,6 +416,10 @@ static void * worker_main(void * arg)
         while(!req_uri) pthread_cond_wait(&cv, &mu);
         char * uri = req_uri;
         unsigned gen = req_gen;
+        char artist[256], album[256], title[256];
+        snprintf(artist, sizeof(artist), "%s", req_artist);
+        snprintf(album, sizeof(album), "%s", req_album);
+        snprintf(title, sizeof(title), "%s", req_title);
         req_uri = NULL;
         pthread_mutex_unlock(&mu);
 
@@ -450,6 +456,11 @@ static void * worker_main(void * arg)
             }
             free(data);
         }
+        if(!found) {
+            /* no real art anywhere: draw the theme's placeholder for this track */
+            r.pixels = placeholder_render(artist, album, title, &r.w, &r.h);
+            if(r.pixels) { found = true; r.src_w = r.w; r.src_h = r.h; snprintf(r.source, sizeof(r.source), "placeholder"); }
+        }
         if(found) fprintf(stderr, "simpleton-ui: art: %s %dx%d -> %dx%d for %s\n", r.source, r.src_w, r.src_h, r.w, r.h, uri);
         else      fprintf(stderr, "simpleton-ui: art: none for %s\n", uri);
         free(uri);
@@ -473,6 +484,7 @@ static void * worker_main(void * arg)
 bool art_init(int box)
 {
     box_size = box;
+    placeholder_init(box);                  /* logs and returns false if assets are missing */
     if(pthread_create(&worker, NULL, worker_main, NULL) != 0) {
         fprintf(stderr, "simpleton-ui: art: cannot start worker: %s\n", strerror(errno));
         return false;
@@ -481,11 +493,14 @@ bool art_init(int box)
     return true;
 }
 
-void art_request(const char * track_uri)
+void art_request(const char * track_uri, const char * artist, const char * album, const char * title)
 {
     pthread_mutex_lock(&mu);
     free(req_uri);
     req_uri = strdup(track_uri);
+    snprintf(req_artist, sizeof(req_artist), "%s", artist ? artist : "");
+    snprintf(req_album, sizeof(req_album), "%s", album ? album : "");
+    snprintf(req_title, sizeof(req_title), "%s", title ? title : "");
     req_gen++;
     if(res_ready) { free(res.pixels); res_ready = false; }   /* obsolete */
     pthread_cond_signal(&cv);

@@ -9,7 +9,11 @@
  *   2. an image file in the album folder: cover / folder / front / album,
  *      then an Artwork / Scans / Covers subfolder, preferring a file with
  *      "front" or "cover" in its name;
- *   3. nothing - the screen draws its placeholder.
+ *   3. designed placeholder art (placeholder.h): the theme's cassette or
+ *      record, tinted in a colourway of the theme, with the tags on its
+ *      label - so the screen still shows a "cover";
+ *   4. nothing usable at all (assets missing) - the screen draws its plain
+ *      placeholder.
  *
  * MPD's own `albumart` is deliberately not used: it only recognises
  * cover.jpg/png/webp, which real libraries (folder.jpg, Artwork/) fail.
@@ -34,12 +38,14 @@ typedef struct {
 /* Start the worker. `box` is the square the art must fit in (720 here). */
 bool art_init(int box);
 
-/* Ask for the art of a track (MPD URI). The latest request wins; an older
- * one still being decoded is discarded when it finishes. */
-void art_request(const char * track_uri);
+/* Ask for the art of a track (MPD URI). The tags are what the designed
+ * placeholder writes on its label when no real art turns up. The latest
+ * request wins; an older one still being decoded is discarded when it
+ * finishes. */
+void art_request(const char * track_uri, const char * artist, const char * album, const char * title);
 
 /* UI thread: returns true once with the result of the latest request.
- * `found` false means every source came up empty (draw the placeholder).
+ * `found` false means nothing at all could be drawn (plain placeholder).
  * When found, the caller owns res->pixels. */
 bool art_poll(bool * found, art_result_t * res);
 
