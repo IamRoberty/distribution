@@ -9,6 +9,16 @@
  *   row 1  transport         left/right moves between prev / play / next
  *   row 2  favorite/info/more (placeholders until curation lands)
  *
+ * With the controls hidden, left/right pages through the album's images
+ * (cover, back, booklet scans...). A wide page (a gatefold or booklet
+ * spread) fills the screen top to bottom and left/right first pans across
+ * it in equal stops about half a screen apart (a 2:1 gatefold: left page,
+ * middle, right page - a scan that is 2.03:1 still takes exactly those
+ * three); past its edge the press turns the page,
+ * and going backwards lands on the previous page's right-hand end. A "2 / 11" badge in the top-right corner
+ * shows with the controls whenever an album has more than one image, and
+ * for a moment after each page turn.
+ *
  * Status comes from MPD twice a second, so a change made from any other
  * control surface (a phone app later) shows here within half a second.
  *
@@ -36,6 +46,9 @@
 #define IDLE_HIDE_MS     4000
 #define FADE_MS          250
 #define SEEK_STEP_S      10.0f
+#define BADGE_FLASH_MS   1500
+#define PAN_STEP         (UI_BASE / 2)
+#define PAN_MS           100
 
 #define OVERLAY_H        340
 #define FONT_TITLE       (&lv_font_montserrat_36)
@@ -53,8 +66,9 @@ static lv_obj_t * title_lbl, * artist_lbl, * format_lbl;
 static lv_obj_t * bar, * knob, * elapsed_lbl, * duration_lbl;
 static lv_obj_t * tr_btn[TR_COUNT], * tr_lbl[TR_COUNT];
 static lv_obj_t * bt_btn[BT_COUNT];
+static lv_obj_t * badge, * badge_lbl;
 
-static lv_timer_t * status_timer, * art_timer, * idle_timer;
+static lv_timer_t * status_timer, * art_timer, * idle_timer, * badge_timer;
 
 static bool active;
 static bool controls_visible;
@@ -64,6 +78,12 @@ static mpd_status_t st;
 static char cur_file[1024];           /* file the art on screen belongs to */
 static lv_image_dsc_t art_dsc[2];     /* alternate so LVGL sees a new src */
 static int art_slot;
+static int art_index, art_count = 1;
+static bool badge_shown;
+static int  pan_x, pan_max;           /* wide page: current offset, how far it goes */
+static int  pan_i, pan_n;             /* which stop of how many (0 = left edge) */
+static bool enter_at_end;             /* paged backwards: show the new page's right end */
+static bool page_pending;             /* a page turn is on its way from the art worker */
 static uint32_t last_dac_read_ms;
 static char dac_line[96];
 
@@ -289,6 +309,7 @@ static void show_placeholder(void)
 {
     lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(placeholder, LV_OBJ_FLAG_HIDDEN);
+    pan_x = pan_max = pan_i = pan_n = 0;
     const char * seed = st.album[0] ? st.album : (st.artist[0] ? st.artist : st.title);
     char letter[8] = "";
     if(seed && seed[0]) {
@@ -301,7 +322,40 @@ static void show_placeholder(void)
     lv_label_set_text(placeholder_letter, letter);
 }
 
-static void set_art(const art_result_t * r)
+/* ------------------------------------------------------- page badge */
+
+static void badge_set(bool on)
+{
+    if(on == badge_shown) return;
+    badge_shown = on;
+    lv_anim_delete(badge, NULL);
+    if(on) lv_obj_fade_in(badge, FADE_MS, 0);
+    else   lv_obj_fade_out(badge, FADE_MS, 0);
+}
+
+static void badge_refresh(void)
+{
+    if(art_count > 1) lv_label_set_text_fmt(badge_lbl, "%d / %d", art_index + 1, art_count);
+    bool flashing = !lv_timer_get_paused(badge_timer);
+    badge_set(art_count > 1 && (controls_visible || flashing));
+}
+
+static void badge_flash(void)
+{
+    lv_timer_reset(badge_timer);
+    lv_timer_resume(badge_timer);
+    badge_refresh();
+}
+
+static void badge_timer_cb(lv_timer_t * t)
+{
+    lv_timer_pause(t);
+    badge_refresh();
+}
+
+/* keep_pan: same wide page re-sent after a track change - stay where the
+ * reader was instead of jumping back to its left edge */
+static void set_art(const art_result_t * r, bool keep_pan)
 {
     art_slot ^= 1;
     lv_image_dsc_t * d = &art_dsc[art_slot];
@@ -317,12 +371,55 @@ static void set_art(const art_result_t * r)
     d->data = r->pixels;
 
     lv_image_set_src(art_img, d);
-    lv_obj_center(art_img);
+    lv_anim_delete(art_img, NULL);
+    pan_max = r->w > UI_BASE ? r->w - UI_BASE : 0;
+    pan_n = pan_max ? (int)lround((double)pan_max / PAN_STEP) : 0;
+    if(pan_max && pan_n < 1) pan_n = 1;
+    if(!keep_pan || pan_i > pan_n) pan_i = enter_at_end ? pan_n : 0;
+    pan_x = pan_n ? pan_i * pan_max / pan_n : 0;
+    enter_at_end = false;
+    page_pending = false;
+    /* lv_obj_center() leaves the object centre-aligned, and a later
+     * set_pos() is then an offset from the centre - so a wide page has to
+     * be put back on top-left alignment before its x means "left edge" */
+    if(pan_max) { lv_obj_set_align(art_img, LV_ALIGN_TOP_LEFT); lv_obj_set_pos(art_img, -pan_x, (UI_BASE - r->h) / 2); }
+    else        lv_obj_center(art_img);
     lv_obj_remove_flag(art_img, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(placeholder, LV_OBJ_FLAG_HIDDEN);
 
     /* the previous slot is no longer referenced by the image object */
     free(old_pixels);
+}
+
+static void pan_exec(void * obj, int32_t x) { lv_obj_set_x(obj, x); }
+
+static void pan_to(int i)
+{
+    pan_i = i;
+    int x = pan_i * pan_max / pan_n;
+    pan_x = x;
+    lv_anim_delete(art_img, pan_exec);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, art_img);
+    lv_anim_set_exec_cb(&a, pan_exec);
+    lv_anim_set_values(&a, lv_obj_get_x(art_img), -x);
+    lv_anim_set_duration(&a, PAN_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_linear);
+    lv_anim_start(&a);
+}
+
+/* Left/right with the controls hidden: pan a wide page, else turn the page. */
+static void browse_art(int dir)
+{
+    if(dir > 0 && pan_i < pan_n) { pan_to(pan_i + 1); return; }
+    if(dir < 0 && pan_i > 0)     { pan_to(pan_i - 1); return; }
+    if(art_count <= 1) return;
+    art_index = (art_index + dir + art_count) % art_count;
+    enter_at_end = dir < 0;
+    page_pending = true;
+    art_request_page(art_index);
+    badge_flash();                          /* counter moves now, image follows */
 }
 
 /* ------------------------------------------------------------- timers */
@@ -333,8 +430,14 @@ static void art_timer_cb(lv_timer_t * t)
     bool found;
     art_result_t r;
     if(!art_poll(&found, &r)) return;
-    if(found) set_art(&r);
-    else show_placeholder();
+    if(found) {
+        bool keep_pan = !page_pending && pan_max > 0 && r.index == art_index && r.w - UI_BASE == pan_max;
+        art_index = r.index;
+        art_count = r.count > 0 ? r.count : 1;
+        set_art(&r, keep_pan);
+    }
+    else      { art_index = 0; art_count = 1; show_placeholder(); }
+    badge_refresh();
 }
 
 static void status_timer_cb(lv_timer_t * t)
@@ -351,8 +454,9 @@ static void status_timer_cb(lv_timer_t * t)
         update_text();
         /* keep the previous cover up until the new one is decoded: within
          * one album that's the same picture, so there is no flash */
+        enter_at_end = page_pending = false;
         if(s.file[0]) art_request(s.file, s.artist, s.album, s.title);
-        else show_placeholder();
+        else { art_index = 0; art_count = 1; show_placeholder(); badge_refresh(); }
         last_dac_read_ms = 0;               /* re-read the DAC right away */
     }
     update_progress();
@@ -366,6 +470,7 @@ static void hide_controls(void)
     controls_visible = false;
     lv_obj_fade_out(overlay, FADE_MS, 0);
     lv_timer_pause(idle_timer);
+    badge_refresh();
 }
 
 static void show_controls(void)
@@ -375,6 +480,7 @@ static void show_controls(void)
     if(controls_visible) return;
     controls_visible = true;
     lv_obj_fade_in(overlay, FADE_MS, 0);
+    badge_refresh();
 }
 
 static void idle_timer_cb(lv_timer_t * t)
@@ -519,14 +625,35 @@ void nowplaying_create(void)
         x += bt_w[i] + gap;
     }
 
+    /* page badge, top-right over the art: "2 / 11" */
+    badge = lv_obj_create(scr);
+    lv_obj_set_height(badge, 40);
+    lv_obj_set_width(badge, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_hor(badge, 16, 0);
+    lv_obj_set_style_pad_ver(badge, 0, 0);
+    lv_obj_set_style_radius(badge, 20, 0);
+    lv_obj_set_style_border_width(badge, 0, 0);
+    lv_obj_set_style_bg_color(badge, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(badge, 170, 0);
+    lv_obj_remove_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, -UI_MARGIN, UI_MARGIN);
+    lv_obj_set_style_opa(badge, LV_OPA_TRANSP, 0);
+    badge_lbl = lv_label_create(badge);
+    lv_obj_set_style_text_font(badge_lbl, UI_FONT_HINT, 0);
+    lv_obj_set_style_text_color(badge_lbl, lv_color_hex(UI_COLOR_FG), 0);
+    lv_label_set_text(badge_lbl, "");
+    lv_obj_center(badge_lbl);
+
     apply_focus();
     update_text();
 
     status_timer = lv_timer_create(status_timer_cb, STATUS_POLL_MS, NULL);
     art_timer    = lv_timer_create(art_timer_cb, ART_POLL_MS, NULL);
     idle_timer   = lv_timer_create(idle_timer_cb, IDLE_HIDE_MS, NULL);
+    badge_timer  = lv_timer_create(badge_timer_cb, BADGE_FLASH_MS, NULL);
     lv_timer_pause(status_timer);
     lv_timer_pause(idle_timer);
+    lv_timer_pause(badge_timer);
     controls_visible = true;
 }
 
@@ -546,6 +673,7 @@ void nowplaying_show(void)
     lv_timer_ready(status_timer);          /* refresh now, not in 500 ms */
     lv_timer_reset(idle_timer);
     lv_timer_resume(idle_timer);
+    badge_refresh();
 }
 
 void nowplaying_hide(void)
@@ -576,7 +704,7 @@ np_result_t nowplaying_handle_action(ui_action_t a)
                 show_controls();
                 return NP_HANDLED;
             case ACT_LEFT: case ACT_RIGHT:
-                /* reserved: page through the album's other images (phase B) */
+                browse_art(a == ACT_RIGHT ? 1 : -1);
                 return NP_HANDLED;
             default:
                 return NP_HANDLED;

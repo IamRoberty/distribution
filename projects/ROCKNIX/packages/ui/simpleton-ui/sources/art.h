@@ -33,6 +33,8 @@ typedef struct {
     int       w, h;       /* fitted inside the requested box          */
     int       src_w, src_h;
     char      source[64]; /* "embedded", "folder.jpg", ... for logs   */
+    int       index;      /* which of the album's images this is      */
+    int       count;      /* how many the album has (1 = no paging)   */
 } art_result_t;
 
 /* Start the worker. `box` is the square the art must fit in (720 here). */
@@ -43,6 +45,16 @@ bool art_init(int box);
  * request wins; an older one still being decoded is discarded when it
  * finishes. */
 void art_request(const char * track_uri, const char * artist, const char * album, const char * title);
+
+/* Show another of the current album's images (art paging, D-pad left/right
+ * with the controls hidden). Page 0 is the cover chosen by the lookup order
+ * above; the rest are every other image in the album folder and its
+ * Artwork/Scans/... subfolders, alphabetical. Out-of-range wraps. Pages
+ * wider than 1.2:1 come back at the full box height (up to 4:1 wide) for
+ * the caller to pan across; the cover and tall images are fitted. On a
+ * track change within the same album folder the page being viewed is kept;
+ * a new album starts on its cover. */
+void art_request_page(int index);
 
 /* UI thread: returns true once with the result of the latest request.
  * `found` false means nothing at all could be drawn (plain placeholder).

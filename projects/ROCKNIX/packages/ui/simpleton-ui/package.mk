@@ -9,6 +9,12 @@
 # 0.4 (28 Sep 2026): designed placeholder art for tracks without a cover -
 # themed cassette tinted per colourway, tags written on the label. Assets
 # (layers, fonts, themes) ship from sources/share to /usr/share/simpleton.
+# 0.5 (28 Sep 2026): art paging - with the now-playing controls hidden,
+# D-pad left/right pages through every image in the album folder and its
+# Artwork/Scans subfolders; "2 / 11" badge top-right.
+# 0.6 (28 Sep 2026): wide pages (gatefolds, booklet spreads) fill the screen
+# height and left/right pans across them a quarter screen per press before
+# turning the page.
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
 #   main.c        - display/theme/indev setup, screen switch, action dispatch
 #   input.c/h     - evdev joypad + volume rocker -> ui_action_t queue
@@ -36,7 +42,7 @@
 #     libpng pulls zlib; -lz is linked explicitly since we link it by hand.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.4"
+PKG_VERSION="0.6"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib"

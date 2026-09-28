@@ -48,6 +48,7 @@ static pthread_cond_t  cv   = PTHREAD_COND_INITIALIZER;
 static char *   req_uri;
 static char     req_artist[256], req_album[256], req_title[256];
 static unsigned req_gen;
+static int      req_page = -1;           /* art paging request, -1 = none */
 
 /* result slot */
 static bool          res_ready;
@@ -112,6 +113,20 @@ static int alpha_cmp(const struct dirent ** a, const struct dirent ** b)
     return strcasecmp((*a)->d_name, (*b)->d_name);
 }
 
+static const char * const art_subdirs[] = { "artwork", "scans", "covers", "cover", "art", "images", "scan", NULL };
+
+/* Windows Media Player's hidden thumbnails and macOS "._" files aren't art. */
+static bool skip_image(const char * name)
+{
+    return name[0] == '.' || strncasecmp(name, "albumartsmall", 13) == 0 || strncasecmp(name, "albumart_{", 10) == 0;
+}
+
+static bool is_art_subdir(const char * name)
+{
+    for(int s = 0; art_subdirs[s]; s++) if(strcasecmp(name, art_subdirs[s]) == 0) return true;
+    return false;
+}
+
 /* Pick the best image directly in `dir` by well-known stem, else NULL. */
 static char * pick_named(const char * dir)
 {
@@ -145,16 +160,13 @@ static char * pick_named(const char * dir)
 /* Pick the front-most image inside an artwork subfolder, else NULL. */
 static char * pick_in_subfolder(const char * dir)
 {
-    static const char * const subs[] = { "artwork", "scans", "covers", "cover", "art", "images", "scan", NULL };
     struct dirent ** ents;
     int n = scandir(dir, &ents, NULL, alpha_cmp);
     if(n < 0) return NULL;
     char * best = NULL;
     for(int i = 0; i < n && !best; i++) {
         const char * name = ents[i]->d_name;
-        bool is_sub = false;
-        for(int s = 0; subs[s]; s++) if(strcasecmp(name, subs[s]) == 0) is_sub = true;
-        if(!is_sub) continue;
+        if(!is_art_subdir(name)) continue;
 
         char sub[1600];
         snprintf(sub, sizeof(sub), "%s/%s", dir, name);
@@ -164,7 +176,7 @@ static char * pick_in_subfolder(const char * dir)
         char * first = NULL, * front = NULL, * cover = NULL;
         for(int j = 0; j < m; j++) {
             const char * fn = files[j]->d_name;
-            if(has_ext(fn, image_exts)) {
+            if(!skip_image(fn) && has_ext(fn, image_exts)) {
                 char lower[256];
                 size_t k;
                 for(k = 0; fn[k] && k < sizeof(lower) - 1; k++) lower[k] = (char)tolower((unsigned char)fn[k]);
@@ -186,15 +198,88 @@ static char * pick_in_subfolder(const char * dir)
     return best;
 }
 
+/* ---------------------------------------------------- album image list */
+
+#define MAX_PAGES 64
+
+static void add_images_in(const char * dir, char ** list, int * n)
+{
+    struct dirent ** ents;
+    int m = scandir(dir, &ents, NULL, alpha_cmp);
+    if(m < 0) return;
+    for(int i = 0; i < m; i++) {
+        const char * name = ents[i]->d_name;
+        char * p;
+        if(*n < MAX_PAGES && !skip_image(name) && has_ext(name, image_exts) && asprintf(&p, "%s/%s", dir, name) >= 0)
+            list[(*n)++] = p;
+        free(ents[i]);
+    }
+    free(ents);
+}
+
+/* Every image in the album folder, then in each artwork subfolder (one
+ * level deep), alphabetical within each. */
+static int collect_images(const char * dir, char ** list)
+{
+    int n = 0;
+    add_images_in(dir, list, &n);
+    struct dirent ** ents;
+    int m = scandir(dir, &ents, NULL, alpha_cmp);
+    if(m < 0) return n;
+    for(int i = 0; i < m; i++) {
+        if(is_art_subdir(ents[i]->d_name)) {
+            char sub[1600];
+            snprintf(sub, sizeof(sub), "%s/%s", dir, ents[i]->d_name);
+            add_images_in(sub, list, &n);
+        }
+        free(ents[i]);
+    }
+    free(ents);
+    return n;
+}
+
+/* True when the file at `path` holds exactly these bytes: an embedded cover
+ * that was also saved as folder.jpg shouldn't be paged to twice. */
+static bool same_bytes(const char * path, const uint8_t * data, size_t len)
+{
+    struct stat sb;
+    if(stat(path, &sb) != 0 || (size_t)sb.st_size != len) return false;
+    size_t flen;
+    uint8_t * f = read_file(path, &flen);
+    bool same = f && flen == len && memcmp(f, data, len) == 0;
+    free(f);
+    return same;
+}
+
 /* ------------------------------------------------------------- decode */
 
-typedef struct { uint8_t * rgb; int w, h; int src_w, src_h; } rgb_image_t;
+typedef struct { uint8_t * rgb; int w, h; int src_w, src_h; int dst_w, dst_h; } rgb_image_t;
+
+/* Wider than this and a page is shown full height and panned instead of
+ * shrunk to fit: a 2:1 gatefold fitted to a square is a thin strip. */
+#define WIDE_ASPECT 1.2
+#define MAX_ASPECT  4.0
+
+/* On-screen size for a source image. Fitted inside the box, or for a wide
+ * page (`pan` true) the box height with the width following, up to 4:1. */
+static void target_size(int sw, int sh, bool pan, int * dw, int * dh)
+{
+    double aspect = (double)sw / sh, scale;
+    if(pan && aspect >= WIDE_ASPECT)
+        scale = aspect <= MAX_ASPECT ? (double)box_size / sh : box_size * MAX_ASPECT / sw;
+    else
+        scale = (double)box_size / (sw > sh ? sw : sh);
+    *dw = (int)lround(sw * scale);
+    *dh = (int)lround(sh * scale);
+    if(*dw < 1) *dw = 1;
+    if(*dh < 1) *dh = 1;
+}
 
 struct jerr { struct jpeg_error_mgr pub; jmp_buf jb; };
 static void jerr_exit(j_common_ptr c) { longjmp(((struct jerr *)c->err)->jb, 1); }
 static void jerr_msg(j_common_ptr c) { (void)c; }   /* quiet */
 
-static bool decode_jpeg(const uint8_t * data, size_t len, rgb_image_t * out)
+static bool decode_jpeg(const uint8_t * data, size_t len, bool pan, rgb_image_t * out)
 {
     struct jpeg_decompress_struct cinfo;
     struct jerr err;
@@ -211,11 +296,11 @@ static bool decode_jpeg(const uint8_t * data, size_t len, rgb_image_t * out)
     out->src_w = (int)cinfo.image_width;
     out->src_h = (int)cinfo.image_height;
 
-    /* DCT scaling: shrink as far as possible while staying >= the box on
-     * the longer edge, so the resampler below only ever works on <= 2x. */
-    int longest = out->src_w > out->src_h ? out->src_w : out->src_h;
+    /* DCT scaling: shrink as far as possible while staying >= the final
+     * size, so the resampler below only ever works on <= 2x. */
+    target_size(out->src_w, out->src_h, pan, &out->dst_w, &out->dst_h);
     unsigned denom = 1;
-    while(denom < 8 && longest / (int)(denom * 2) >= box_size) denom *= 2;
+    while(denom < 8 && out->src_w / (int)(denom * 2) >= out->dst_w && out->src_h / (int)(denom * 2) >= out->dst_h) denom *= 2;
     cinfo.scale_num = 1;
     cinfo.scale_denom = denom;
     cinfo.out_color_space = JCS_RGB;
@@ -248,7 +333,7 @@ static void png_mem_read(png_structp png, png_bytep dst, png_size_t n)
     m->off += n;
 }
 
-static bool decode_png(const uint8_t * data, size_t len, rgb_image_t * out)
+static bool decode_png(const uint8_t * data, size_t len, bool pan, rgb_image_t * out)
 {
     png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
     if(!png) return false;
@@ -287,25 +372,24 @@ static bool decode_png(const uint8_t * data, size_t len, rgb_image_t * out)
     out->rgb = rgb;
     out->w = out->src_w = (int)w;
     out->h = out->src_h = (int)h;
+    target_size(out->w, out->h, pan, &out->dst_w, &out->dst_h);
     return true;
 }
 
-static bool decode_any(const uint8_t * data, size_t len, rgb_image_t * out)
+static bool decode_any(const uint8_t * data, size_t len, bool pan, rgb_image_t * out)
 {
     memset(out, 0, sizeof(*out));
-    if(len > 3 && data[0] == 0xFF && data[1] == 0xD8) return decode_jpeg(data, len, out);
-    if(len > 8 && memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0) return decode_png(data, len, out);
+    if(len > 3 && data[0] == 0xFF && data[1] == 0xD8) return decode_jpeg(data, len, pan, out);
+    if(len > 8 && memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0) return decode_png(data, len, pan, out);
     return false;
 }
 
-/* Fit `src` inside box x box, producing XRGB8888. Box filter when shrinking
- * (no aliasing on a 2x reduction), bilinear when enlarging. */
+/* Scale `src` to its target size (see target_size), producing XRGB8888.
+ * Box filter when shrinking (no aliasing on a 2x reduction), bilinear when
+ * enlarging. */
 static uint8_t * resample_fit(const rgb_image_t * src, int * out_w, int * out_h)
 {
-    double scale = (double)box_size / (src->w > src->h ? src->w : src->h);
-    int dw = (int)lround(src->w * scale), dh = (int)lround(src->h * scale);
-    if(dw < 1) dw = 1;
-    if(dh < 1) dh = 1;
+    int dw = src->dst_w, dh = src->dst_h;
     uint32_t * dst = malloc((size_t)dw * (size_t)dh * 4);
     if(!dst) return NULL;
 
@@ -379,17 +463,16 @@ static uint8_t * fetch_embedded(const char * uri, size_t * len, char * source, s
     return NULL;
 }
 
-static uint8_t * fetch_folder(const char * uri, size_t * len, char * source, size_t slen)
+static uint8_t * fetch_folder(const char * dir, size_t * len, char * source, size_t slen, char ** path_out)
 {
-    char dir[1200];
-    album_dir(uri, dir, sizeof(dir));
     char * path = pick_named(dir);
     if(!path) path = pick_in_subfolder(dir);
     if(!path) return NULL;
     uint8_t * data = read_file(path, len);
+    if(!data) { free(path); return NULL; }
     const char * base = strrchr(path, '/');
     snprintf(source, slen, "%s", base ? base + 1 : path);
-    free(path);
+    *path_out = path;
     return data;
 }
 
@@ -404,69 +487,192 @@ static uint64_t fnv(const uint8_t * p, size_t n)
 
 /* --------------------------------------------------------------- worker */
 
+/* Worker-only state: the current album's pages. pages[0] is the cover's
+ * path, or NULL when the cover is embedded or the placeholder; `cover` keeps
+ * page 0 decoded so paging back to it is instant. */
+static char *        pages[MAX_PAGES];
+static int           page_count, page_cur;
+static char          page_dir[1200];
+static art_result_t  cover;
+
+static bool dup_result(const art_result_t * src, art_result_t * dst)
+{
+    *dst = *src;
+    dst->pixels = NULL;
+    if(!src->pixels) return false;
+    size_t n = (size_t)src->w * (size_t)src->h * 4;
+    dst->pixels = malloc(n);
+    if(!dst->pixels) return false;
+    memcpy(dst->pixels, src->pixels, n);
+    return true;
+}
+
+static bool decode_file(const char * path, art_result_t * r)
+{
+    size_t len;
+    uint8_t * data = read_file(path, &len);
+    const char * rel = path + strlen(page_dir);
+    if(*rel == '/') rel++;
+    snprintf(r->source, sizeof(r->source), "%s", rel);
+    if(!data) return false;
+    rgb_image_t img;
+    bool ok = decode_any(data, len, true, &img);
+    free(data);
+    if(!ok) return false;
+    r->pixels = resample_fit(&img, &r->w, &r->h);
+    r->src_w = img.src_w;
+    r->src_h = img.src_h;
+    free(img.rgb);
+    return r->pixels != NULL;
+}
+
+/* Page i of the current album; falls back to the cover if the file won't
+ * decode, so the screen never goes blank mid-browse. */
+static bool serve_page(int i, art_result_t * r)
+{
+    memset(r, 0, sizeof(*r));
+    if(i > 0 && decode_file(pages[i], r)) return true;
+    if(i > 0) fprintf(stderr, "simpleton-ui: art: could not decode %s, showing the cover\n", r->source);
+    return dup_result(&cover, r);
+}
+
+static void clear_pages(void)
+{
+    for(int i = 0; i < page_count; i++) free(pages[i]);
+    page_count = 0;
+    page_cur = 0;
+}
+
+/* Track changed: find the cover, list the album's other images. */
+static bool load_track(const char * uri, const char * artist, const char * album, const char * title,
+                       art_result_t * r, uint64_t * cache_key, art_result_t * cache)
+{
+    char dir[1200];
+    album_dir(uri, dir, sizeof(dir));
+
+    /* remember the image on screen: within one album it stays up */
+    char * keep = NULL;
+    if(page_cur > 0 && strcmp(dir, page_dir) == 0) keep = strdup(pages[page_cur]);
+    clear_pages();
+    snprintf(page_dir, sizeof(page_dir), "%s", dir);
+
+    char * list[MAX_PAGES];
+    int n = collect_images(dir, list);
+
+    memset(r, 0, sizeof(*r));
+    size_t len = 0;
+    char * cover_path = NULL;
+    uint8_t * data = fetch_embedded(uri, &len, r->source, sizeof(r->source));
+    bool embedded = data != NULL;
+    if(!data) data = fetch_folder(dir, &len, r->source, sizeof(r->source), &cover_path);
+    if(!data && n > 0) {
+        /* images in the folder, none with a standard name: use the first */
+        cover_path = strdup(list[0]);
+        data = cover_path ? read_file(cover_path, &len) : NULL;
+        if(data) snprintf(r->source, sizeof(r->source), "%s", strrchr(cover_path, '/') + 1);
+    }
+
+    pages[page_count++] = cover_path;
+    for(int i = 0; i < n; i++) {
+        bool dup = (cover_path && strcmp(list[i], cover_path) == 0) || (embedded && same_bytes(list[i], data, len));
+        if(dup) free(list[i]);
+        else pages[page_count++] = list[i];
+    }
+
+    bool found = false;
+    if(data) {
+        uint64_t key = fnv(data, len);
+        if(cache->pixels && key == *cache_key) {
+            char src[64];
+            snprintf(src, sizeof(src), "%s", r->source);
+            found = dup_result(cache, r);
+            snprintf(r->source, sizeof(r->source), "%s", src);
+        }
+        else {
+            rgb_image_t img;
+            if(decode_any(data, len, false, &img)) {
+                r->pixels = resample_fit(&img, &r->w, &r->h);
+                r->src_w = img.src_w;
+                r->src_h = img.src_h;
+                free(img.rgb);
+                if(r->pixels) {
+                    found = true;
+                    free(cache->pixels);
+                    if(dup_result(r, cache)) *cache_key = key;
+                }
+            }
+            else fprintf(stderr, "simpleton-ui: art: could not decode %s (%zu bytes) for %s\n", r->source, len, uri);
+        }
+        free(data);
+    }
+    if(!found) {
+        /* no real art anywhere: draw the theme's placeholder for this track */
+        r->pixels = placeholder_render(artist, album, title, &r->w, &r->h);
+        if(r->pixels) { found = true; r->src_w = r->w; r->src_h = r->h; snprintf(r->source, sizeof(r->source), "placeholder"); }
+    }
+    if(found) fprintf(stderr, "simpleton-ui: art: %s %dx%d -> %dx%d for %s (%d image%s)\n",
+                      r->source, r->src_w, r->src_h, r->w, r->h, uri, page_count, page_count == 1 ? "" : "s");
+    else      fprintf(stderr, "simpleton-ui: art: none for %s\n", uri);
+
+    free(cover.pixels);
+    memset(&cover, 0, sizeof(cover));
+    if(found) dup_result(r, &cover);
+
+    if(keep) {
+        for(int i = 1; i < page_count; i++) {
+            if(strcmp(pages[i], keep) == 0) {
+                free(r->pixels);
+                page_cur = i;
+                found = serve_page(i, r);
+                break;
+            }
+        }
+        free(keep);
+    }
+    r->index = page_cur;
+    r->count = page_count;
+    return found;
+}
+
 static void * worker_main(void * arg)
 {
     (void)arg;
-    /* cache of the last decode, keyed by the encoded bytes' hash */
+    /* cache of the last cover decode, keyed by the encoded bytes' hash */
     uint64_t cache_key = 0;
     art_result_t cache = { 0 };
 
     for(;;) {
         pthread_mutex_lock(&mu);
-        while(!req_uri) pthread_cond_wait(&cv, &mu);
+        while(!req_uri && req_page < 0) pthread_cond_wait(&cv, &mu);
         char * uri = req_uri;
+        int page = req_page;
         unsigned gen = req_gen;
         char artist[256], album[256], title[256];
         snprintf(artist, sizeof(artist), "%s", req_artist);
         snprintf(album, sizeof(album), "%s", req_album);
         snprintf(title, sizeof(title), "%s", req_title);
         req_uri = NULL;
+        req_page = -1;
         pthread_mutex_unlock(&mu);
 
-        art_result_t r = { 0 };
-        bool found = false;
-        size_t len = 0;
-        uint8_t * data = fetch_embedded(uri, &len, r.source, sizeof(r.source));
-        if(!data) data = fetch_folder(uri, &len, r.source, sizeof(r.source));
-
-        if(data) {
-            uint64_t key = fnv(data, len);
-            if(cache.pixels && key == cache_key) {
-                r = cache;
-                r.pixels = malloc((size_t)cache.w * (size_t)cache.h * 4);
-                if(r.pixels) { memcpy(r.pixels, cache.pixels, (size_t)cache.w * (size_t)cache.h * 4); found = true; }
-            }
-            else {
-                rgb_image_t img;
-                if(decode_any(data, len, &img)) {
-                    r.pixels = resample_fit(&img, &r.w, &r.h);
-                    r.src_w = img.src_w;
-                    r.src_h = img.src_h;
-                    free(img.rgb);
-                    if(r.pixels) {
-                        found = true;
-                        /* keep a copy for the next track of this album */
-                        free(cache.pixels);
-                        cache = r;
-                        cache.pixels = malloc((size_t)r.w * (size_t)r.h * 4);
-                        if(cache.pixels) { memcpy(cache.pixels, r.pixels, (size_t)r.w * (size_t)r.h * 4); cache_key = key; }
-                    }
-                }
-                else fprintf(stderr, "simpleton-ui: art: could not decode %s (%zu bytes) for %s\n", r.source, len, uri);
-            }
-            free(data);
+        art_result_t r;
+        bool found;
+        if(uri) {
+            found = load_track(uri, artist, album, title, &r, &cache_key, &cache);
+            free(uri);
         }
-        if(!found) {
-            /* no real art anywhere: draw the theme's placeholder for this track */
-            r.pixels = placeholder_render(artist, album, title, &r.w, &r.h);
-            if(r.pixels) { found = true; r.src_w = r.w; r.src_h = r.h; snprintf(r.source, sizeof(r.source), "placeholder"); }
+        else {
+            if(page_count <= 1) continue;
+            page_cur = page % page_count;
+            found = serve_page(page_cur, &r);
+            r.index = page_cur;
+            r.count = page_count;
+            fprintf(stderr, "simpleton-ui: art: page %d/%d %s %dx%d -> %dx%d\n",
+                    page_cur + 1, page_count, page_cur ? r.source : "cover", r.src_w, r.src_h, r.w, r.h);
         }
-        if(found) fprintf(stderr, "simpleton-ui: art: %s %dx%d -> %dx%d for %s\n", r.source, r.src_w, r.src_h, r.w, r.h, uri);
-        else      fprintf(stderr, "simpleton-ui: art: none for %s\n", uri);
-        free(uri);
 
         pthread_mutex_lock(&mu);
-        if(gen == req_gen && !req_uri) {          /* still the latest request */
+        if(gen == req_gen && !req_uri && req_page < 0) {   /* still the latest request */
             if(res_ready) free(res.pixels);       /* unread previous result */
             res = r;
             res_found = found;
@@ -501,9 +707,23 @@ void art_request(const char * track_uri, const char * artist, const char * album
     snprintf(req_artist, sizeof(req_artist), "%s", artist ? artist : "");
     snprintf(req_album, sizeof(req_album), "%s", album ? album : "");
     snprintf(req_title, sizeof(req_title), "%s", title ? title : "");
+    req_page = -1;
     req_gen++;
     if(res_ready) { free(res.pixels); res_ready = false; }   /* obsolete */
     pthread_cond_signal(&cv);
+    pthread_mutex_unlock(&mu);
+}
+
+void art_request_page(int index)
+{
+    if(index < 0) index = 0;
+    pthread_mutex_lock(&mu);
+    if(!req_uri) {                        /* a pending track change wins */
+        req_page = index;
+        req_gen++;
+        if(res_ready) { free(res.pixels); res_ready = false; }
+        pthread_cond_signal(&cv);
+    }
     pthread_mutex_unlock(&mu);
 }
 
