@@ -1,0 +1,24 @@
+diff --git a/src/misc/lv_text_ap.c b/src/misc/lv_text_ap.c
+index e6dcb4d..9f8517c 100644
+--- a/src/misc/lv_text_ap.c
++++ b/src/misc/lv_text_ap.c
+@@ -98,6 +98,19 @@ const ap_chars_map_t ap_chars_map[] = {
+     {213, 0x06F7, 0, 0, 0,  {0, 0}},  // ۷
+     {214, 0x06F8, 0, 0, 0,  {0, 0}},  // ۸
+     {215, 0x06F9, 0, 0, 0,  {0, 0}},  // ۹
++    /* SimpletonOS: Urdu letters (and Kurdish oe) missing from the upstream
++     * table, with their Unicode presentation forms (Arabic Presentation
++     * Forms-A). Dual-joining letters: final, +1 initial, +2 medial, -1
++     * isolated. Right-joining: final, -1 isolated, never joins forward. */
++    {87, 0xFB67, 1, 2, -1,  {1, 1}},    // ٹ tteh
++    {102, 0xFB89, -1, 0, -1,  {1, 0}},  // ڈ ddal
++    {111, 0xFB8D, -1, 0, -1,  {1, 0}},  // ڑ rreh
++    {152, 0xFB9F, -1, 0, -1,  {1, 0}},  // ں noon ghunna (word-final only)
++    {156, 0xFBAB, 1, 2, -1,  {1, 1}},   // ھ heh doachashmee
++    {159, 0xFBA7, 1, 2, -1,  {1, 1}},   // ہ heh goal
++    {176, 0xFBAF, -1, 0, -1,  {1, 0}},  // ے yeh barree
++    {177, 0xFBB1, -1, 0, -1,  {1, 0}},  // ۓ yeh barree with hamza
++    {164, 0xFBDA, -1, 0, -1,  {1, 0}},  // ۆ oe (Kurdish)
+     LV_AP_END_CHARS_LIST
+ };
+ /**********************

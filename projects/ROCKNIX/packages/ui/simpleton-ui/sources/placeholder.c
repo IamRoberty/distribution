@@ -1,5 +1,9 @@
 /*
  * SimpletonOS UI - designed placeholder art (implementation). See placeholder.h.
+ *
+ * 0.9: label text falls back to Noto Sans for any letter the theme's font
+ * lacks (accents, Cyrillic, Greek), scaled to the same cap height, so a
+ * Russian album still gets a readable cassette label.
  */
 #define _GNU_SOURCE
 #include "placeholder.h"
@@ -66,6 +70,7 @@ static int    line_count;
 
 static font_t fonts[MAX_FONTS];
 static int    font_count;
+static int    fallback_font = -1;   /* Noto Sans: letters the theme's fonts lack (0.9) */
 static int    line_font[MAX_LINES];
 static bool   line_caps[MAX_LINES];
 
@@ -352,20 +357,39 @@ static uint32_t utf8_next(const char ** s)
     return c;
 }
 
-/* Width of `text` at `scale`, skipping glyphs the font lacks. */
+/* Which font draws code point `c`: the line's own font, else the fallback
+ * (scaled so its capitals match the line's cap height). Returns the glyph
+ * index, 0 when neither has it. */
+static int pick_glyph(const font_t * f, uint32_t c, float scale, const font_t ** use, float * use_scale)
+{
+    int g = stbtt_FindGlyphIndex(&f->info, (int)c);
+    *use = f;
+    *use_scale = scale;
+    if(!g && fallback_font >= 0 && &fonts[fallback_font] != f) {
+        const font_t * fb = &fonts[fallback_font];
+        g = stbtt_FindGlyphIndex(&fb->info, (int)c);
+        if(g) { *use = fb; *use_scale = scale * f->cap_units / fb->cap_units; }
+    }
+    return g;
+}
+
+/* Width of `text` at `scale`, skipping glyphs no font has. */
 static float text_width(const font_t * f, const char * text, float scale)
 {
     float w = 0;
     int prev = 0;
+    const font_t * prev_font = NULL;
     for(const char * s = text; *s;) {
         uint32_t c = utf8_next(&s);
-        int g = stbtt_FindGlyphIndex(&f->info, (int)c);
+        const font_t * use; float sc;
+        int g = pick_glyph(f, c, scale, &use, &sc);
         if(!g) continue;
         int adv, lsb;
-        stbtt_GetGlyphHMetrics(&f->info, g, &adv, &lsb);
-        if(prev) adv += stbtt_GetGlyphKernAdvance(&f->info, prev, g);
-        w += adv * scale;
+        stbtt_GetGlyphHMetrics(&use->info, g, &adv, &lsb);
+        if(prev && prev_font == use) adv += stbtt_GetGlyphKernAdvance(&use->info, prev, g);
+        w += adv * sc;
         prev = g;
+        prev_font = use;
     }
     return w;
 }
@@ -374,24 +398,27 @@ static void draw_text(uint32_t * out, const font_t * f, const char * text, float
 {
     float ir = (ink >> 16) & 0xFF, ig = (ink >> 8) & 0xFF, ib = ink & 0xFF;
     int prev = 0;
+    const font_t * prev_font = NULL;
     for(const char * s = text; *s;) {
         uint32_t c = utf8_next(&s);
-        int g = stbtt_FindGlyphIndex(&f->info, (int)c);
+        const font_t * use; float sc;
+        int g = pick_glyph(f, c, scale, &use, &sc);
         if(!g) continue;
         int adv, lsb;
-        stbtt_GetGlyphHMetrics(&f->info, g, &adv, &lsb);
-        if(prev) x += stbtt_GetGlyphKernAdvance(&f->info, prev, g) * scale;
+        stbtt_GetGlyphHMetrics(&use->info, g, &adv, &lsb);
+        if(prev && prev_font == use) x += stbtt_GetGlyphKernAdvance(&use->info, prev, g) * sc;
         prev = g;
+        prev_font = use;
 
         int ix = (int)floorf(x);
         float shift = x - ix;
         int x0, y0, x1, y1;
-        stbtt_GetGlyphBitmapBoxSubpixel(&f->info, g, scale, scale, shift, 0, &x0, &y0, &x1, &y1);
+        stbtt_GetGlyphBitmapBoxSubpixel(&use->info, g, sc, sc, shift, 0, &x0, &y0, &x1, &y1);
         int gw = x1 - x0, gh = y1 - y0;
         if(gw > 0 && gh > 0) {
             uint8_t * cov = malloc((size_t)gw * gh);
             if(cov) {
-                stbtt_MakeGlyphBitmapSubpixel(&f->info, cov, gw, gh, gw, scale, scale, shift, 0, g);
+                stbtt_MakeGlyphBitmapSubpixel(&use->info, cov, gw, gh, gw, sc, sc, shift, 0, g);
                 int by = (int)lroundf(y);
                 for(int yy = 0; yy < gh; yy++) {
                     int py = by + y0 + yy;
@@ -409,7 +436,7 @@ static void draw_text(uint32_t * out, const font_t * f, const char * text, float
                 free(cov);
             }
         }
-        x += adv * scale;
+        x += adv * sc;
     }
 }
 
@@ -496,6 +523,7 @@ bool placeholder_init(int box_size)
         if(!name[0]) snprintf(name, sizeof(name), "%s", THEME_DEFAULT);
     }
     ready = load_theme(name) || (strcmp(name, THEME_DEFAULT) != 0 && load_theme(THEME_DEFAULT));
+    fallback_font = font_index("NotoSans-Medium.ttf");   /* label letters the theme's fonts lack */
     if(ready) {
         srand((unsigned)time(NULL) ^ (unsigned)getpid());
         fprintf(stderr, "simpleton-ui: placeholder: theme %s, %d colourways, %d zones, %d text lines, box %d\n",

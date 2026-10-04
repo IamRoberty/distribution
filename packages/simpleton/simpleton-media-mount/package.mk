@@ -10,11 +10,15 @@ PKG_DEPENDS_TARGET="toolchain udevil"
 PKG_LONGDESC="Simpleton: auto-mount microSD cards in the second slot for music, via udevil."
 PKG_TOOLCHAIN="manual"
 
-# Everything this package ships is installed automatically by scripts/install:
+# Installed automatically by scripts/install:
 #   udev.d/96-simpleton-sdcard-mount.rules
 #       -> /usr/lib/udev/rules.d/
 #   system.d/rocknix-automount.service.d/simpleton-disable.conf
 #       -> /usr/lib/systemd/system/rocknix-automount.service.d/
+#   system.d/simpleton-card-add@.service, simpleton-card-remove@.service
+#       -> /usr/lib/systemd/system/
+# Installed below:
+#   scripts/simpleton-card -> /usr/bin (the insert/remove handler)
 #
 # Why this exists:
 #   ROCKNIX mounts SD cards itself (rocknix-automount), for ROM storage at
@@ -27,9 +31,18 @@ PKG_TOOLCHAIN="manual"
 #   /var/media/<device>-<model>_<serial> (or its volume label, if it has one).
 #   The name includes the card's hardware serial, so the same card always
 #   lands at the same path - which keeps MPD's database valid across
-#   pull-and-reinsert. Scanning is deliberately NOT triggered here; the user
-#   decides when to scan.
+#   pull-and-reinsert.
+#
+# Scanning (decided 1 Oct 2026, replacing "never scan automatically"):
+#   inserting a card starts an incremental MPD scan of that card by default;
+#   /storage/.config/simpleton/autoscan = "off" turns that off (Settings will
+#   own it). Manual scan stays available regardless. Removing a card never
+#   scans, so the library keeps its entries and a reinsert is quick.
+#   Removal detaches the mount lazily: a busy unmount used to fail and leave
+#   a dead mount that stopped the card mounting again (30 Sep 2026).
 
 makeinstall_target() {
-  : # nothing beyond the auto-installed udev.d and system.d content
+  mkdir -p ${INSTALL}/usr/bin
+  cp ${PKG_DIR}/scripts/simpleton-card ${INSTALL}/usr/bin
+  chmod 0755 ${INSTALL}/usr/bin/simpleton-card
 }

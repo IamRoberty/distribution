@@ -5,10 +5,11 @@
  * "cmd args\n" and read lines until one is exactly "OK" or starts with "ACK ".
  * Arguments are double-quoted with \ and " escaped.
  *
- * Two connections (see mpdc.h): `ui` for everything the UI thread does, and
- * `art` used only by mpd_readpicture() from the art worker thread. Each has
- * its own socket and buffered reader, so there is no shared state between
- * threads inside this file.
+ * Three connections (see mpdc.h): `ui` for everything the UI thread does,
+ * `art` used only by mpd_readpicture() from the art worker thread, and
+ * `idle`, which sits in MPD's idle state and is read only when poll() says
+ * MPD has spoken. Each has its own socket and buffered reader, so there is
+ * no shared state between threads inside this file.
  */
 #include "mpdc.h"
 
@@ -19,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -39,6 +41,11 @@ typedef struct {
 
 static conn_t ui  = { .sock = -1, .name = "ui"  };
 static conn_t art = { .sock = -1, .name = "art" };
+static conn_t idle = { .sock = -1, .name = "idle" };
+
+/* Everything the UI reacts to. MPD exempts idling clients from its
+ * connection_timeout, so this connection can wait indefinitely. */
+#define IDLE_CMD "idle database update player mixer options playlist output\n"
 
 static void disconnect(conn_t * c)
 {
@@ -162,15 +169,20 @@ static void listing_push(mpd_listing_t * l, mpd_entry_kind_t kind, const char * 
     e->kind = kind;
     e->uri = strdup(uri);
     e->display = basename_label(uri, kind == MPD_ENTRY_FILE);
+    e->section = NULL;
 }
 
-/* Replace a file entry's display label with "NN Title" if MPD gave us tags. */
+/* Replace a file entry's display label with "NN Title" if MPD gave us tags.
+ * A track number alone (SACD tracks with no text on the disc) reads
+ * "Track NN" rather than the container's internal file name. */
 static void apply_tags(mpd_entry_t * e, const char * title, const char * track)
 {
-    if(!e || !title[0]) return;
+    if(!e) return;
     char label[512];
-    if(track[0]) snprintf(label, sizeof(label), "%s  %s", track, title);
-    else         snprintf(label, sizeof(label), "%s", title);
+    if(title[0] && track[0]) snprintf(label, sizeof(label), "%s  %s", track, title);
+    else if(title[0])        snprintf(label, sizeof(label), "%s", title);
+    else if(track[0])        snprintf(label, sizeof(label), "Track %s", track);
+    else return;
     free(e->display);
     e->display = strdup(label);
 }
@@ -220,11 +232,123 @@ bool mpd_lsinfo(const char * uri, mpd_listing_t * out)
 
 void mpd_listing_free(mpd_listing_t * l)
 {
-    for(int i = 0; i < l->count; i++) { free(l->items[i].uri); free(l->items[i].display); }
+    for(int i = 0; i < l->count; i++) { free(l->items[i].uri); free(l->items[i].display); free(l->items[i].section); }
     free(l->items);
     l->items = NULL;
     l->count = 0;
 }
+
+/* ------------------------------------------------ transparent containers */
+
+static const char * ext_of(const char * uri)
+{
+    const char * slash = strrchr(uri, '/');
+    const char * base = slash ? slash + 1 : uri;
+    const char * dot = strrchr(base, '.');
+    return (dot && dot != base) ? dot + 1 : NULL;
+}
+
+static bool ext_in(const char * ext, const char * const * list)
+{
+    if(!ext) return false;
+    for(int i = 0; list[i]; i++) if(strcasecmp(ext, list[i]) == 0) return true;
+    return false;
+}
+
+/* Anything MPD may have turned into a directory of tracks: disc images,
+ * multi-track DSDIFF, cue sheets, and audio files carrying an embedded cue
+ * sheet. A real folder named "Disc 1.flac" would be probed too - harmless,
+ * the probe just finds a folder and leaves it alone. */
+static const char * const container_exts[] = {
+    "iso", "dat", "dff", "cue", "flac", "wv", "ape", "wav", "tak", "m4a", "dsf", NULL };
+
+/* A file entry that could hide a container behind it (what row_click used
+ * to probe one by one). Plain audio files are never probed. */
+static const char * const probe_file_exts[] = { "iso", "dat", "dff", "cue", NULL };
+
+bool mpd_is_container_name(const char * uri)
+{
+    return ext_in(ext_of(uri), container_exts);
+}
+
+/* "Disc 1" from "Album/Disc 1.iso" - the divider label. */
+static char * stem_of(const char * uri) { return basename_label(uri, true); }
+
+static void listing_push_copy(mpd_listing_t * l, const mpd_entry_t * e)
+{
+    mpd_entry_t * grown = realloc(l->items, sizeof(mpd_entry_t) * (size_t)(l->count + 1));
+    if(!grown) return;
+    l->items = grown;
+    mpd_entry_t * n = &l->items[l->count++];
+    n->kind = e->kind;
+    n->uri = strdup(e->uri);
+    n->display = strdup(e->display);
+    n->section = e->section ? strdup(e->section) : NULL;
+}
+
+bool mpd_lsinfo_expanded(const char * uri, mpd_listing_t * out)
+{
+    mpd_listing_t raw;
+    memset(out, 0, sizeof(*out));
+    if(!mpd_lsinfo(uri, &raw)) return false;
+
+    mpd_listing_t * sub = calloc((size_t)(raw.count ? raw.count : 1), sizeof(mpd_listing_t));
+    bool * expanded = calloc((size_t)(raw.count ? raw.count : 1), sizeof(bool));
+    if(!sub || !expanded) { free(sub); free(expanded); mpd_listing_free(&raw); return false; }
+
+    /* pass 1: ask MPD what is inside every container-looking entry */
+    for(int i = 0; i < raw.count; i++) {
+        const mpd_entry_t * e = &raw.items[i];
+        bool candidate = e->kind == MPD_ENTRY_DIR ? ext_in(ext_of(e->uri), container_exts)
+                                                  : ext_in(ext_of(e->uri), probe_file_exts);
+        if(!candidate) continue;
+        if(!mpd_lsinfo(e->uri, &sub[i])) continue;
+        int files = 0;
+        for(int j = 0; j < sub[i].count; j++)
+            if(sub[i].items[j].kind == MPD_ENTRY_FILE && strcmp(sub[i].items[j].uri, e->uri) != 0) files++;
+        if(files > 0) expanded[i] = true;
+        else mpd_listing_free(&sub[i]);
+    }
+
+    /* pass 2: rebuild the listing in order, containers replaced by their
+     * tracks, the audio file behind a cue sheet dropped. Two discs in one
+     * folder simply run on (decided 1 Oct 2026: no divider - the next disc
+     * starts at track 1, which says it all). */
+    for(int i = 0; i < raw.count; i++) {
+        const mpd_entry_t * e = &raw.items[i];
+        if(expanded[i]) {
+            for(int j = 0; j < sub[i].count; j++) {
+                const mpd_entry_t * t = &sub[i].items[j];
+                if(t->kind != MPD_ENTRY_FILE || strcmp(t->uri, e->uri) == 0) continue;
+                listing_push_copy(out, t);
+            }
+            continue;
+        }
+        if(e->kind == MPD_ENTRY_FILE) {
+            /* "Album.flac" next to an expanded "Album.cue": the sheet's
+             * tracks already cover it */
+            bool hidden = false;
+            char * mine = stem_of(e->uri);
+            for(int k = 0; k < raw.count && !hidden && mine; k++) {
+                if(k == i || !expanded[k]) continue;
+                char * other = stem_of(raw.items[k].uri);
+                hidden = other && strcmp(other, mine) == 0;
+                free(other);
+            }
+            free(mine);
+            if(hidden) continue;
+        }
+        listing_push_copy(out, e);
+    }
+
+    for(int i = 0; i < raw.count; i++) mpd_listing_free(&sub[i]);
+    free(sub);
+    free(expanded);
+    mpd_listing_free(&raw);
+    return true;
+}
+
+/* ------------------------------------------------------------- queue */
 
 bool mpd_play_uris(char * const * uris, int count, int start_index)
 {
@@ -241,6 +365,19 @@ bool mpd_play_uris(char * const * uris, int count, int start_index)
     return send_raw(&ui, play) && read_ok(&ui);
 }
 
+bool mpd_add_uris(char * const * uris, int count)
+{
+    if(!mpd_connect() || count <= 0) return false;
+    if(!send_raw(&ui, "command_list_begin\n")) return false;
+    for(int i = 0; i < count; i++) {
+        char cmd[2048] = "add";
+        append_quoted(cmd, sizeof(cmd), uris[i]);
+        strncat(cmd, "\n", sizeof(cmd) - strlen(cmd) - 1);
+        if(!send_raw(&ui, cmd)) return false;
+    }
+    return send_raw(&ui, "command_list_end\n") && read_ok(&ui);
+}
+
 bool mpd_toggle_pause(void)
 {
     mpd_status_t st;
@@ -248,6 +385,65 @@ bool mpd_toggle_pause(void)
     if(strcmp(st.state, "play") == 0)  return simple_command("pause 1");
     if(strcmp(st.state, "pause") == 0) return simple_command("pause 0");
     return simple_command("play");          /* stopped: start the queue */
+}
+
+/* "play" with no argument resumes from pause or starts a stopped queue;
+ * "pause 1" while stopped does nothing. Neither needs a status round trip. */
+bool mpd_resume(void) { return simple_command("play"); }
+bool mpd_pause(void)  { return simple_command("pause 1"); }
+
+/* ------------------------------------------------- idle notifications */
+
+int mpd_idle_fd(void) { return idle.sock; }
+
+bool mpd_idle_start(void)
+{
+    if(idle.sock >= 0) return false;
+    if(!connect_conn(&idle)) return false;
+    if(!send_raw(&idle, IDLE_CMD)) return false;
+    return true;
+}
+
+unsigned mpd_idle_poll(void)
+{
+    if(idle.sock < 0) return MPD_IDLE_LOST;
+    static const struct { const char * name; unsigned bit; } map[] = {
+        { "database", MPD_CHANGED_DATABASE }, { "update", MPD_CHANGED_UPDATE },
+        { "player", MPD_CHANGED_PLAYER },     { "mixer", MPD_CHANGED_MIXER },
+        { "options", MPD_CHANGED_OPTIONS },   { "playlist", MPD_CHANGED_PLAYLIST },
+        { "output", MPD_CHANGED_OUTPUT },
+    };
+    unsigned changed = 0;
+    char line[256];
+    /* poll() said readable: MPD sends the whole reply at once ("changed: x"
+     * lines then "OK"), so these reads don't wait. EOF = MPD went away. */
+    for(;;) {
+        if(!read_line(&idle, line, sizeof(line))) return MPD_IDLE_LOST;
+        if(strcmp(line, "OK") == 0) break;
+        if(strncmp(line, "ACK ", 4) == 0) { fprintf(stderr, "simpleton-ui: mpd[idle]: %s\n", line); break; }
+        if(strncmp(line, "changed: ", 9) == 0)
+            for(size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++)
+                if(strcmp(line + 9, map[i].name) == 0) changed |= map[i].bit;
+    }
+    if(!send_raw(&idle, IDLE_CMD)) return changed | MPD_IDLE_LOST;   /* re-arm */
+    return changed;
+}
+
+bool mpd_library_state(long * db_update, bool * updating)
+{
+    *db_update = 0;
+    *updating = false;
+    if(!mpd_connect()) return false;
+    if(!send_raw(&ui, "command_list_ok_begin\nstatus\nstats\ncommand_list_end\n")) return false;
+    char line[512];
+    for(;;) {
+        if(!read_line(&ui, line, sizeof(line))) return false;
+        if(strcmp(line, "OK") == 0) break;
+        if(strncmp(line, "ACK ", 4) == 0) { fprintf(stderr, "simpleton-ui: mpd: %s\n", line); return false; }
+        if(strncmp(line, "updating_db: ", 13) == 0) *updating = true;
+        else if(strncmp(line, "db_update: ", 11) == 0) *db_update = atol(line + 11);
+    }
+    return true;
 }
 
 bool mpd_next(void)     { return simple_command("next"); }
@@ -270,6 +466,8 @@ bool mpd_status(mpd_status_t * out)
 {
     memset(out, 0, sizeof(*out));
     out->songid = -1;
+    out->song = -1;
+    out->nextsong = -1;
     if(!mpd_connect()) return false;
 
     /* Both in one command list; "list_OK" separates the two replies. */
@@ -289,6 +487,12 @@ bool mpd_status(mpd_status_t * out)
 
         if(strcmp(key, "state") == 0)         copy_field(out->state, sizeof(out->state), val);
         else if(strcmp(key, "songid") == 0)   out->songid = atoi(val);
+        else if(strcmp(key, "song") == 0)     out->song = atoi(val);
+        else if(strcmp(key, "nextsong") == 0) out->nextsong = atoi(val);
+        else if(strcmp(key, "playlistlength") == 0) out->playlistlength = atoi(val);
+        else if(strcmp(key, "repeat") == 0)   out->repeat = atoi(val) != 0;
+        else if(strcmp(key, "random") == 0)   out->random = atoi(val) != 0;
+        else if(strcmp(key, "single") == 0)   out->single = strcmp(val, "0") != 0;   /* "1" or "oneshot" */
         else if(strcmp(key, "elapsed") == 0)  out->elapsed = (float)atof(val);
         else if(strcmp(key, "duration") == 0) out->duration = (float)atof(val);
         else if(strcmp(key, "audio") == 0)    copy_field(out->audio, sizeof(out->audio), val);

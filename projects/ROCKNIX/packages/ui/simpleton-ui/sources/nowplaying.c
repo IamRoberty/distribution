@@ -1,8 +1,11 @@
 /*
  * SimpletonOS UI - now-playing screen (implementation). See nowplaying.h.
  *
- * Layout (720x720): the art fills the panel edge to edge (album covers are
- * square, the panel is square). A gradient strip over the bottom 340 px
+ * Layout (designed on the 720x720 panel; every number goes through PX() so
+ * it scales to the stage - theme.h): the art fills the square stage edge
+ * to edge (album covers are square). On a TV the stage sits centred and the
+ * space either side takes a muted colour drawn from the art (29 Sep 2026),
+ * which fades across on a track change. A gradient strip over the bottom 340 px
  * carries title / artist / format line, then the three control rows:
  *
  *   row 0  scrub bar         left/right = seek +/-10 s
@@ -19,8 +22,11 @@
  * shows with the controls whenever an album has more than one image, and
  * for a moment after each page turn.
  *
- * Status comes from MPD twice a second, so a change made from any other
- * control surface (a phone app later) shows here within half a second.
+ * Status comes from MPD only when MPD says playback changed (its `idle`
+ * notices, routed here by main.c as nowplaying_mpd_changed()), so a change
+ * made from any other control surface (a phone app later) shows at once.
+ * Between notices nothing is asked of MPD: the elapsed time is counted
+ * forward locally from the last status, which is all MPD would report.
  *
  * The format line tells the truth from two sides: what MPD decoded (its
  * `audio:` field) and what the kernel is actually sending the DAC, read
@@ -41,7 +47,7 @@
 #include <string.h>
 #include <strings.h>
 
-#define STATUS_POLL_MS   500
+#define CLOCK_MS         500     /* local progress-clock tick; no MPD traffic */
 #define ART_POLL_MS      100
 #define IDLE_HIDE_MS     4000
 #define FADE_MS          250
@@ -50,14 +56,16 @@
 #define PAN_STEP         (UI_BASE / 2)
 #define PAN_MS           100
 
-#define OVERLAY_H        340
-#define FONT_TITLE       (&lv_font_montserrat_36)
+#define OVERLAY_H        PX(340)
+#define FONT_TITLE       ui_font(36)
+#define BG_FADE_MS       600
 
 enum { ROW_SCRUB = 0, ROW_TRANSPORT, ROW_BOTTOM, ROW_COUNT };
 enum { TR_PREV = 0, TR_PLAY, TR_NEXT, TR_COUNT };
 enum { BT_FAV = 0, BT_INFO, BT_MORE, BT_COUNT };
 
 static lv_obj_t * scr;
+static lv_obj_t * stage;              /* the square everything is laid out in */
 static lv_obj_t * art_img;
 static lv_obj_t * placeholder;        /* plain fallback: only when the themed placeholder can't render */
 static lv_obj_t * placeholder_letter;
@@ -68,18 +76,26 @@ static lv_obj_t * tr_btn[TR_COUNT], * tr_lbl[TR_COUNT];
 static lv_obj_t * bt_btn[BT_COUNT];
 static lv_obj_t * badge, * badge_lbl;
 
-static lv_timer_t * status_timer, * art_timer, * idle_timer, * badge_timer;
+static lv_timer_t * clock_timer, * art_timer, * idle_timer, * badge_timer;
 
 static bool active;
 static bool controls_visible;
 static int  row = ROW_TRANSPORT, tr_cur = TR_PLAY, bt_cur = BT_FAV;
 
 static mpd_status_t st;
+static bool     status_dirty = true;  /* MPD said something changed: fetch status */
+static float    base_elapsed;         /* elapsed at the last fetch...            */
+static uint32_t base_tick;            /* ...and when that was (lv_tick ms)       */
+
+/* Fetch status on the next clock tick, which we make happen now. */
+static void request_status(void);
 static char cur_file[1024];           /* file the art on screen belongs to */
 static lv_image_dsc_t art_dsc[2];     /* alternate so LVGL sees a new src */
 static int art_slot;
 static int art_index, art_count = 1;
 static bool badge_shown;
+
+static void set_side_colour(uint32_t colour);
 static int  pan_x, pan_max;           /* wide page: current offset, how far it goes */
 static int  pan_i, pan_n;             /* which stop of how many (0 = left edge) */
 static bool enter_at_end;             /* paged backwards: show the new page's right end */
@@ -270,7 +286,7 @@ static void place_knob(void)
     int32_t w = lv_obj_get_width(bar);
     int32_t range = lv_bar_get_max_value(bar);
     int32_t x = range > 0 ? (int32_t)((int64_t)lv_bar_get_value(bar) * w / range) : 0;
-    lv_obj_set_pos(knob, lv_obj_get_x(bar) + x - 10, lv_obj_get_y(bar) + lv_obj_get_height(bar) / 2 - 10);
+    lv_obj_set_pos(knob, lv_obj_get_x(bar) + x - PX(10), lv_obj_get_y(bar) + lv_obj_get_height(bar) / 2 - PX(10));
 }
 
 static void update_transport_icon(void)
@@ -320,6 +336,101 @@ static void show_placeholder(void)
         if(n == 1) letter[0] = (char)toupper((unsigned char)letter[0]);
     }
     lv_label_set_text(placeholder_letter, letter);
+    set_side_colour(UI_COLOR_BG);
+}
+
+/* ------------------------------------------------------ side colour */
+
+/*
+ * The colour beside the stage on a TV (and behind art that isn't square).
+ * Dominant colour of the picture - the fullest bin of a coarse 4-bit-per-
+ * channel histogram, saturated pixels counting a little extra so a small
+ * vivid subject can beat a big grey field - averaged within that bin, then
+ * muted and darkened so it sits behind the cover rather than competing.
+ * The three constants are the knobs to tune by eye.
+ */
+#define SIDE_SAT_KEEP   0.70f   /* fraction of the art colour's saturation kept */
+#define SIDE_V_MAX      0.32f   /* never brighter than this (HSV value, 0..1)   */
+#define SIDE_V_MIN      0.08f   /* never darker - pure black reads as "off"     */
+
+static uint32_t side_now = 0x000000;
+
+static uint32_t side_colour_from(const uint8_t * px, int w, int h)
+{
+    static uint32_t weight[4096], samples[4096], sum[4096][3];
+    memset(weight, 0, sizeof(weight));
+    memset(samples, 0, sizeof(samples));
+    memset(sum, 0, sizeof(sum));
+    int step = (w > h ? w : h) / 96;            /* ~100 x 100 samples whatever the size */
+    if(step < 1) step = 1;
+    for(int y = 0; y < h; y += step) {
+        const uint8_t * row = px + (size_t)y * w * 4;
+        for(int x = 0; x < w; x += step) {
+            int b = row[x * 4], g = row[x * 4 + 1], rr = row[x * 4 + 2];   /* XRGB8888, little endian */
+            int mx = rr > g ? (rr > b ? rr : b) : (g > b ? g : b);
+            int mn = rr < g ? (rr < b ? rr : b) : (g < b ? g : b);
+            int bin = ((rr >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+            weight[bin] += 2 + (mx ? 4 * (mx - mn) / mx : 0);           /* 2 (grey) .. 6 (vivid) */
+            samples[bin]++;
+            sum[bin][0] += (uint32_t)rr; sum[bin][1] += (uint32_t)g; sum[bin][2] += (uint32_t)b;
+        }
+    }
+    int best = 0;
+    for(int i = 1; i < 4096; i++) if(weight[i] > weight[best]) best = i;
+    uint32_t n = samples[best];
+    if(!n) return UI_COLOR_BG;
+    float r = sum[best][0] / (255.0f * n), g = sum[best][1] / (255.0f * n), b = sum[best][2] / (255.0f * n);
+
+    /* RGB -> HSV, mute, back */
+    float mx = fmaxf(r, fmaxf(g, b)), mn = fminf(r, fminf(g, b)), d = mx - mn;
+    float hue = 0;
+    if(d > 0) {
+        if(mx == r)      hue = fmodf((g - b) / d, 6.0f);
+        else if(mx == g) hue = (b - r) / d + 2.0f;
+        else             hue = (r - g) / d + 4.0f;
+        if(hue < 0) hue += 6.0f;
+    }
+    float sat = mx > 0 ? d / mx : 0, val = mx;
+    sat *= SIDE_SAT_KEEP;
+    val = fminf(fmaxf(val, SIDE_V_MIN), SIDE_V_MAX);
+    float c = val * sat, xx = c * (1 - fabsf(fmodf(hue, 2.0f) - 1)), m = val - c;
+    float o[3];
+    switch((int)hue) {
+        case 0:  o[0] = c;  o[1] = xx; o[2] = 0;  break;
+        case 1:  o[0] = xx; o[1] = c;  o[2] = 0;  break;
+        case 2:  o[0] = 0;  o[1] = c;  o[2] = xx; break;
+        case 3:  o[0] = 0;  o[1] = xx; o[2] = c;  break;
+        case 4:  o[0] = xx; o[1] = 0;  o[2] = c;  break;
+        default: o[0] = c;  o[1] = 0;  o[2] = xx; break;
+    }
+    uint32_t R = (uint32_t)lroundf((o[0] + m) * 255), G = (uint32_t)lroundf((o[1] + m) * 255), B = (uint32_t)lroundf((o[2] + m) * 255);
+    return (R << 16) | (G << 8) | B;
+}
+
+static uint32_t side_from, side_to;
+
+static void side_fade_exec(void * obj, int32_t v)
+{
+    lv_color_t c = lv_color_mix(lv_color_hex(side_to), lv_color_hex(side_from), (uint8_t)v);
+    lv_obj_set_style_bg_color(obj, c, 0);
+    side_now = lv_color_to_u32(c) & 0xFFFFFF;
+}
+
+static void set_side_colour(uint32_t colour)
+{
+    if(colour == side_to && lv_anim_get(scr, side_fade_exec)) return;
+    lv_anim_delete(scr, side_fade_exec);
+    side_from = side_now;
+    side_to = colour;
+    if(side_from == side_to) return;
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, scr);
+    lv_anim_set_exec_cb(&a, side_fade_exec);
+    lv_anim_set_values(&a, 0, 255);
+    lv_anim_set_duration(&a, BG_FADE_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_start(&a);
 }
 
 /* ------------------------------------------------------- page badge */
@@ -434,20 +545,23 @@ static void art_timer_cb(lv_timer_t * t)
         bool keep_pan = !page_pending && pan_max > 0 && r.index == art_index && r.w - UI_BASE == pan_max;
         art_index = r.index;
         art_count = r.count > 0 ? r.count : 1;
+        set_side_colour(side_colour_from(r.pixels, r.w, r.h));
         set_art(&r, keep_pan);
     }
     else      { art_index = 0; art_count = 1; show_placeholder(); }
     badge_refresh();
 }
 
-static void status_timer_cb(lv_timer_t * t)
+static void refresh_status(void)
 {
-    (void)t;
     mpd_status_t s;
     bool ok = mpd_status(&s);
     if(!ok) { memset(&s, 0, sizeof(s)); s.songid = -1; }
     bool track_changed = strcmp(s.file, cur_file) != 0;
     st = s;
+    base_elapsed = s.elapsed;
+    base_tick = lv_tick_get();
+    status_dirty = false;
 
     if(track_changed) {
         snprintf(cur_file, sizeof(cur_file), "%s", s.file);
@@ -462,6 +576,24 @@ static void status_timer_cb(lv_timer_t * t)
     update_progress();
     update_transport_icon();
     update_format_line();
+}
+
+static void clock_timer_cb(lv_timer_t * t)
+{
+    (void)t;
+    if(status_dirty) { refresh_status(); return; }
+    if(strcmp(st.state, "play") == 0) {
+        float e = base_elapsed + (float)(lv_tick_get() - base_tick) / 1000.0f;
+        st.elapsed = (st.duration > 0 && e > st.duration) ? st.duration : e;
+    }
+    update_progress();
+    update_format_line();                   /* re-reads the DAC file every 1.5 s, local */
+}
+
+static void request_status(void)
+{
+    status_dirty = true;
+    if(active) lv_timer_ready(clock_timer);
 }
 
 static void hide_controls(void)
@@ -528,9 +660,10 @@ void nowplaying_create(void)
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+    stage = ui_stage_create(scr);
 
     /* placeholder: token background with a big initial in an accent disc */
-    placeholder = lv_obj_create(scr);
+    placeholder = lv_obj_create(stage);
     lv_obj_set_size(placeholder, UI_BASE, UI_BASE);
     lv_obj_set_pos(placeholder, 0, 0);
     lv_obj_set_style_bg_color(placeholder, lv_color_hex(UI_COLOR_BG), 0);
@@ -539,24 +672,24 @@ void nowplaying_create(void)
     lv_obj_set_style_radius(placeholder, 0, 0);
     lv_obj_remove_flag(placeholder, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t * disc = lv_obj_create(placeholder);
-    lv_obj_set_size(disc, 220, 220);
-    lv_obj_set_style_radius(disc, 110, 0);
+    lv_obj_set_size(disc, PX(220), PX(220));
+    lv_obj_set_style_radius(disc, PX(110), 0);
     lv_obj_set_style_border_width(disc, 0, 0);
     lv_obj_set_style_bg_color(disc, lv_color_hex(UI_COLOR_FOCUS_BG), 0);
     lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
-    lv_obj_align(disc, LV_ALIGN_CENTER, 0, -90);
+    lv_obj_align(disc, LV_ALIGN_CENTER, 0, PX(-90));
     placeholder_letter = lv_label_create(disc);
     lv_obj_set_style_text_font(placeholder_letter, FONT_TITLE, 0);
     lv_obj_set_style_text_color(placeholder_letter, lv_color_hex(UI_COLOR_FOCUS_FG), 0);
     lv_label_set_text(placeholder_letter, "");
     lv_obj_center(placeholder_letter);
 
-    art_img = lv_image_create(scr);
+    art_img = lv_image_create(stage);
     lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN);
     lv_obj_center(art_img);
 
     /* overlay strip: transparent at the top, near-black at the bottom */
-    overlay = lv_obj_create(scr);
+    overlay = lv_obj_create(stage);
     lv_obj_set_size(overlay, UI_BASE, OVERLAY_H);
     lv_obj_set_pos(overlay, 0, UI_BASE - OVERLAY_H);
     lv_obj_set_style_radius(overlay, 0, 0);
@@ -574,37 +707,37 @@ void nowplaying_create(void)
     lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, 0);
 
     const int x0 = UI_MARGIN, w = UI_BASE - 2 * UI_MARGIN;
-    title_lbl  = make_label(overlay, FONT_TITLE,     UI_COLOR_FG,  x0, 62,  w);
-    artist_lbl = make_label(overlay, UI_FONT_LIST,   UI_COLOR_DIM, x0, 108, w);
-    format_lbl = make_label(overlay, UI_FONT_HINT,   UI_COLOR_DIM, x0, 144, w);
+    title_lbl  = make_label(overlay, FONT_TITLE,     UI_COLOR_FG,  x0, PX(62),  w);
+    artist_lbl = make_label(overlay, UI_FONT_LIST,   UI_COLOR_DIM, x0, PX(108), w);
+    format_lbl = make_label(overlay, UI_FONT_HINT,   UI_COLOR_DIM, x0, PX(144), w);
 
     /* row 0: elapsed  [=====bar=====]  duration */
-    const int row0_y = 184;
-    elapsed_lbl = make_label(overlay, UI_FONT_HINT, UI_COLOR_FG, x0, row0_y - 4, 72);
+    const int row0_y = PX(184), time_w = PX(72);
+    elapsed_lbl = make_label(overlay, UI_FONT_HINT, UI_COLOR_FG, x0, row0_y - PX(4), time_w);
     lv_label_set_text(elapsed_lbl, "0:00");
-    duration_lbl = make_label(overlay, UI_FONT_HINT, UI_COLOR_FG, UI_BASE - UI_MARGIN - 72, row0_y - 4, 72);
+    duration_lbl = make_label(overlay, UI_FONT_HINT, UI_COLOR_FG, UI_BASE - UI_MARGIN - time_w, row0_y - PX(4), time_w);
     lv_obj_set_style_text_align(duration_lbl, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(duration_lbl, "--:--");
     bar = lv_bar_create(overlay);
-    lv_obj_set_size(bar, w - 2 * 84, 8);
-    lv_obj_set_pos(bar, x0 + 84, row0_y + 6);
-    lv_obj_set_style_radius(bar, 4, LV_PART_MAIN);
-    lv_obj_set_style_radius(bar, 4, LV_PART_INDICATOR);
+    lv_obj_set_size(bar, w - 2 * PX(84), PX(8));
+    lv_obj_set_pos(bar, x0 + PX(84), row0_y + PX(6));
+    lv_obj_set_style_radius(bar, PX(4), LV_PART_MAIN);
+    lv_obj_set_style_radius(bar, PX(4), LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_pad_all(bar, 0, LV_PART_MAIN);
     lv_bar_set_range(bar, 0, 1);
     lv_bar_set_value(bar, 0, LV_ANIM_OFF);
     knob = lv_obj_create(overlay);
-    lv_obj_set_size(knob, 20, 20);
-    lv_obj_set_style_radius(knob, 10, 0);
+    lv_obj_set_size(knob, PX(20), PX(20));
+    lv_obj_set_style_radius(knob, PX(10), 0);
     lv_obj_set_style_border_width(knob, 0, 0);
     lv_obj_set_style_bg_color(knob, lv_color_hex(UI_COLOR_FOCUS_FG), 0);
     lv_obj_set_style_bg_opa(knob, LV_OPA_COVER, 0);
     lv_obj_add_flag(knob, LV_OBJ_FLAG_HIDDEN);
 
     /* row 1: prev  play/pause  next */
-    const int row1_y = 214, tr_w = 96, tr_h = 68, tr_gap = 40;
+    const int row1_y = PX(214), tr_w = PX(96), tr_h = PX(68), tr_gap = PX(40);
     static const char * const tr_sym[TR_COUNT] = { LV_SYMBOL_PREV, LV_SYMBOL_PLAY, LV_SYMBOL_NEXT };
     for(int i = 0; i < TR_COUNT; i++) {
         tr_btn[i] = make_pill(overlay, tr_sym[i], UI_FONT_LIST, tr_w, tr_h);
@@ -613,9 +746,9 @@ void nowplaying_create(void)
     }
 
     /* row 2: favorite  info  more */
-    const int row2_y = 292, bt_h = 40;
+    const int row2_y = PX(292), bt_h = PX(40);
     static const char * const bt_text[BT_COUNT] = { "Favorite", "Info", "More" };
-    static const int bt_w[BT_COUNT] = { 150, 100, 110 };
+    int bt_w[BT_COUNT] = { PX(150), PX(100), PX(110) };
     int total = 0;
     for(int i = 0; i < BT_COUNT; i++) total += bt_w[i];
     int gap = (w - total) / (BT_COUNT - 1), x = x0;
@@ -626,12 +759,12 @@ void nowplaying_create(void)
     }
 
     /* page badge, top-right over the art: "2 / 11" */
-    badge = lv_obj_create(scr);
-    lv_obj_set_height(badge, 40);
+    badge = lv_obj_create(stage);
+    lv_obj_set_height(badge, PX(40));
     lv_obj_set_width(badge, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_hor(badge, 16, 0);
+    lv_obj_set_style_pad_hor(badge, PX(16), 0);
     lv_obj_set_style_pad_ver(badge, 0, 0);
-    lv_obj_set_style_radius(badge, 20, 0);
+    lv_obj_set_style_radius(badge, PX(20), 0);
     lv_obj_set_style_border_width(badge, 0, 0);
     lv_obj_set_style_bg_color(badge, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(badge, 170, 0);
@@ -647,11 +780,11 @@ void nowplaying_create(void)
     apply_focus();
     update_text();
 
-    status_timer = lv_timer_create(status_timer_cb, STATUS_POLL_MS, NULL);
+    clock_timer  = lv_timer_create(clock_timer_cb, CLOCK_MS, NULL);
     art_timer    = lv_timer_create(art_timer_cb, ART_POLL_MS, NULL);
     idle_timer   = lv_timer_create(idle_timer_cb, IDLE_HIDE_MS, NULL);
     badge_timer  = lv_timer_create(badge_timer_cb, BADGE_FLASH_MS, NULL);
-    lv_timer_pause(status_timer);
+    lv_timer_pause(clock_timer);
     lv_timer_pause(idle_timer);
     lv_timer_pause(badge_timer);
     controls_visible = true;
@@ -669,17 +802,23 @@ void nowplaying_show(void)
     lv_obj_set_style_opa(overlay, LV_OPA_COVER, 0);
     controls_visible = true;
     lv_screen_load(scr);
-    lv_timer_resume(status_timer);
-    lv_timer_ready(status_timer);          /* refresh now, not in 500 ms */
+    status_dirty = true;                    /* nothing was watched while hidden */
+    lv_timer_resume(clock_timer);
+    lv_timer_ready(clock_timer);            /* fetch now, not in 500 ms */
     lv_timer_reset(idle_timer);
     lv_timer_resume(idle_timer);
     badge_refresh();
 }
 
+void nowplaying_mpd_changed(void)
+{
+    request_status();                       /* while hidden: fetched on show */
+}
+
 void nowplaying_hide(void)
 {
     active = false;
-    lv_timer_pause(status_timer);
+    lv_timer_pause(clock_timer);
     lv_timer_pause(idle_timer);
 }
 
@@ -690,7 +829,7 @@ static void transport_act(void)
         case TR_PLAY: mpd_toggle_pause(); break;
         case TR_NEXT: mpd_next(); break;
     }
-    lv_timer_ready(status_timer);
+    request_status();
 }
 
 np_result_t nowplaying_handle_action(ui_action_t a)
@@ -720,7 +859,7 @@ np_result_t nowplaying_handle_action(ui_action_t a)
             int dir = a == ACT_RIGHT ? 1 : -1;
             if(row == ROW_SCRUB) {
                 mpd_seek_relative(dir * SEEK_STEP_S);
-                lv_timer_ready(status_timer);
+                request_status();
             }
             else if(row == ROW_TRANSPORT) { tr_cur = (tr_cur + dir + TR_COUNT) % TR_COUNT; apply_focus(); }
             else                          { bt_cur = (bt_cur + dir + BT_COUNT) % BT_COUNT; apply_focus(); }
@@ -728,14 +867,14 @@ np_result_t nowplaying_handle_action(ui_action_t a)
         }
         case ACT_SELECT:
             if(row == ROW_TRANSPORT) transport_act();
-            else if(row == ROW_SCRUB) { mpd_toggle_pause(); lv_timer_ready(status_timer); }
+            else if(row == ROW_SCRUB) { mpd_toggle_pause(); request_status(); }
             /* ROW_BOTTOM: favorites / info / options arrive with curation */
             break;
         case ACT_BACK:
             hide_controls();
             break;
         case ACT_PLAYPAUSE: case ACT_NEXT: case ACT_PREV:
-            lv_timer_ready(status_timer);   /* main.c already sent the command */
+            request_status();               /* main.c already sent the command */
             break;
         default:
             break;

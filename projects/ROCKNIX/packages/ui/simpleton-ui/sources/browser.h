@@ -11,14 +11,25 @@
 #include "input.h"
 
 /* Build the browser on the given screen and bind it to the keypad group.
- * `on_play` is called after a track has been started from a row. */
-void browser_create(lv_obj_t * screen, lv_group_t * group, void (*on_play)(void));
+ * `on_play` is called after a track has been started from a row.
+ * `resume_uri` (may be NULL) opens that folder instead of the top level. */
+void browser_create(lv_obj_t * screen, lv_group_t * group, void (*on_play)(void), const char * resume_uri);
+
+/* The folder on screen ("" = top level), for handing over across a restart. */
+const char * browser_current_uri(void);
 
 /* Handle a non-navigation action (BACK, MENU, ...). UP/DOWN/SELECT are
  * delivered through the LVGL keypad path and never come here. */
 void browser_handle_action(ui_action_t a);
 
-/* Periodic tick from the main loop: retries MPD when it isn't up yet. */
+/* Periodic tick from the main loop: retries MPD when it wasn't up yet. */
 void browser_tick(void);
+
+/* MPD said the library changed (`db_changed`: a rescan finished with new
+ * contents) or a rescan started/stopped. Reloads the folder on screen,
+ * keeping the focused row; if the folder is gone (card pulled), climbs to the
+ * nearest one that exists. An empty list reads "Scanning library..." while a
+ * rescan runs. Driven by MPD's notifications, never by polling. */
+void browser_library_changed(bool db_changed);
 
 #endif

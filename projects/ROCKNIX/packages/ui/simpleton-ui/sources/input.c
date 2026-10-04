@@ -13,6 +13,14 @@
  * Known quirk, handled here: BTN_MODE (the F button) is emitted by two
  * drivers (adc-keys and the joypad's sw11). We don't open adc-keys and don't
  * map BTN_MODE at all yet, so it can't double-fire.
+ *
+ * Auto-repeat (1 Oct 2026): one repeater for every producer. A held D-pad
+ * direction repeats after REPEAT_DELAY_MS, every REPEAT_RATE_MS, and after
+ * REPEAT_ACCEL_MS of holding every REPEAT_FAST_MS. CEC keys use the same
+ * clock through input_hold_*(): TVs differ wildly in whether and how often
+ * they resend a held key, so the TV only says "held" / "released" and the
+ * pace is ours. A remote hold that goes quiet (no release, no repeat) ends
+ * itself after HOLD_TIMEOUT_MS.
  */
 #include "input.h"
 
@@ -31,7 +39,10 @@
 /* Timing, ms */
 #define HOLD_MS          450   /* press longer than this = "hold"           */
 #define REPEAT_DELAY_MS  400   /* D-pad: first repeat after this            */
-#define REPEAT_RATE_MS   90    /* D-pad: then every this                    */
+#define REPEAT_RATE_MS   100   /* D-pad: then every this...                 */
+#define REPEAT_ACCEL_MS  1200  /* ...until held this long, then             */
+#define REPEAT_FAST_MS   50    /* every this                                */
+#define HOLD_TIMEOUT_MS  2000  /* remote hold with no news: let go          */
 
 #define QUEUE_LEN 32
 
@@ -47,7 +58,8 @@ static bool a_down, x_down;
 
 /* Currently held D-pad direction for software auto-repeat. */
 static ui_action_t held_dir = ACT_NONE;
-static uint32_t held_since_ms, last_repeat_ms;
+static uint32_t held_since_ms, last_repeat_ms, held_news_ms;
+static bool held_remote;                 /* hold came from input_hold_begin() */
 
 static uint32_t now_ms(void)
 {
@@ -63,6 +75,26 @@ static void push(ui_action_t a)
     queue[q_tail] = a;
     q_tail = next;
 }
+
+void input_push(ui_action_t a) { push(a); }
+
+static void hold_start(ui_action_t dir, uint32_t t, bool remote)
+{
+    push(dir);
+    held_dir = dir;
+    held_since_ms = last_repeat_ms = held_news_ms = t;
+    held_remote = remote;
+}
+
+void input_hold_begin(ui_action_t dir) { hold_start(dir, now_ms(), true); }
+
+void input_hold_refresh(ui_action_t dir)
+{
+    if(held_dir == dir) held_news_ms = now_ms();
+    else hold_start(dir, now_ms(), true);
+}
+
+void input_hold_end(void) { held_dir = ACT_NONE; }
 
 ui_action_t input_next_action(void)
 {
@@ -107,15 +139,8 @@ static void handle_key(uint16_t code, int32_t value, uint32_t t)
 
     ui_action_t dir = dpad_action(code);
     if(dir != ACT_NONE) {
-        if(pressed) {
-            push(dir);
-            held_dir = dir;
-            held_since_ms = t;
-            last_repeat_ms = t;
-        }
-        else if(held_dir == dir) {
-            held_dir = ACT_NONE;
-        }
+        if(pressed) hold_start(dir, t, false);
+        else if(held_dir == dir && !held_remote) held_dir = ACT_NONE;
         return;
     }
 
@@ -143,6 +168,12 @@ static void handle_key(uint16_t code, int32_t value, uint32_t t)
         case BTN_START:
             if(pressed) push(ACT_HOME);
             break;
+        case BTN_TL2:                           /* 312, 313: rear triggers - */
+        case BTN_TR2:                           /* coming off the hardware   */
+            break;                              /* (29 Sep), easy to knock   */
+                                                /* when unplugging HDMI      */
+        /* 314 BTN_SELECT and 316 BTN_MODE are reserved for the settings menu
+         * and favorites; they fall through to the log below until then. */
         default:
             /* shoulders, select, F: unmapped. Logged once per press so a
              * button that turns out to use a different code is easy to spot. */
@@ -171,8 +202,15 @@ void input_poll(void)
     drain(joy_fd, t);
     drain(vol_fd, t);
 
-    /* Software auto-repeat for a held D-pad direction. */
-    if(held_dir != ACT_NONE && t - held_since_ms >= REPEAT_DELAY_MS && t - last_repeat_ms >= REPEAT_RATE_MS) {
+    if(held_dir == ACT_NONE) return;
+
+    /* A remote that stopped talking (no repeat, no release): treat as let go. */
+    if(held_remote && t - held_news_ms >= HOLD_TIMEOUT_MS) { held_dir = ACT_NONE; return; }
+
+    /* Software auto-repeat for a held direction, faster the longer it's held. */
+    uint32_t held_for = t - held_since_ms;
+    uint32_t rate = held_for >= REPEAT_ACCEL_MS ? REPEAT_FAST_MS : REPEAT_RATE_MS;
+    if(held_for >= REPEAT_DELAY_MS && t - last_repeat_ms >= rate) {
         push(held_dir);
         last_repeat_ms = t;
     }

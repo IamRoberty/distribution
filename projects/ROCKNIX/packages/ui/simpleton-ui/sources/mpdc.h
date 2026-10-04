@@ -6,10 +6,15 @@
  * keeps the package dependency graph flat. MPD is the control layer; this is
  * the thin translator the architecture note calls for.
  *
- * Threading: there are two independent connections. Everything below except
+ * Threading: there are three independent connections. Everything below except
  * mpd_readpicture() runs on the UI thread over the main connection. The art
  * loader's worker thread calls mpd_readpicture() only, over its own second
  * connection, so the two never interleave on one socket.
+ *
+ * The third connection (UI thread too) sits in MPD's `idle` state: MPD sends
+ * nothing on it until something changes, then names what changed. The main
+ * loop poll()s its fd, so the UI learns about a finished rescan or a track
+ * change the moment it happens, with no periodic polling of MPD at all.
  */
 #ifndef SIMPLETON_MPDC_H
 #define SIMPLETON_MPDC_H
@@ -24,6 +29,7 @@ typedef struct {
     mpd_entry_kind_t kind;
     char * uri;        /* MPD URI, relative to music_directory   */
     char * display;    /* what the list shows: title or basename */
+    char * section;    /* divider label to show above this entry ("Disc 1"), or NULL */
 } mpd_entry_t;
 
 typedef struct {
@@ -35,6 +41,12 @@ typedef struct {
 typedef struct {
     char  state[8];        /* "play", "pause", "stop"                    */
     int   songid;          /* -1 when nothing is current                 */
+    int   song;            /* queue position of the current song, -1     */
+    int   nextsong;        /* queue position MPD will play next, -1 when */
+                           /* the current song is the last one           */
+    int   playlistlength;  /* songs in the queue                         */
+    bool  repeat, random, single;   /* playback options; single covers   */
+                                    /* "oneshot" too                     */
     float elapsed;         /* seconds                                    */
     float duration;        /* seconds, 0 when unknown (streams)          */
     char  audio[32];       /* decoded format as MPD reports it:          */
@@ -56,10 +68,61 @@ bool mpd_is_connected(void);
 bool mpd_lsinfo(const char * uri, mpd_listing_t * out);
 void mpd_listing_free(mpd_listing_t * l);
 
+/* The folder as the product shows it (1 Oct 2026, "transparent containers"):
+ * `lsinfo`, with every container MPD expands (SACD ISO, multi-track DFF, a
+ * CUE album, a FLAC with an embedded cue sheet) replaced in place by the
+ * tracks inside it, so an album never shows a file you have to open first.
+ * The audio file a CUE sheet describes is hidden behind the sheet's tracks.
+ * Two discs in one folder simply run on, no divider (`section` is reserved).
+ * Every other client (play-through, the phone app later) must use this, not
+ * raw lsinfo, so "the tracks of a folder" mean the same thing everywhere. */
+bool mpd_lsinfo_expanded(const char * uri, mpd_listing_t * out);
+
+/* True when a path is a container file MPD presents as a directory
+ * (by name: .iso, .dff, .cue, ...). */
+bool mpd_is_container_name(const char * uri);
+
 /* Replace the queue with the given URIs and start playing at start_index. */
 bool mpd_play_uris(char * const * uris, int count, int start_index);
 
+/* Append URIs to the end of the queue without touching playback. */
+bool mpd_add_uris(char * const * uris, int count);
+
+/* Library state from `status` + `stats`: `db_update` is MPD's timestamp of
+ * the last finished database update (changes every time a rescan completes),
+ * `updating` is true while a rescan is running. Returns false when MPD is
+ * unreachable. */
+bool mpd_library_state(long * db_update, bool * updating);
+
+/* ---- change notifications (MPD `idle`) ---- */
+
+/* What changed, as reported by MPD. */
+#define MPD_CHANGED_DATABASE  (1u << 0)   /* a library update finished and changed the DB */
+#define MPD_CHANGED_UPDATE    (1u << 1)   /* a library update started or finished          */
+#define MPD_CHANGED_PLAYER    (1u << 2)   /* play / pause / stop / seek / track change     */
+#define MPD_CHANGED_MIXER     (1u << 3)   /* volume                                        */
+#define MPD_CHANGED_OPTIONS   (1u << 4)   /* repeat / random / single / consume            */
+#define MPD_CHANGED_PLAYLIST  (1u << 5)   /* the queue                                     */
+#define MPD_CHANGED_OUTPUT    (1u << 6)   /* an audio output was enabled / disabled        */
+#define MPD_CHANGED_ALL       0x7Fu
+#define MPD_IDLE_LOST         (1u << 31)  /* connection dropped (MPD restarted)            */
+
+/* Open the idle connection if it isn't open. Returns true only when it was
+ * newly opened, so the caller knows to treat everything as changed (nothing
+ * was being watched while it was down). Cheap no-op while connected. */
+bool mpd_idle_start(void);
+
+/* Its fd for poll() (POLLIN), or -1 while disconnected. */
+int mpd_idle_fd(void);
+
+/* Call when the fd is readable: reads what changed, re-arms the watch and
+ * returns MPD_CHANGED_* bits (or MPD_IDLE_LOST, after which the fd is -1
+ * until mpd_idle_start() succeeds again). */
+unsigned mpd_idle_poll(void);
+
 bool mpd_toggle_pause(void);
+bool mpd_resume(void);      /* play: unpause, or start the queue if stopped */
+bool mpd_pause(void);       /* pause if playing; no-op otherwise            */
 bool mpd_next(void);
 bool mpd_previous(void);
 

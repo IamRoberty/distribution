@@ -1,7 +1,8 @@
 /*
  * SimpletonOS UI - now-playing screen.
  *
- * Full-bleed album art on the 720x720 panel, with the controls floating on
+ * Full-bleed album art on the square stage (the whole 720x720 panel, or a
+ * centred square on a TV), with the controls floating on
  * a translucent strip over the bottom edge. Three focusable rows (settled
  * design, ui-design.md): scrub bar, transport, and heart / info / options.
  * The strip fades out after a few seconds; with it hidden, the device is
@@ -26,6 +27,10 @@ void nowplaying_show(void);
 
 /* Called by main.c after it has loaded another screen. */
 void nowplaying_hide(void);
+
+/* MPD said playback, volume, options or the queue changed: re-read status
+ * (now if the screen is showing, else when it is next shown). */
+void nowplaying_mpd_changed(void);
 
 /* Handle any action while active. NP_EXIT = user backed out to the browser;
  * the caller switches screens. */

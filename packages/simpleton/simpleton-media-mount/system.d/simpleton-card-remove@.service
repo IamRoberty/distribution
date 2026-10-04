@@ -1,0 +1,6 @@
+[Unit]
+Description=SimpletonOS: music card %i removed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/simpleton-card remove %i

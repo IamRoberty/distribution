@@ -4,6 +4,9 @@
 # lv_conf.h (config/lv_conf.h next to this file) rather than Kconfig, which
 # keeps the dependency list small - no Python/pcpp needed.
 #
+# 30 Sep 2026: LV_USE_FREETYPE, LV_USE_BIDI and LV_USE_ARABIC_PERSIAN_CHARS
+# are on in lv_conf.h for multi-script text (see simpleton-ui/sources/fonts.h).
+#
 # Only LV_USE_LINUX_DRM is enabled in that config. It's the dumb-buffer KMS
 # path (LV_USE_LINUX_DRM_GBM_BUFFERS stays 0), so this does NOT need libgbm,
 # EGL or GLES. Demos, examples and the bundled ThorVG vector-graphics lib are
@@ -30,7 +33,7 @@ PKG_ARCH="any"
 PKG_LICENSE="MIT"
 PKG_SITE="https://lvgl.io"
 PKG_URL="https://github.com/lvgl/lvgl/archive/refs/tags/v${PKG_VERSION}.tar.gz"
-PKG_DEPENDS_TARGET="toolchain libdrm"
+PKG_DEPENDS_TARGET="toolchain libdrm freetype"
 PKG_SECTION="graphics"
 PKG_SHORTDESC="LVGL: Light and Versatile Graphics Library"
 PKG_LONGDESC="LVGL (${PKG_VERSION}), cross-compiled as a static library with LV_USE_LINUX_DRM enabled for the SimpletonOS UI."
@@ -43,4 +46,6 @@ PKG_CMAKE_OPTS_TARGET="-DLV_BUILD_CONF_PATH=${PKG_DIR}/config/lv_conf.h \
                        -DCONFIG_LV_USE_THORVG_INTERNAL=OFF"
 
 # See gotcha 1 above. Same pattern the mpd package uses for lame's headers.
-TARGET_CFLAGS+=" -I$(get_install_dir libdrm)/usr/include/libdrm"
+# FreeType (LV_USE_FREETYPE, 30 Sep 2026): same story - LVGL's CMake finds
+# neither the headers nor the library; headers here, -lfreetype in simpleton-ui.
+TARGET_CFLAGS+=" -I$(get_install_dir libdrm)/usr/include/libdrm -I$(get_install_dir freetype)/usr/include/freetype2"

@@ -18,3 +18,4 @@ colourway background=3B9AB2 shell=78B7C5 label=EBCC2A text=F21A00 ; Zissou
 colourway background=46ACC8 shell=DD8D29 label=E2D200 text=B40F20 ; Fantastic Fox
 colourway background=5BBCD6 shell=F2AD00 label=00A08A text=FAEFD1 ; Darjeeling
 colourway background=35274A shell=EABE94 label=0B775E text=E1BD6D ; Rushmore
+uifont Jost-Medium.ttf

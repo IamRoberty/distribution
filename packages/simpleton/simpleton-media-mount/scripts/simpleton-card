@@ -1,0 +1,91 @@
+#!/bin/sh
+# SimpletonOS: music card inserted / removed.   simpleton-card add|remove <kernel name>
+#
+# Started by simpleton-card-add@ / simpleton-card-remove@ (systemd), which
+# 96-simpleton-sdcard-mount.rules queues on udev events. It runs as a service,
+# not inside udev, because udev is not allowed network access - not even to
+# MPD on localhost - and must not wait on slow work.
+#
+# remove: detach the card's mount at once, even if a file on it is still open
+#         (MPD playing from it). A plain unmount fails with "busy" and leaves a
+#         dead mount behind that blocks the next insert (found 30 Sep 2026).
+#         The library is NOT rescanned: the card mounts at the same path when
+#         it comes back (udevil names it by serial), so its entries stay valid
+#         and a reinsert costs only a quick incremental scan, not a full one.
+# add:    mount the card, then - unless auto-scan is switched off - ask MPD for
+#         an incremental scan of just that card. MPD scans in a low-priority
+#         background thread and only reads files that are new or changed.
+#         A scan only runs once the mount is confirmed readable: scanning a
+#         card that isn't really there would empty the library.
+#
+# Auto-scan setting: /storage/.config/simpleton/autoscan, "off" disables it.
+# Absent or anything else means on (the default). Settings will write it.
+
+ACTION="$1"
+NAME="$2"
+DEV="/dev/$NAME"
+UNIT="udevil-mount@$DEV.service"
+SETTING=/storage/.config/simpleton/autoscan
+LIBRARY_PREFIX=Cards        # /storage/music/Cards -> /var/media
+MOUNTS=${SIMPLETON_MOUNTS:-/proc/mounts}   # overridable for off-device tests
+
+log() { echo "simpleton-card: $*"; }
+
+# mount points of $DEV, one per line, with /proc/mounts' octal escapes
+# (\040 = space, from a card label) decoded
+mounts_of() {
+    awk -v d="$DEV" '$1 == d { print $2 }' "$MOUNTS" | while IFS= read -r m; do printf '%b\n' "$m"; done
+}
+
+case "$ACTION" in
+remove)
+    mounts_of | while IFS= read -r mp; do
+        umount -l "$mp" && log "$NAME removed, detached $mp"
+        rmdir "$mp" 2>/dev/null
+    done
+    # resets the mount unit's state and runs its samba-autoshare hook; its own
+    # unmount finds nothing left to do, which is fine
+    systemctl stop "$UNIT"
+    log "$NAME removed, library kept"
+    ;;
+add)
+    # a mount that can't be read is a leftover from a removal that wasn't
+    # handled (it can't come from this script's remove): clear it first
+    mounts_of | while IFS= read -r mp; do
+        if ! ls "$mp" >/dev/null 2>&1; then
+            umount -l "$mp" && log "$NAME: cleared dead mount $mp"
+            rmdir "$mp" 2>/dev/null
+        fi
+    done
+    if [ -z "$(mounts_of)" ]; then
+        systemctl restart "$UNIT"
+    else
+        log "$NAME already mounted"
+    fi
+    mp="$(mounts_of | head -n 1)"
+    if [ -z "$mp" ] || ! ls "$mp" >/dev/null 2>&1; then
+        log "$NAME inserted but not readable, no scan"
+        exit 0
+    fi
+    log "$NAME mounted at $mp"
+
+    if [ "$(cat "$SETTING" 2>/dev/null)" = "off" ]; then
+        log "auto-scan is off, not scanning"
+        exit 0
+    fi
+    # at boot MPD may still be starting: give it up to a minute
+    i=0
+    until mpc -q status >/dev/null 2>&1; do
+        i=$((i + 1))
+        [ $i -ge 60 ] && { log "MPD not reachable, no scan"; exit 0; }
+        sleep 1
+    done
+    uri="$LIBRARY_PREFIX/$(basename "$mp")"
+    if mpc -q update "$uri"; then log "scanning $uri"; else log "MPD refused to scan $uri"; fi
+    ;;
+*)
+    echo "usage: simpleton-card add|remove <kernel name>" >&2
+    exit 2
+    ;;
+esac
+exit 0

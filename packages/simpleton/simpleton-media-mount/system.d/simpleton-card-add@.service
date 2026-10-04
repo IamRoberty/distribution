@@ -1,0 +1,8 @@
+[Unit]
+Description=SimpletonOS: music card %i inserted
+# at boot, let MPD start first so the scan request reaches it
+After=mpd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/simpleton-card add %i
