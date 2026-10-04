@@ -12,6 +12,7 @@
  * no shared state between threads inside this file.
  */
 #include "mpdc.h"
+#include "strings.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -174,14 +175,15 @@ static void listing_push(mpd_listing_t * l, mpd_entry_kind_t kind, const char * 
 
 /* Replace a file entry's display label with "NN Title" if MPD gave us tags.
  * A track number alone (SACD tracks with no text on the disc) reads
- * "Track NN" rather than the container's internal file name. */
+ * "Track NN" (string table: track.numbered) rather than the container's
+ * internal file name. */
 static void apply_tags(mpd_entry_t * e, const char * title, const char * track)
 {
     if(!e) return;
     char label[512];
     if(title[0] && track[0]) snprintf(label, sizeof(label), "%s  %s", track, title);
     else if(title[0])        snprintf(label, sizeof(label), "%s", title);
-    else if(track[0])        snprintf(label, sizeof(label), "Track %s", track);
+    else if(track[0])        ui_strf(label, sizeof(label), S_TRACK_NUMBERED, "n", track, NULL);
     else return;
     free(e->display);
     e->display = strdup(label);

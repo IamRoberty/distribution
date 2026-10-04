@@ -1,0 +1,50 @@
+diff --git a/src/lib/sacdiso/sacd_disc.cpp b/src/lib/sacdiso/sacd_disc.cpp
+index 4cbaa6153..35005c2bb 100644
+--- a/src/lib/sacdiso/sacd_disc.cpp
++++ b/src/lib/sacdiso/sacd_disc.cpp
+@@ -230,25 +230,33 @@ void sacd_disc_t::get_info(uint32_t track_index, TagHandler& handler) {
+ 		handler.OnTag(TAG_DATE, tag_value.c_str());
+ 	}
+ 	if (!sb->master_text.album_title.empty()) {
++		/* Simpleton: the stereo area gets the disc's own album title,
++		 * nothing appended; only multichannel keeps its marker. */
+ 		tag_value  = sb->master_text.album_title;
+-		tag_value += " (";
+-		tag_value += (get_track_area_id() == AREA_TWOCH) ? "2CH" : "MCH";
+-		tag_value += "-";
+-		tag_value += is_dst() ? "DST" : "DSD";
+-		tag_value += ")";
++		if (get_track_area_id() != AREA_TWOCH) {
++			tag_value += " (MCH-";
++			tag_value += is_dst() ? "DST" : "DSD";
++			tag_value += ")";
++		}
+ 		handler.OnTag(TAG_ALBUM, tag_value.c_str());
+ 	}
+ 	if (!sb->master_text.album_artist.empty()) {
+ 		handler.OnTag(TAG_ARTIST, sb->master_text.album_artist.c_str());
+ 	}
+ 	if (!area->area_track_text[track_index].track_type_title.empty()) {
+-		char track_number_string[4];
+-		sprintf(track_number_string, "%02d", track_index + 1);
+-		tag_value  = (get_track_area_id() == AREA_TWOCH) ? "2CH" : "MCH";
+-		tag_value += " - ";
+-		tag_value += track_number_string;
+-		tag_value += " - ";
+-		tag_value += area->area_track_text[track_index].track_type_title;
++		/* Simpleton: stereo titles are the disc's own text; the track
++		 * number is already in TAG_TRACK. */
++		if (get_track_area_id() == AREA_TWOCH) {
++			tag_value  = area->area_track_text[track_index].track_type_title;
++		}
++		else {
++			char track_number_string[4];
++			sprintf(track_number_string, "%02d", track_index + 1);
++			tag_value  = "MCH - ";
++			tag_value += track_number_string;
++			tag_value += " - ";
++			tag_value += area->area_track_text[track_index].track_type_title;
++		}
+ 		handler.OnTag(TAG_TITLE, tag_value.c_str());
+ 	}
+ 	if (!area->area_track_text[track_index].track_type_composer.empty()) {

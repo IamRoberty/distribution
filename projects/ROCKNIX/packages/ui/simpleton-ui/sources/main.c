@@ -7,8 +7,8 @@
  * MPD isn't running yet, and keeps retrying it in the background.
  *
  * Display (29 Sep 2026): display.c picks the output (HDMI if connected,
- * else the panel, 1080p max on a TV) and sets ui_base to the square stage
- * every screen is laid out in. When HDMI is plugged or unplugged the UI
+ * else the panel, 1080p max on a TV); layout_init() then records the real
+ * screen and the square stage, and every size is worked out from those. When HDMI is plugged or unplugged the UI
  * restarts itself on the new output (a fresh exec, well under a second;
  * playback is MPD's and never stops), carrying over which screen and which
  * folder was showing: --folder <uri> and --nowplaying.
@@ -39,9 +39,11 @@
 #include "display.h"
 #include "fonts.h"
 #include "input.h"
+#include "layout.h"
 #include "mpdc.h"
 #include "nowplaying.h"
 #include "playthrough.h"
+#include "strings.h"
 #include "theme.h"
 
 #include <poll.h>
@@ -176,14 +178,28 @@ int main(int argc, char ** argv)
     for(int i = 1; i < argc; i++) {
         if(strcmp(argv[i], "--folder") == 0 && i + 1 < argc) resume_folder = argv[++i];
         else if(strcmp(argv[i], "--nowplaying") == 0) resume_nowplaying = true;
+        /* the built-in English table as a language file: the master copy of
+         * share/lang/en.txt and the template for a new language */
+        else if(strcmp(argv[i], "--dump-lang") == 0) { strings_dump(stdout); return 0; }
     }
+
+    strings_init();  /* interface text; built-in English if the file is missing */
 
     lv_init();
 
     display_info_t di;
     lv_display_t * disp = display_init(&di);
     if(disp == NULL) { fprintf(stderr, "simpleton-ui: display init failed\n"); return 1; }
-    ui_base = di.stage;
+    layout_init(di.w, di.h, di.external);
+    {
+        ui_grid_t g;
+        ui_list_t l;
+        ui_grid_metrics(UI_SIZE_DEFAULT, &g);
+        ui_list_metrics(UI_SIZE_DEFAULT, &l);
+        fprintf(stderr, "simpleton-ui: layout: %s %dx%d, stage %d; size %s = grid %dx%d of %d px covers, list rows %d px\n",
+                ui_screen_kind_name(), ui_screen.w, ui_screen.h, ui_screen.stage,
+                ui_size_name(UI_SIZE_DEFAULT), g.rows, g.cols, g.tile, l.row_h);
+    }
     fonts_init();    /* FreeType + Noto fallbacks; falls back to built-in fonts if it can't */
 
     /* Dark default theme with our accent and list font, so anything we

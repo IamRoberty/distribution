@@ -1,0 +1,40 @@
+# SimpletonOS interface text - English.
+#
+# One line per string:  key = text
+# To add a language, copy this file to <code>.txt (ru.txt, vi.txt ...) and
+# translate the text after each "=". Keep the keys as they are.
+# Words in {braces} are filled in by the player ({n} = a number, {dac} = the
+# DAC's name, {rate} = a sample rate): keep them, move them where they belong.
+# A line you leave out, or leave empty, shows in English.
+# Lines starting with # are notes. Save as UTF-8.
+
+browser.root = Music
+browser.empty = Nothing here
+browser.scanning = Scanning library…
+browser.starting = Starting library…
+browser.read_failed = Couldn't read this folder
+
+hint.select = select
+hint.back = back
+hint.page = page
+hint.play = play
+hint.next = next
+hint.now_playing = now playing
+
+track.numbered = Track {n}
+
+np.nothing_playing = Nothing playing
+np.pick_a_track = Pick a track in the browser
+np.favorite = Favorite
+np.info = Info
+np.more = More
+
+format.pcm = {rate} kHz • {bits}-bit
+format.float = {rate} kHz • float
+
+dac.dsd_native = {dac}: DSD{n} native
+dac.dop = {dac}: DSD over PCM {rate} kHz
+dac.pcm = {dac}: PCM {rate} kHz
+dac.running = {dac}: running
+dac.idle = DAC idle
+dac.unnamed = DAC

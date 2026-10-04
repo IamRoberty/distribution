@@ -41,10 +41,23 @@
 #   - Lists: left/right page a screenful; one accelerating auto-repeat for
 #     the D-pad and the TV remote (CEC only says held/released now), with
 #     a safety stop when a TV never sends "released".
+# 0.11 (4 Oct 2026): groundwork for the expanded UI (Engineering Note 05,
+# build steps 1 and 2). Nothing looks different on screen.
+#   - String table (strings.c, strings.def): every word the UI shows of its
+#     own is a short key; each language is one plain text file in
+#     share/lang (en.txt to start), chosen by
+#     /storage/.config/simpleton/language. English is also built in, so a
+#     missing file never blanks the screen. No hard-coded text after this.
+#   - Screen-size-aware layout (layout.c): the real screen, handheld or TV,
+#     and the sizes XXL..S as row counts; grid and list measurements are
+#     worked out from those (handheld 1x1..4x4, TV 1x2..5x10). The browser
+#     takes its measurements from it; nothing is tied to 720 px.
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
 #   main.c        - theme/indev setup, screen switch, action dispatch
 #   display.c/h   - DRM/KMS output choice, modeset, page flips, hotplug
-#   theme.c       - stage scaling helpers behind theme.h
+#   theme.c       - the square stage behind theme.h
+#   layout.c/h    - real screen, sizes XXL..S, grid and list measurements
+#   strings.c/h   - string table; strings.def lists every key with its English
 #   fonts.c/h     - FreeType fonts with a Noto fallback chain per size
 #   input.c/h     - evdev joypad + volume rocker -> ui_action_t queue, auto-repeat
 #   cec.c/h       - HDMI-CEC: TV remote keys -> same ui_action_t queue
@@ -56,7 +69,7 @@
 #   placeholder.c/h - themed placeholder art (tint + label text, stb_truetype)
 #   stb_truetype.h- vendored, public domain (github.com/nothings/stb)
 #   theme.h       - shared style tokens
-#   share/        - placeholder layers, OFL fonts, theme files
+#   share/        - placeholder layers, OFL fonts, theme files, lang/<code>.txt
 #
 # Structure follows kernel-drivers/device-tree-overlays: PKG_TOOLCHAIN="manual"
 # with explicit make_target/makeinstall_target. No CMake for a handful of files.
@@ -76,7 +89,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.10"
+PKG_VERSION="0.11"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk"
@@ -102,7 +115,7 @@ make_target() {
     ${PKG_BUILD}/main.c ${PKG_BUILD}/input.c ${PKG_BUILD}/mpdc.c ${PKG_BUILD}/browser.c \
     ${PKG_BUILD}/nowplaying.c ${PKG_BUILD}/art.c ${PKG_BUILD}/placeholder.c \
     ${PKG_BUILD}/display.c ${PKG_BUILD}/theme.c ${PKG_BUILD}/cec.c ${PKG_BUILD}/fonts.c \
-    ${PKG_BUILD}/playthrough.c \
+    ${PKG_BUILD}/playthrough.c ${PKG_BUILD}/strings.c ${PKG_BUILD}/layout.c \
     ${TARGET_LDFLAGS} \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \

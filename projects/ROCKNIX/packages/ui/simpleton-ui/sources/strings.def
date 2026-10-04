@@ -1,0 +1,54 @@
+/*
+ * SimpletonOS UI - every user-visible string (0.11, 4 Oct 2026).
+ *
+ * One line per string: STR(ID, "key", "English"). The key is what a language
+ * file uses (share/lang/<code>.txt, "key = text"); the English here is the
+ * built-in fallback, so a missing or broken file can never blank the screen.
+ * share/lang/en.txt is this table written out (simpleton-ui --dump-lang).
+ *
+ * Rules:
+ *   - No user-visible text anywhere else in the code. New text = new line here
+ *     plus the same key in en.txt.
+ *   - Values are filled in by NAME: "{n}", "{dac}", "{rate}". A translation may
+ *     move them or leave one out; it can never crash the UI the way a
+ *     misplaced printf "%s" would.
+ *   - Not here, on purpose: library text (artist, album, track - never
+ *     translated), format names (FLAC, DSD64), button letters, icons, numbers.
+ */
+
+/* folder browser */
+STR(BROWSER_ROOT,        "browser.root",        "Music")
+STR(BROWSER_EMPTY,       "browser.empty",       "Nothing here")
+STR(BROWSER_SCANNING,    "browser.scanning",    "Scanning library\xE2\x80\xA6")
+STR(BROWSER_STARTING,    "browser.starting",    "Starting library\xE2\x80\xA6")
+STR(BROWSER_READ_FAILED, "browser.read_failed", "Couldn't read this folder")
+
+/* button hints (the footer): each word follows its button letter or icon */
+STR(HINT_SELECT,         "hint.select",         "select")
+STR(HINT_BACK,           "hint.back",           "back")
+STR(HINT_PAGE,           "hint.page",           "page")
+STR(HINT_PLAY,           "hint.play",           "play")
+STR(HINT_NEXT,           "hint.next",           "next")
+STR(HINT_NOW_PLAYING,    "hint.now_playing",    "now playing")
+
+/* a track with a number but no title (SACD discs with no text) */
+STR(TRACK_NUMBERED,      "track.numbered",      "Track {n}")
+
+/* now-playing */
+STR(NP_NOTHING,          "np.nothing_playing",  "Nothing playing")
+STR(NP_PICK_A_TRACK,     "np.pick_a_track",     "Pick a track in the browser")
+STR(NP_FAVORITE,         "np.favorite",         "Favorite")
+STR(NP_INFO,             "np.info",             "Info")
+STR(NP_MORE,             "np.more",             "More")
+
+/* format line: what MPD decoded */
+STR(FORMAT_PCM,          "format.pcm",          "{rate} kHz \xE2\x80\xA2 {bits}-bit")
+STR(FORMAT_FLOAT,        "format.float",        "{rate} kHz \xE2\x80\xA2 float")
+
+/* format line: what the DAC is being sent */
+STR(DAC_DSD_NATIVE,      "dac.dsd_native",      "{dac}: DSD{n} native")
+STR(DAC_DOP,             "dac.dop",             "{dac}: DSD over PCM {rate} kHz")
+STR(DAC_PCM,             "dac.pcm",             "{dac}: PCM {rate} kHz")
+STR(DAC_RUNNING,         "dac.running",         "{dac}: running")
+STR(DAC_IDLE,            "dac.idle",            "DAC idle")
+STR(DAC_UNNAMED,         "dac.unnamed",         "DAC")

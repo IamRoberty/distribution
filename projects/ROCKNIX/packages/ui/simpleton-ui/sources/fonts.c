@@ -1,10 +1,11 @@
 /*
  * SimpletonOS UI - text fonts for every script (implementation). See fonts.h.
  *
- * ui_font() (declared in theme.h) lives here now. It takes a size designed
- * on the 720 panel, scales it to the stage with PX(), and returns the head
- * of a fallback chain of FreeType fonts at exactly that pixel size. One
- * chain per distinct size; the UI asks for four or five.
+ * ui_font() (declared in theme.h) lives here now. It takes a size in stage
+ * units, scales it to the stage with PX(), and returns the head of a
+ * fallback chain of FreeType fonts at exactly that pixel size; ui_font_px()
+ * is the same for a size already in real pixels (layout metrics). One chain
+ * per distinct size; the UI asks for four or five.
  *
  * Why the chain ends in Montserrat: LVGL's LV_SYMBOL_* strings are private-
  * use code points (U+F000...) that only the built-in fonts carry. Keeping
@@ -172,9 +173,14 @@ static const lv_font_t * build_chain(int px)
 }
 #endif
 
-const lv_font_t * ui_font(int design_px)
+const lv_font_t * ui_font(int stage_units)
 {
-    int px = PX(design_px);
+    return ui_font_px(PX(stage_units));
+}
+
+const lv_font_t * ui_font_px(int px)
+{
+    if(px < 6) px = 6;
     if(!ready) return nearest_builtin(px);
 
     for(int i = 0; i < size_count; i++) if(sizes[i].px == px) return sizes[i].font;

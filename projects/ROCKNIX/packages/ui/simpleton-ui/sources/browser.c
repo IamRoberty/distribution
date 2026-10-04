@@ -1,10 +1,14 @@
 /*
  * SimpletonOS UI - folder browser screen (implementation). See browser.h.
  *
- * Layout (designed on the 720x720 panel, scaled to the stage - theme.h):
+ * Layout (on the square stage; every measurement comes from
+ * ui_list_metrics() - layout.h - for the list size in use):
  *   header  - current folder name, small dim text
  *   list    - one big row per entry, the focused row is unmistakable
  *   footer  - button hints
+ *
+ * All text the browser shows of its own comes from the string table
+ * (strings.h); folder and track names are the library's and are shown as is.
  *
  * Focus rules (non-negotiable, from learnings.md): a row is always focused,
  * from the very first list, and the focused row is visibly different.
@@ -22,6 +26,7 @@
  */
 #include "browser.h"
 #include "mpdc.h"
+#include "strings.h"
 #include "theme.h"
 
 #include <stdint.h>
@@ -30,7 +35,6 @@
 #include <string.h>
 
 #define MAX_DEPTH 32
-#define DIVIDER_H PX(40)
 
 typedef struct {
     char * uri;
@@ -41,6 +45,10 @@ static lv_group_t * grp;
 static lv_obj_t * header;
 static lv_obj_t * list;
 static lv_obj_t * footer;
+
+/* The list size in use and its measurements on this screen. The size is the
+ * default until the picker and per-view settings arrive (Note 05). */
+static ui_list_t lm;
 
 static nav_frame_t stack[MAX_DEPTH];
 static int depth;                  /* number of frames above root */
@@ -69,15 +77,15 @@ static void focus_uri(const char * uri);
 
 static void style_row(lv_obj_t * btn)
 {
-    lv_obj_set_height(btn, UI_ROW_H);
-    lv_obj_set_style_radius(btn, UI_ROW_RADIUS, 0);
+    lv_obj_set_height(btn, lm.row_h);
+    lv_obj_set_style_radius(btn, lm.row_radius, 0);
     lv_obj_set_style_border_width(btn, 0, 0);
     lv_obj_set_style_outline_width(btn, 0, 0);
     lv_obj_set_style_outline_width(btn, 0, LV_STATE_FOCUSED);
     lv_obj_set_style_outline_width(btn, 0, LV_STATE_FOCUS_KEY);   /* theme draws one here; the bg block is our focus cue */
     lv_obj_set_style_shadow_width(btn, 0, 0);
-    lv_obj_set_style_pad_hor(btn, UI_MARGIN, 0);
-    lv_obj_set_style_text_font(btn, UI_FONT_LIST, 0);
+    lv_obj_set_style_pad_hor(btn, lm.margin, 0);
+    lv_obj_set_style_text_font(btn, ui_font_px(lm.font_px), 0);
 
     /* unfocused: no background; focused: solid accent block + white text */
     lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
@@ -109,7 +117,7 @@ static lv_obj_t * add_text_row(const char * msg, int height)
     lv_obj_set_height(t, height);
     lv_obj_set_style_bg_opa(t, LV_OPA_TRANSP, 0);
     lv_obj_set_style_text_color(t, lv_color_hex(UI_COLOR_DIM), 0);
-    lv_obj_set_style_pad_hor(t, UI_MARGIN, 0);
+    lv_obj_set_style_pad_hor(t, lm.margin, 0);
     lv_obj_set_user_data(t, (void *)(intptr_t)-1);
     return t;
 }
@@ -117,14 +125,14 @@ static lv_obj_t * add_text_row(const char * msg, int height)
 static void show_message(const char * msg)
 {
     clear_rows();
-    lv_obj_t * t = add_text_row(msg, UI_ROW_H);
-    lv_obj_set_style_text_font(t, UI_FONT_LIST, 0);
+    lv_obj_t * t = add_text_row(msg, lm.row_h);
+    lv_obj_set_style_text_font(t, ui_font_px(lm.font_px), 0);
 }
 
 static void set_header(void)
 {
     const char * uri = cur_uri();
-    const char * name = "Music";
+    const char * name = T(S_BROWSER_ROOT);
     if(uri[0]) {
         const char * slash = strrchr(uri, '/');
         name = slash ? slash + 1 : uri;
@@ -149,15 +157,15 @@ static void render(int focus_idx)
     clear_rows();
     set_header();
 
-    if(cur.count == 0) { show_message(lib_scanning ? "Scanning library\xE2\x80\xA6" : "Nothing here"); return; }
+    if(cur.count == 0) { show_message(T(lib_scanning ? S_BROWSER_SCANNING : S_BROWSER_EMPTY)); return; }
 
     lv_obj_t * first = NULL, * want = NULL;
     for(int i = 0; i < cur.count; i++) {
         const mpd_entry_t * e = &cur.items[i];
         if(e->section) {
-            lv_obj_t * d = add_text_row(e->section, DIVIDER_H);
-            lv_obj_set_style_text_font(d, UI_FONT_HINT, 0);
-            lv_obj_set_style_pad_top(d, PX(12), 0);
+            lv_obj_t * d = add_text_row(e->section, lm.row_h / 2);
+            lv_obj_set_style_text_font(d, ui_font_px(lm.chrome_font_px), 0);
+            lv_obj_set_style_pad_top(d, lm.row_h * 3 / 20, 0);
         }
         char text[600];
         /* folders get a trailing slash rather than an icon: unambiguous, no assets */
@@ -178,7 +186,7 @@ static bool load(const char * uri, int focus_idx)
     mpd_listing_t l;
     if(!mpd_lsinfo_expanded(uri, &l)) {
         set_header();
-        show_message(mpd_is_connected() ? "Couldn't read this folder" : "Starting library\xE2\x80\xA6");
+        show_message(T(mpd_is_connected() ? S_BROWSER_READ_FAILED : S_BROWSER_STARTING));
         waiting_for_mpd = !mpd_is_connected();
         return false;
     }
@@ -257,8 +265,7 @@ static void row_click_cb(lv_event_t * e)
 static void page(int dir)
 {
     if(cur.count == 0) return;
-    int rows = (UI_BASE - UI_HEADER_H - UI_FOOTER_H) / (UI_ROW_H + PX(4));
-    if(rows < 1) rows = 1;
+    int rows = lm.rows;
     int i = focused_index();
     int target = i + dir * rows;
     if(target < 0) target = 0;
@@ -283,30 +290,39 @@ void browser_create(lv_obj_t * scr, lv_group_t * group, void (*on_play)(void), c
     lv_obj_t * stage = ui_stage_create(scr);
     scr = stage;
 
+    ui_list_metrics(UI_SIZE_DEFAULT, &lm);
+    const lv_font_t * chrome_font = ui_font_px(lm.chrome_font_px);
+
     header = lv_label_create(scr);
-    lv_obj_set_size(header, UI_BASE - 2 * UI_MARGIN, UI_HEADER_H);
-    lv_obj_set_pos(header, UI_MARGIN, 0);
-    lv_obj_set_style_text_font(header, UI_FONT_HEADER, 0);
+    lv_obj_set_size(header, lm.w, lm.header_h);
+    lv_obj_set_pos(header, lm.x, 0);
+    lv_obj_set_style_text_font(header, chrome_font, 0);
     lv_obj_set_style_text_color(header, lv_color_hex(UI_COLOR_DIM), 0);
-    lv_obj_set_style_pad_top(header, (UI_HEADER_H - PX(20)) / 2, 0);
+    lv_obj_set_style_pad_top(header, (lm.header_h - lm.chrome_font_px) / 2, 0);
     lv_label_set_long_mode(header, LV_LABEL_LONG_MODE_DOTS);
 
     list = lv_list_create(scr);
-    lv_obj_set_size(list, UI_BASE - 2 * UI_MARGIN, UI_BASE - UI_HEADER_H - UI_FOOTER_H);
-    lv_obj_set_pos(list, UI_MARGIN, UI_HEADER_H);
+    lv_obj_set_size(list, lm.w, lm.h);
+    lv_obj_set_pos(list, lm.x, lm.y);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(list, 0, 0);
     lv_obj_set_style_pad_all(list, 0, 0);
-    lv_obj_set_style_pad_row(list, PX(4), 0);
+    lv_obj_set_style_pad_row(list, lm.row_gap, 0);
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
 
     footer = lv_label_create(scr);
-    lv_obj_set_size(footer, UI_BASE - 2 * UI_MARGIN, UI_FOOTER_H);
-    lv_obj_set_pos(footer, UI_MARGIN, UI_BASE - UI_FOOTER_H);
-    lv_obj_set_style_text_font(footer, UI_FONT_HINT, 0);
+    lv_obj_set_size(footer, lm.w, lm.footer_h);
+    lv_obj_set_pos(footer, lm.x, lm.y + lm.h);
+    lv_obj_set_style_text_font(footer, chrome_font, 0);
     lv_obj_set_style_text_color(footer, lv_color_hex(UI_COLOR_DIM), 0);
     lv_label_set_long_mode(footer, LV_LABEL_LONG_MODE_CLIP);
-    lv_label_set_text(footer, "A select  B back  " LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " page  Y play  X next  Start now playing");
+    /* Button letters and icons are the device's, the words are the string
+     * table's. (When the A/B swap setting arrives, the letters come from the
+     * same table as the input mapping - settings-menu.md.) */
+    char hints[400];
+    snprintf(hints, sizeof(hints), "A %s  B %s  " LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " %s  Y %s  X %s  Start %s",
+             T(S_HINT_SELECT), T(S_HINT_BACK), T(S_HINT_PAGE), T(S_HINT_PLAY), T(S_HINT_NEXT), T(S_HINT_NOW_PLAYING));
+    lv_label_set_text(footer, hints);
 
     /* Coming back after a display switch: rebuild the folder stack from the
      * path, so Back still walks up through it (landing on the folder we came

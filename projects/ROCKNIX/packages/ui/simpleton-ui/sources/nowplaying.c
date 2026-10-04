@@ -1,8 +1,9 @@
 /*
  * SimpletonOS UI - now-playing screen (implementation). See nowplaying.h.
  *
- * Layout (designed on the 720x720 panel; every number goes through PX() so
- * it scales to the stage - theme.h): the art fills the square stage edge
+ * Layout (a shared screen on the square stage, measured in stage units
+ * through PX() - layout.h; its own words come from the string table):
+ * the art fills the square stage edge
  * to edge (album covers are square). On a TV the stage sits centred and the
  * space either side takes a muted colour drawn from the art (29 Sep 2026),
  * which fades across on a track change. A gradient strip over the bottom 340 px
@@ -37,6 +38,7 @@
 #include "nowplaying.h"
 #include "art.h"
 #include "mpdc.h"
+#include "strings.h"
 #include "theme.h"
 
 #include <ctype.h>
@@ -116,8 +118,12 @@ static void describe_source(const char * audio, char * out, size_t len)
     char rate_s[16];
     if(rate % 1000 == 0) snprintf(rate_s, sizeof(rate_s), "%d", rate / 1000);
     else                 snprintf(rate_s, sizeof(rate_s), "%.1f", rate / 1000.0);
-    if(*bits == 'f')     snprintf(out, len, "%s kHz \xE2\x80\xA2 float", rate_s);
-    else                 snprintf(out, len, "%s kHz \xE2\x80\xA2 %d-bit", rate_s, atoi(bits));
+    if(*bits == 'f') ui_strf(out, len, S_FORMAT_FLOAT, "rate", rate_s, NULL);
+    else {
+        char bits_s[16];
+        snprintf(bits_s, sizeof(bits_s), "%d", atoi(bits));
+        ui_strf(out, len, S_FORMAT_PCM, "rate", rate_s, "bits", bits_s, NULL);
+    }
 }
 
 static const char * codec_name(const char * file)
@@ -177,7 +183,8 @@ static bool parse_stream0(const char * path, char * out, size_t len)
 {
     FILE * f = fopen(path, "r");
     if(!f) return false;
-    char line[256], name[64] = "DAC", fmt[32] = "";
+    char line[256], name[64], fmt[32] = "";
+    snprintf(name, sizeof(name), "%s", T(S_DAC_UNNAMED));
     int running_alt = -1, dop = 0, cur_alt = -1;
     double freq = 0;
     bool in_playback = false, running = false, first = true;
@@ -211,17 +218,18 @@ static bool parse_stream0(const char * path, char * out, size_t len)
 
     if(strncmp(fmt, "DSD_U32", 7) == 0 || strncmp(fmt, "DSD_U16", 7) == 0 || strncmp(fmt, "DSD_U8", 6) == 0) {
         int bits = strncmp(fmt, "DSD_U32", 7) == 0 ? 32 : (strncmp(fmt, "DSD_U16", 7) == 0 ? 16 : 8);
-        int mult = (int)lround(freq * bits / 44100.0);
-        snprintf(out, len, "%s: DSD%d native", name, mult);
+        char mult[16];
+        snprintf(mult, sizeof(mult), "%d", (int)lround(freq * bits / 44100.0));
+        ui_strf(out, len, S_DAC_DSD_NATIVE, "dac", name, "n", mult, NULL);
     }
     else if(dop) {
-        snprintf(out, len, "%s: DSD over PCM %s kHz", name, nearest_rate(freq));
+        ui_strf(out, len, S_DAC_DOP, "dac", name, "rate", nearest_rate(freq), NULL);
     }
     else if(fmt[0]) {
-        snprintf(out, len, "%s: PCM %s kHz", name, nearest_rate(freq));
+        ui_strf(out, len, S_DAC_PCM, "dac", name, "rate", nearest_rate(freq), NULL);
     }
     else {
-        snprintf(out, len, "%s: running", name);
+        ui_strf(out, len, S_DAC_RUNNING, "dac", name, NULL);
     }
     return true;
 }
@@ -248,7 +256,7 @@ static void update_format_line(void)
     char text[200];
     if(dac_line[0]) snprintf(text, sizeof(text), "%s %s   " LV_SYMBOL_RIGHT "   %s", codec, src, dac_line);
     else if(strcmp(st.state, "play") == 0) snprintf(text, sizeof(text), "%s %s", codec, src);
-    else            snprintf(text, sizeof(text), "%s %s   " LV_SYMBOL_RIGHT "   DAC idle", codec, src);
+    else            snprintf(text, sizeof(text), "%s %s   " LV_SYMBOL_RIGHT "   %s", codec, src, T(S_DAC_IDLE));
     lv_label_set_text(format_lbl, text);
 }
 
@@ -297,8 +305,8 @@ static void update_transport_icon(void)
 static void update_text(void)
 {
     if(!st.file[0]) {
-        lv_label_set_text(title_lbl, "Nothing playing");
-        lv_label_set_text(artist_lbl, "Pick a track in the browser");
+        lv_label_set_text(title_lbl, T(S_NP_NOTHING));
+        lv_label_set_text(artist_lbl, T(S_NP_PICK_A_TRACK));
         return;
     }
     lv_label_set_text(title_lbl, st.title);
@@ -747,7 +755,7 @@ void nowplaying_create(void)
 
     /* row 2: favorite  info  more */
     const int row2_y = PX(292), bt_h = PX(40);
-    static const char * const bt_text[BT_COUNT] = { "Favorite", "Info", "More" };
+    const char * const bt_text[BT_COUNT] = { T(S_NP_FAVORITE), T(S_NP_INFO), T(S_NP_MORE) };
     int bt_w[BT_COUNT] = { PX(150), PX(100), PX(110) };
     int total = 0;
     for(int i = 0; i < BT_COUNT; i++) total += bt_w[i];
