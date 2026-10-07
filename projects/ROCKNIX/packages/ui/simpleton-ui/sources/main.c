@@ -11,7 +11,9 @@
  * screen and the square stage, and every size is worked out from those. When HDMI is plugged or unplugged the UI
  * restarts itself on the new output (a fresh exec, well under a second;
  * playback is MPD's and never stops), carrying over which screen and which
- * folder was showing: --folder <uri> and --nowplaying.
+ * folder was showing: --folder <uri>, --nowplaying, --settings <page>.
+ * Settings that are read at start-up (theme, language, a view's size) are
+ * applied with the same restart (0.13).
  *
  * Keypad notes: LVGL's keypad driver moves group focus only on LV_KEY_NEXT /
  * LV_KEY_PREV, so D-pad down/up are mapped to those; ENTER produces the
@@ -26,11 +28,14 @@
  * only reconnects after an MPD restart, and treats a reconnect as
  * "everything changed".
  *
- * Screens: the browser lives on the default screen and uses the keypad
- * group; the now-playing screen is its own lv_obj screen and takes every
- * action directly (see nowplaying.c). main.c owns the switch between them:
- * playing a track or pressing Start enters now-playing, B (with the
- * controls already hidden) returns to the browser at the remembered row.
+ * Screens (0.13, Note 05 step 4): the Home page is the root; it opens the
+ * folder browser, now-playing, Settings, or a notice for a view that isn't
+ * built yet. Back from a view's top level returns to Home; Start jumps to
+ * now-playing from anywhere and Back there returns to where it came from;
+ * Select (the settings button) opens the settings page of the view on
+ * screen. The browser lives on the default screen and uses the keypad
+ * group; the other screens are their own lv_obj screens and take every
+ * action directly. main.c owns the switches.
  */
 
 #include "lvgl.h"
@@ -38,11 +43,14 @@
 #include "cec.h"
 #include "display.h"
 #include "fonts.h"
+#include "home.h"
 #include "input.h"
 #include "layout.h"
 #include "mpdc.h"
+#include "notice.h"
 #include "nowplaying.h"
 #include "playthrough.h"
+#include "settings.h"
 #include "strings.h"
 #include "theme.h"
 
@@ -81,22 +89,98 @@ static void keypad_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 
 /* ---- screens ---- */
 
+typedef enum { SCR_HOME, SCR_BROWSER, SCR_NOWPLAYING, SCR_SETTINGS, SCR_NOTICE } screen_t;
+
 static lv_obj_t * browser_scr;
-static bool in_nowplaying;
+static screen_t cur = SCR_HOME;
+static screen_t back_to = SCR_HOME;          /* where now-playing / Settings / a notice return to */
+static char * argv0;
+static char restart_page[32];                /* set by a setting that needs a fresh start */
+
+static void leave_current(void)
+{
+    switch(cur) {
+        case SCR_HOME:       home_hide(); break;
+        case SCR_NOWPLAYING: nowplaying_hide(); break;
+        case SCR_SETTINGS:   settings_hide(); break;
+        case SCR_NOTICE:     notice_hide(); break;
+        default: break;
+    }
+}
+
+static void show_home(void)
+{
+    leave_current();
+    cur = SCR_HOME;
+    home_show();
+}
+
+static void show_browser(void)
+{
+    leave_current();
+    cur = SCR_BROWSER;
+    lv_screen_load(browser_scr);
+}
 
 static void enter_nowplaying(void)
 {
-    if(in_nowplaying) return;
-    in_nowplaying = true;
+    if(cur == SCR_NOWPLAYING) return;
+    back_to = (cur == SCR_NOTICE) ? SCR_HOME : cur;
+    leave_current();
+    cur = SCR_NOWPLAYING;
     nowplaying_show();
 }
 
-static void leave_nowplaying(void)
+static void enter_settings(const char * page, bool from_view)
 {
-    if(!in_nowplaying) return;
-    in_nowplaying = false;
-    nowplaying_hide();
-    lv_screen_load(browser_scr);
+    if(cur == SCR_SETTINGS) return;
+    back_to = (cur == SCR_NOTICE || cur == SCR_NOWPLAYING) ? SCR_HOME : cur;
+    if(cur == SCR_NOWPLAYING) back_to = SCR_NOWPLAYING;
+    leave_current();
+    cur = SCR_SETTINGS;
+    settings_show(page, from_view);
+}
+
+static void enter_notice(const char * title, const char * text)
+{
+    back_to = cur == SCR_NOTICE ? SCR_HOME : cur;
+    leave_current();
+    cur = SCR_NOTICE;
+    notice_show(title, text);
+}
+
+/* Return from a screen that was entered from another. */
+static void go_back(void)
+{
+    screen_t to = back_to;
+    back_to = SCR_HOME;
+    switch(to) {
+        case SCR_BROWSER:    show_browser(); break;
+        case SCR_NOWPLAYING: enter_nowplaying(); break;
+        default:             show_home(); break;
+    }
+}
+
+/* The Home page chose a view. */
+static void open_view(home_view_t v)
+{
+    switch(v) {
+        case HOME_FOLDERS:     show_browser(); break;
+        case HOME_NOW_PLAYING: enter_nowplaying(); break;
+        case HOME_SETTINGS:    enter_settings("hub", false); break;
+        default: {
+            char title[160];
+            snprintf(title, sizeof(title), "%s: %s", home_view_name(v), T(S_VIEW_NOT_YET));
+            enter_notice(title, T(S_VIEW_NOT_YET_TEXT));
+            break;
+        }
+    }
+}
+
+/* The browser started a track: show it. */
+static void on_play(void)
+{
+    enter_nowplaying();
 }
 
 /* ---- action dispatch ---- */
@@ -113,42 +197,76 @@ static void dispatch(ui_action_t a)
         case ACT_PLAY:      mpd_resume();       return;
         case ACT_PAUSE:     mpd_pause();        return;
         case ACT_HOME:
-            if(in_nowplaying) leave_nowplaying(); else enter_nowplaying();
+            if(cur == SCR_NOWPLAYING) go_back(); else enter_nowplaying();
+            return;
+        case ACT_SETTINGS:
+            switch(cur) {
+                case SCR_BROWSER:    enter_settings("folders", true); break;
+                case SCR_NOWPLAYING: enter_settings("playback", true); break;
+                case SCR_HOME:       enter_settings("hub", false); break;
+                default: break;
+            }
             return;
         default: break;
     }
 
-    if(in_nowplaying) {
-        if(nowplaying_handle_action(a) == NP_EXIT) leave_nowplaying();
-        return;
+    switch(cur) {
+        case SCR_HOME:
+            home_handle_action(a);
+            return;
+        case SCR_NOWPLAYING:
+            if(nowplaying_handle_action(a) == NP_EXIT) go_back();
+            return;
+        case SCR_SETTINGS:
+            if(settings_handle_action(a) == SET_EXIT) go_back();
+            return;
+        case SCR_NOTICE:
+            if(notice_handle_action(a)) go_back();
+            return;
+        case SCR_BROWSER:
+            break;
     }
 
     switch(a) {
         case ACT_UP:        key_tap(LV_KEY_PREV);  break;
         case ACT_DOWN:      key_tap(LV_KEY_NEXT);  break;
         case ACT_SELECT:    key_tap(LV_KEY_ENTER); break;
+        case ACT_BACK:
+            if(browser_at_root()) { show_home(); break; }
+            browser_handle_action(a);
+            break;
         case ACT_PLAYPAUSE: case ACT_NEXT: case ACT_PREV: break;   /* handled above */
         case ACT_VOL_UP:
         case ACT_VOL_DOWN:  /* Fixed-volume mode: overlay comes with Settings work */ break;
-        default:            browser_handle_action(a); break;     /* back, left/right paging, menu */
+        default:            browser_handle_action(a); break;     /* left/right paging, menu */
     }
 }
 
-/* Same program, same screen and folder, new output. The DRM and uevent fds
- * are close-on-exec; anything else we opened (the MPD socket) is closed here
- * so a run of hotplugs can't pile up descriptors. */
-static void restart_on_new_output(char * argv0)
+/* Same program, same screen and folder: a new output, or a setting that is
+ * read at start-up. The DRM and uevent fds are close-on-exec; anything else
+ * we opened (the MPD socket) is closed here so a run of hotplugs can't pile
+ * up descriptors. */
+static void restart_ui(void)
 {
     const char * folder = browser_current_uri();
-    char * args[6];
+    char * args[8];
     int n = 0;
     args[n++] = argv0;
     if(folder && folder[0]) { args[n++] = "--folder"; args[n++] = (char *)folder; }
-    if(in_nowplaying) args[n++] = "--nowplaying";
+    if(cur == SCR_NOWPLAYING) args[n++] = "--nowplaying";
+    else if(cur == SCR_BROWSER) args[n++] = "--browser";
+    if(restart_page[0]) { args[n++] = "--settings"; args[n++] = restart_page; }
     args[n] = NULL;
     for(int fd = 3; fd < 256; fd++) close(fd);
     execv("/proc/self/exe", args);
     _exit(1);                                   /* systemd brings us back */
+}
+
+/* A setting that needs a fresh start (settings.c): restart after this
+ * action is fully handled, back on the same settings page. */
+static void restart_for_setting(const char * page)
+{
+    snprintf(restart_page, sizeof(restart_page), "%s", page ? page : "hub");
 }
 
 /* Hand MPD's change notices to whoever shows or acts on that state. */
@@ -159,6 +277,8 @@ static void mpd_changed(unsigned what)
     if(what & (MPD_CHANGED_PLAYER | MPD_CHANGED_MIXER | MPD_CHANGED_OPTIONS |
                MPD_CHANGED_PLAYLIST | MPD_CHANGED_OUTPUT))
         nowplaying_mpd_changed();
+    if(what & (MPD_CHANGED_PLAYER | MPD_CHANGED_PLAYLIST)) home_mpd_changed();
+    if(what & (MPD_CHANGED_DATABASE | MPD_CHANGED_UPDATE)) settings_mpd_changed();
     playthrough_mpd_changed(what);
 }
 
@@ -173,11 +293,14 @@ static void mpd_retry_cb(lv_timer_t * t)
 
 int main(int argc, char ** argv)
 {
-    const char * resume_folder = NULL;
-    bool resume_nowplaying = false;
+    const char * resume_folder = NULL, * resume_settings = NULL;
+    bool resume_nowplaying = false, resume_browser = false;
+    argv0 = argv[0];
     for(int i = 1; i < argc; i++) {
         if(strcmp(argv[i], "--folder") == 0 && i + 1 < argc) resume_folder = argv[++i];
         else if(strcmp(argv[i], "--nowplaying") == 0) resume_nowplaying = true;
+        else if(strcmp(argv[i], "--browser") == 0) resume_browser = true;
+        else if(strcmp(argv[i], "--settings") == 0 && i + 1 < argc) resume_settings = argv[++i];
         /* the built-in English table as a language file: the master copy of
          * share/lang/en.txt and the template for a new language */
         else if(strcmp(argv[i], "--dump-lang") == 0) { strings_dump(stdout); return 0; }
@@ -222,10 +345,18 @@ int main(int argc, char ** argv)
     mpd_connect();   /* may fail: browser shows "Starting library" and retries */
     mpd_idle_start();/* change notices; retried with the connection if MPD isn't up */
     browser_scr = lv_screen_active();
-    browser_create(browser_scr, grp, enter_nowplaying, resume_folder);
+    browser_create(browser_scr, grp, settings_view_size("folders"), on_play, resume_folder);
     nowplaying_create();
+    settings_create(restart_for_setting);
+    notice_create();
+    home_create(open_view);
     lv_timer_create(mpd_retry_cb, 2000, NULL);
+    /* the screen we were on before a restart; Home otherwise */
+    cur = SCR_HOME;
+    home_show();
+    if(resume_browser) show_browser();
     if(resume_nowplaying) enter_nowplaying();
+    if(resume_settings) enter_settings(resume_settings, false);
     fprintf(stderr, "simpleton-ui: play-through folders: %s\n", playthrough_enabled() ? "on" : "off");
     playthrough_mpd_changed(MPD_CHANGED_PLAYER);   /* restarted mid-album: catch up now */
 
@@ -248,7 +379,7 @@ int main(int argc, char ** argv)
         }
         for(ui_action_t a; (a = input_next_action()) != ACT_NONE;) dispatch(a);
 
-        if(display_hotplug_poll()) restart_on_new_output(argv[0]);
+        if(display_hotplug_poll() || restart_page[0]) restart_ui();
     }
     return 0;
 }

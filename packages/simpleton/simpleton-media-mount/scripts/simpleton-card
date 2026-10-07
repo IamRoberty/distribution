@@ -1,90 +1,247 @@
 #!/bin/sh
-# SimpletonOS: music card inserted / removed.   simpleton-card add|remove <kernel name>
+# SimpletonOS: music card inserted / removed.
+#   simpleton-card add|remove <kernel name>     (mmcblk2p1)
+#   simpleton-card remount-all                  (after MPD starts)
 #
 # Started by simpleton-card-add@ / simpleton-card-remove@ (systemd), which
-# 96-simpleton-sdcard-mount.rules queues on udev events. It runs as a service,
-# not inside udev, because udev is not allowed network access - not even to
-# MPD on localhost - and must not wait on slow work.
+# 96-simpleton-sdcard-mount.rules queues on udev events, and by mpd.service
+# (remount-all). It runs as a service, not inside udev, because udev is not
+# allowed network access - not even to MPD on localhost - and must not wait
+# on slow work.
 #
-# remove: detach the card's mount at once, even if a file on it is still open
-#         (MPD playing from it). A plain unmount fails with "busy" and leaves a
-#         dead mount behind that blocks the next insert (found 30 Sep 2026).
-#         The library is NOT rescanned: the card mounts at the same path when
-#         it comes back (udevil names it by serial), so its entries stay valid
-#         and a reinsert costs only a quick incremental scan, not a full one.
-# add:    mount the card, then - unless auto-scan is switched off - ask MPD for
-#         an incremental scan of just that card. MPD scans in a low-priority
-#         background thread and only reads files that are new or changed.
-#         A scan only runs once the mount is confirmed readable: scanning a
-#         card that isn't really there would empty the library.
+# Each card is its own MPD storage (4 Oct 2026, Engineering Note 05 section
+# 10). The card is mounted into MPD at a top-level name made from the
+# card's hardware serial, card-<serial>, so the same card has the same name
+# in every slot and on every unit, and MPD keeps a separate database file
+# for it in its cache folder (database { cache_directory } in mpd.conf).
+# That file is copied to a hidden .simpleton folder on the card after each
+# scan and copied back in when the card appears on a unit that has never
+# seen it, so a card's library travels with the card and is browsable the
+# moment it is in. Needs the local-storage mount patch in MPD
+# (projects/ROCKNIX/patches/mpd/0004-simpleton-mount-local-directory-by-file-uri.patch).
 #
-# Auto-scan setting: /storage/.config/simpleton/autoscan, "off" disables it.
-# Absent or anything else means on (the default). Settings will write it.
+# MPD records its mounts in its state file and restores them by itself at
+# the next start; "add" copes with a mount that is already there, and
+# "remount-all" (from mpd.service) repairs the symlinks and finishes any
+# copying after a restart.
+#
+# remove: unmount from MPD, then detach the card's mount at once, even if a
+#         file on it is still open (MPD playing from it). A plain unmount
+#         fails with "busy" and leaves a dead mount behind that blocks the
+#         next insert (found 30 Sep 2026). Nothing is rescanned.
+# add:    mount the card, mount it into MPD (instant when its database is
+#         known), then - unless auto-scan is switched off - ask MPD for an
+#         incremental scan of just that card and copy the result to the
+#         card. A scan only runs once the mount is confirmed readable.
+#
+# Settings (Settings will write them; absent = default):
+#   /storage/.config/simpleton/autoscan       "off" = don't scan on insert
+#   /storage/.config/simpleton/cache_on_card  "off" = never write to the card
+#
+# After a scan the library cache (thumbnails, index: simpleton-cache, 0.12)
+# is refreshed in the background through simpleton-cache@<card>.service,
+# at idle priority.
+#
+# The library's view of a card: /storage/music/card-<serial> is a symlink to
+# the card's mount point, so a track's MPD URI maps to a real path under the
+# music folder (the UI's folder-art lookup relies on that). MPD itself skips
+# the symlink (follow_outside_symlinks "no"), so the card is never indexed
+# twice.
 
 ACTION="$1"
 NAME="$2"
-DEV="/dev/$NAME"
-UNIT="udevil-mount@$DEV.service"
+
 SETTING=/storage/.config/simpleton/autoscan
-LIBRARY_PREFIX=Cards        # /storage/music/Cards -> /var/media
-MOUNTS=${SIMPLETON_MOUNTS:-/proc/mounts}   # overridable for off-device tests
+CACHE_SETTING=/storage/.config/simpleton/cache_on_card
+MOUNTS=${SIMPLETON_MOUNTS:-/proc/mounts}        # overridable for off-device tests
+SYS_BLOCK=${SIMPLETON_SYS_BLOCK:-/sys/class/block}
+MUSIC_DIR=${SIMPLETON_MUSIC_DIR:-/storage/music}
+MPD_CACHE=${SIMPLETON_MPD_CACHE:-/storage/.mpd/cache}
+RUN_DIR=${SIMPLETON_RUN_DIR:-/run/simpleton}
+MPD_PORT=${MPD_PORT:-6600}
+CARD_DIR=.simpleton                             # hidden folder on the card
+CARD_DB=mpd-database                            # the card's copy of its MPD database
 
 log() { echo "simpleton-card: $*"; }
 
-# mount points of $DEV, one per line, with /proc/mounts' octal escapes
+# ---- helpers ------------------------------------------------------------
+
+# mount points of /dev/$1, one per line, with /proc/mounts' octal escapes
 # (\040 = space, from a card label) decoded
 mounts_of() {
-    awk -v d="$DEV" '$1 == d { print $2 }' "$MOUNTS" | while IFS= read -r m; do printf '%b\n' "$m"; done
+    awk -v d="/dev/$1" '$1 == d { print $2 }' "$MOUNTS" | while IFS= read -r m; do printf '%b\n' "$m"; done
 }
+
+# card-<serial> for partition $1 (mmcblk2p1 -> /sys/class/block/mmcblk2/device/serial)
+card_name() {
+    disk=$(printf '%s' "$1" | sed 's/p[0-9]*$//')
+    serial=$(cat "$SYS_BLOCK/$disk/device/serial" 2>/dev/null | sed 's/^0x//; s/[^A-Za-z0-9]//g')
+    if [ -n "$serial" ]; then echo "card-$serial"; else echo "card-$1"; fi
+}
+
+# MPD's own name for the cached database of a mount: the storage string
+# given to "mount" (the plain path) with every character outside
+# [A-Za-z0-9_%-] replaced by "_" (SimpleDatabase::Mount, IsSafeChar)
+cache_file_for() {
+    printf '%s/%s' "$MPD_CACHE" "$(printf '%s' "$1" | sed 's/[^A-Za-z0-9_%-]/_/g')"
+}
+
+# one MPD command over the text protocol (busybox nc); prints the reply
+mpd_cmd() {
+    printf '%s\nclose\n' "$1" | nc 127.0.0.1 "$MPD_PORT" 2>/dev/null
+}
+
+# MPD protocol quoting: "..." with \ and " escaped
+mpd_quote() {
+    printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"]/\\&/g')"
+}
+
+mpd_ready() { mpc -q status >/dev/null 2>&1; }
+
+# at boot MPD may still be starting: give it up to a minute
+wait_mpd() {
+    i=0
+    until mpd_ready; do
+        i=$((i + 1))
+        [ $i -ge 60 ] && return 1
+        sleep 1
+    done
+    return 0
+}
+
+is_mounted_in_mpd() { mpd_cmd listmounts | grep -qx "mount: $1"; }
+
+# copy $1 to $2 through a temporary name, so a card pulled mid-copy keeps
+# whatever it had (never a half-written database)
+safe_copy() {
+    cp -p "$1" "$2.tmp" && mv "$2.tmp" "$2"
+}
+
+# ---- the card in MPD ----------------------------------------------------
+
+# $1 = kernel name, $2 = mount point
+mount_in_mpd() {
+    name=$(card_name "$1")
+    cache=$(cache_file_for "$2")
+    carddb="$2/$CARD_DIR/$CARD_DB"
+    mkdir -p "$MPD_CACHE" "$RUN_DIR"
+    printf '%s\n%s\n' "$name" "$2" > "$RUN_DIR/$1"      # for "remove", when the card is already gone
+
+    # the card's own copy of its library, when we have none or it is newer
+    if [ -f "$carddb" ] && { [ ! -f "$cache" ] || [ "$carddb" -nt "$cache" ]; }; then
+        if safe_copy "$carddb" "$cache"; then log "$name: library copied in from the card"; fi
+    fi
+
+    mkdir -p "$MUSIC_DIR"
+    ln -sfn "$2" "$MUSIC_DIR/$name"
+
+    if is_mounted_in_mpd "$name"; then
+        log "$name: already mounted in MPD"
+    else
+        if [ -f "$cache" ]; then known="from its saved library"; else known="new library"; fi
+        reply=$(mpd_cmd "mount $name $(mpd_quote "$2")")
+        case "$reply" in
+        *ACK*) log "$name: MPD refused the mount: $(printf '%s' "$reply" | grep ACK)"; return 1 ;;
+        esac
+        log "$name mounted in MPD, $known"
+    fi
+
+    if [ "$(cat "$SETTING" 2>/dev/null)" = "off" ]; then
+        log "auto-scan is off, not scanning"
+        return 0
+    fi
+    log "scanning $name"
+    mpc -q update --wait "$name" 2>/dev/null
+    log "scan of $name finished"
+    copy_out "$name" "$2"
+    systemctl --no-block start "simpleton-cache@$name.service" 2>/dev/null && log "$name: library cache refresh queued"
+}
+
+# the up-to-date database back onto the card (unless switched off, the card
+# is gone, or there's no room)
+copy_out() {
+    name=$1; mp=$2
+    cache=$(cache_file_for "$mp")
+    carddb="$mp/$CARD_DIR/$CARD_DB"
+    [ "$(cat "$CACHE_SETTING" 2>/dev/null)" = "off" ] && return 0
+    [ -f "$cache" ] || return 0
+    [ -d "$mp" ] && ls "$mp" >/dev/null 2>&1 || return 0
+    [ -f "$carddb" ] && ! [ "$cache" -nt "$carddb" ] && return 0
+    size_k=$(( $(wc -c < "$cache") / 1024 + 1 ))
+    free_k=$(df -k "$mp" 2>/dev/null | awk 'NR == 2 { print $4 }')
+    if [ -n "$free_k" ] && [ "$free_k" -lt $((size_k * 2 + 20480)) ]; then
+        log "$name: card is nearly full, not writing the library to it"
+        return 0
+    fi
+    mkdir -p "$mp/$CARD_DIR" 2>/dev/null || return 0
+    if safe_copy "$cache" "$carddb"; then log "$name: library saved on the card"; fi
+}
+
+# ---- actions ------------------------------------------------------------
 
 case "$ACTION" in
 remove)
-    mounts_of | while IFS= read -r mp; do
+    DEV="/dev/$NAME"
+    UNIT="udevil-mount@-dev-$NAME.service"      # systemd-escape of $DEV
+    if [ -f "$RUN_DIR/$NAME" ]; then
+        name=$(sed -n 1p "$RUN_DIR/$NAME")
+        rm -f "$RUN_DIR/$NAME"
+    else
+        name=$(card_name "$NAME")
+    fi
+    if mpd_ready; then
+        mpd_cmd "unmount $name" >/dev/null
+        log "$name unmounted from MPD"
+    fi
+    rm -f "$MUSIC_DIR/$name"
+    mounts_of "$NAME" | while IFS= read -r mp; do
         umount -l "$mp" && log "$NAME removed, detached $mp"
         rmdir "$mp" 2>/dev/null
     done
     # resets the mount unit's state and runs its samba-autoshare hook; its own
     # unmount finds nothing left to do, which is fine
     systemctl stop "$UNIT"
-    log "$NAME removed, library kept"
+    log "$NAME removed"
     ;;
 add)
+    DEV="/dev/$NAME"
+    UNIT="udevil-mount@-dev-$NAME.service"      # systemd-escape of $DEV
     # a mount that can't be read is a leftover from a removal that wasn't
     # handled (it can't come from this script's remove): clear it first
-    mounts_of | while IFS= read -r mp; do
+    mounts_of "$NAME" | while IFS= read -r mp; do
         if ! ls "$mp" >/dev/null 2>&1; then
             umount -l "$mp" && log "$NAME: cleared dead mount $mp"
             rmdir "$mp" 2>/dev/null
         fi
     done
-    if [ -z "$(mounts_of)" ]; then
+    if [ -z "$(mounts_of "$NAME")" ]; then
         systemctl restart "$UNIT"
     else
         log "$NAME already mounted"
     fi
-    mp="$(mounts_of | head -n 1)"
+    mp="$(mounts_of "$NAME" | head -n 1)"
     if [ -z "$mp" ] || ! ls "$mp" >/dev/null 2>&1; then
-        log "$NAME inserted but not readable, no scan"
+        log "$NAME inserted but not readable"
         exit 0
     fi
     log "$NAME mounted at $mp"
-
-    if [ "$(cat "$SETTING" 2>/dev/null)" = "off" ]; then
-        log "auto-scan is off, not scanning"
-        exit 0
-    fi
-    # at boot MPD may still be starting: give it up to a minute
-    i=0
-    until mpc -q status >/dev/null 2>&1; do
-        i=$((i + 1))
-        [ $i -ge 60 ] && { log "MPD not reachable, no scan"; exit 0; }
-        sleep 1
+    wait_mpd || { log "MPD not reachable, card not added to the library"; exit 0; }
+    mount_in_mpd "$NAME" "$mp"
+    ;;
+remount-all)
+    # after MPD (re)starts: every card that is mounted gets its symlink,
+    # its place in MPD (usually already restored by MPD itself) and its
+    # scan; nothing to do when no card is in
+    wait_mpd || exit 0
+    awk '$1 ~ /^\/dev\/mmcblk[0-9]+p[0-9]+$/ && $2 ~ /^\/var\/media\// { sub("/dev/", "", $1); print $1, $2 }' "$MOUNTS" |
+    while read -r kname mp; do
+        mp=$(printf '%b' "$mp")
+        ls "$mp" >/dev/null 2>&1 || continue
+        mount_in_mpd "$kname" "$mp"
     done
-    uri="$LIBRARY_PREFIX/$(basename "$mp")"
-    if mpc -q update "$uri"; then log "scanning $uri"; else log "MPD refused to scan $uri"; fi
     ;;
 *)
-    echo "usage: simpleton-card add|remove <kernel name>" >&2
+    echo "usage: simpleton-card add|remove <kernel name> | remount-all" >&2
     exit 2
     ;;
 esac

@@ -46,8 +46,8 @@ static lv_obj_t * header;
 static lv_obj_t * list;
 static lv_obj_t * footer;
 
-/* The list size in use and its measurements on this screen. The size is the
- * default until the picker and per-view settings arrive (Note 05). */
+/* The list size in use and its measurements on this screen: the Folders
+ * view's size setting (0.13), the picker's choice later (Note 05). */
 static ui_list_t lm;
 
 static nav_frame_t stack[MAX_DEPTH];
@@ -277,7 +277,7 @@ static void page(int dir)
 
 /* ---------- public ---------- */
 
-void browser_create(lv_obj_t * scr, lv_group_t * group, void (*on_play)(void), const char * resume_uri)
+void browser_create(lv_obj_t * scr, lv_group_t * group, ui_size_t size, void (*on_play)(void), const char * resume_uri)
 {
     grp = group;
     play_cb = on_play;
@@ -290,7 +290,7 @@ void browser_create(lv_obj_t * scr, lv_group_t * group, void (*on_play)(void), c
     lv_obj_t * stage = ui_stage_create(scr);
     scr = stage;
 
-    ui_list_metrics(UI_SIZE_DEFAULT, &lm);
+    ui_list_metrics(size, &lm);
     const lv_font_t * chrome_font = ui_font_px(lm.chrome_font_px);
 
     header = lv_label_create(scr);
@@ -348,6 +348,7 @@ void browser_create(lv_obj_t * scr, lv_group_t * group, void (*on_play)(void), c
 }
 
 const char * browser_current_uri(void) { return cur_uri(); }
+bool browser_at_root(void) { return depth == 0; }
 
 /* Focus the row whose uri is `uri`, if it's in the listing on screen. */
 static void focus_uri(const char * uri)

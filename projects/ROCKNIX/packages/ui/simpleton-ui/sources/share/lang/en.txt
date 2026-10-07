@@ -38,3 +38,47 @@ dac.pcm = {dac}: PCM {rate} kHz
 dac.running = {dac}: running
 dac.idle = DAC idle
 dac.unnamed = DAC
+
+home.title = Home
+home.folders = Folders
+home.albums = Albums
+home.artists = Artists
+home.tracks = Tracks
+home.recent = Recent
+home.favorites = Favorites
+home.playlists = Playlists
+home.mixtapes = Mixtapes
+home.collections = Collections
+home.visualization = Visualization
+home.now_playing = Now Playing
+home.settings = Settings
+
+hint.open = open
+hint.change = change
+
+view.not_yet = Not built yet
+view.not_yet_text = This view comes in a later version. Folders, Now Playing and Settings work today.
+
+settings.title = Settings
+settings.playback = Playback
+settings.library = Library
+settings.display = Display & appearance
+settings.controls = Controls
+settings.system = System
+settings.views = Views
+settings.all = All settings
+settings.view_page = {view} view
+settings.on = On
+settings.off = Off
+settings.play_through = Play through folders
+settings.autoscan = Scan a card when it is inserted
+settings.cache_on_card = Save the library cache on the card
+settings.scan_now = Scan the library now
+settings.scanning = Scanning…
+settings.theme = Theme
+settings.language = Language
+settings.size = Size
+settings.version = Version
+settings.empty = Nothing to set here yet
+
+lang.name = English

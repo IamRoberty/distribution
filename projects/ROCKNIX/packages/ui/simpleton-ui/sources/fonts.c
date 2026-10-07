@@ -24,13 +24,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SHARE_DIR_DEFAULT "/usr/share/simpleton"
-#define THEME_FILE        "/storage/.config/simpleton/theme"
-#define THEME_DEFAULT     "pastel"
 #define UIFONT_DEFAULT    "NotoSans-Medium.ttf"
 #define CJK_FONT          "/usr/share/fonts/truetype/noto-cjk/NotoSansCJKsc-Regular.otf"
 
-#define MAX_SIZES         8
+#define MAX_SIZES         8         /* UI typeface sizes (the shared screens use four or five) */
+#define MAX_TAILS         32        /* sizes the Noto chain has been built at */
+#define MAX_FACES         96        /* (typeface, size) pairs for the theme-owned screens */
 #define MAX_CHAIN         24
 
 /* The fallback chain behind the theme's typeface, in lookup order. Noto Sans
@@ -68,6 +67,10 @@ static char ui_font_file[128];           /* theme's typeface, or UIFONT_DEFAULT 
 
 static struct { int px; const lv_font_t * font; } sizes[MAX_SIZES];
 static int size_count;
+static struct { int px; const lv_font_t * font; } tails[MAX_TAILS];
+static int tail_count;
+static struct { char file[128]; int px; bool chain; const lv_font_t * font; } faces[MAX_FACES];
+static int face_count;
 
 static bool missing_logged[sizeof(chain_files) / sizeof(chain_files[0]) + 1];
 
@@ -99,17 +102,9 @@ static void read_theme_font(void)
 {
     snprintf(ui_font_file, sizeof(ui_font_file), "%s", UIFONT_DEFAULT);
 
-    char name[32] = THEME_DEFAULT;
-    FILE * f = fopen(THEME_FILE, "r");
-    if(f) {
-        if(fgets(name, sizeof(name), f)) name[strcspn(name, " \r\n")] = 0;
-        fclose(f);
-        if(!name[0]) snprintf(name, sizeof(name), "%s", THEME_DEFAULT);
-    }
-
     char path[512];
-    snprintf(path, sizeof(path), "%s/themes/%s.theme", share_dir, name);
-    f = fopen(path, "r");
+    config_theme_file(path, sizeof(path));
+    FILE * f = fopen(path, "r");
     if(!f) return;
     char line[256], file[128];
     while(fgets(line, sizeof(line), f)) {
@@ -121,8 +116,7 @@ static void read_theme_font(void)
 bool fonts_init(void)
 {
 #if LV_USE_FREETYPE
-    const char * env = getenv("SIMPLETON_SHARE");
-    snprintf(share_dir, sizeof(share_dir), "%s", env && env[0] ? env : SHARE_DIR_DEFAULT);
+    snprintf(share_dir, sizeof(share_dir), "%s", config_share_dir());
     /* LVGL 9.5's lv_init() already starts FreeType (lv_init.c, with
      * LV_FREETYPE_CACHE_FT_GLYPH_CNT); a second lv_freetype_init() is
      * refused with a warning, so there is nothing to start here. */
@@ -137,7 +131,7 @@ bool fonts_init(void)
 }
 
 #if LV_USE_FREETYPE
-/* Create one font of the chain at `px`, or NULL (logged once per file). */
+/* Create one font at `px`, or NULL (logged once per file). */
 static lv_font_t * open_font(const char * file, int px, int log_slot)
 {
     char path[512];
@@ -152,24 +146,43 @@ static lv_font_t * open_font(const char * file, int px, int log_slot)
     return f;
 }
 
-static const lv_font_t * build_chain(int px)
+/* The Noto chain at `px` (everything behind a head typeface), ending in the
+ * nearest built-in Montserrat. Built once per size and shared by every
+ * head at that size, so a display face costs one FreeType font, not
+ * twenty. */
+static const lv_font_t * chain_tail(int px)
 {
+    for(int i = 0; i < tail_count; i++) if(tails[i].px == px) return tails[i].font;
+    if(tail_count == MAX_TAILS) return nearest_builtin(px);
+
     lv_font_t * links[MAX_CHAIN];
     int n = 0;
-
-    lv_font_t * head = open_font(ui_font_file, px, (int)(sizeof(chain_files) / sizeof(chain_files[0])));
-    if(head) links[n++] = head;
     for(size_t i = 0; i < sizeof(chain_files) / sizeof(chain_files[0]) && n < MAX_CHAIN; i++) {
-        /* the theme may name a Noto file itself: don't open it twice */
-        if(strcmp(chain_files[i], ui_font_file) == 0) continue;
         lv_font_t * f = open_font(chain_files[i], px, (int)i);
         if(f) links[n++] = f;
     }
-    if(n == 0) return nearest_builtin(px);
+    const lv_font_t * tail;
+    if(n == 0) tail = nearest_builtin(px);
+    else {
+        for(int i = 0; i + 1 < n; i++) links[i]->fallback = links[i + 1];
+        links[n - 1]->fallback = nearest_builtin(px);      /* LV_SYMBOL_* live here */
+        tail = links[0];
+    }
+    tails[tail_count].px = px;
+    tails[tail_count].font = tail;
+    tail_count++;
+    return tail;
+}
 
-    for(int i = 0; i + 1 < n; i++) links[i]->fallback = links[i + 1];
-    links[n - 1]->fallback = nearest_builtin(px);      /* LV_SYMBOL_* live here */
-    return links[0];
+/* `head_file` at `px` with the chain behind it, or the chain alone when the
+ * head can't be opened. `with_chain` false: the head on its own (a caller
+ * that has checked every letter is in it). */
+static const lv_font_t * build_chain(const char * head_file, int px, bool with_chain)
+{
+    lv_font_t * head = open_font(head_file, px, (int)(sizeof(chain_files) / sizeof(chain_files[0])));
+    if(!head) return with_chain ? chain_tail(px) : nearest_builtin(px);
+    head->fallback = with_chain ? chain_tail(px) : NULL;
+    return head;
 }
 #endif
 
@@ -192,7 +205,7 @@ const lv_font_t * ui_font_px(int px)
         return nearest_builtin(px);
     }
 #if LV_USE_FREETYPE
-    const lv_font_t * f = build_chain(px);
+    const lv_font_t * f = build_chain(ui_font_file, px, true);
 #else
     const lv_font_t * f = nearest_builtin(px);
 #endif
@@ -200,4 +213,57 @@ const lv_font_t * ui_font_px(int px)
     sizes[size_count].font = f;
     size_count++;
     return f;
+}
+
+const lv_font_t * ui_font_face_px(const char * file, int px, bool with_fallbacks)
+{
+    if(px < 6) px = 6;
+    if(!ready || !file || !file[0]) return ui_font_px(px);
+
+    for(int i = 0; i < face_count; i++)
+        if(faces[i].px == px && faces[i].chain == with_fallbacks && strcmp(faces[i].file, file) == 0) return faces[i].font;
+
+    if(face_count == MAX_FACES) {
+        static bool warned;
+        if(!warned) { warned = true; fprintf(stderr, "simpleton-ui: fonts: more than %d typeface sizes in use, %s %d px gets the UI face\n", MAX_FACES, file, px); }
+        return ui_font_px(px);
+    }
+#if LV_USE_FREETYPE
+    const lv_font_t * f = build_chain(file, px, with_fallbacks);
+#else
+    const lv_font_t * f = nearest_builtin(px);
+#endif
+    snprintf(faces[face_count].file, sizeof(faces[face_count].file), "%s", file);
+    faces[face_count].px = px;
+    faces[face_count].chain = with_fallbacks;
+    faces[face_count].font = f;
+    face_count++;
+    return f;
+}
+
+/* One code point of UTF-8; bad bytes count as themselves. */
+static uint32_t utf8_next(const char ** s)
+{
+    const unsigned char * p = (const unsigned char *)*s;
+    uint32_t c = p[0];
+    int n = 0;
+    if(c >= 0xF0) { c &= 0x07; n = 3; }
+    else if(c >= 0xE0) { c &= 0x0F; n = 2; }
+    else if(c >= 0xC0) { c &= 0x1F; n = 1; }
+    p++;
+    for(int i = 0; i < n && (*p & 0xC0) == 0x80; i++, p++) c = (c << 6) | (*p & 0x3F);
+    *s = (const char *)p;
+    return c;
+}
+
+bool ui_font_covers(const lv_font_t * font, const char * text)
+{
+    const char * s = text;
+    while(*s) {
+        uint32_t c = utf8_next(&s);
+        if(c == ' ' || c == '\n') continue;
+        lv_font_glyph_dsc_t g;
+        if(!lv_font_get_glyph_dsc(font, &g, c, 0) || g.is_placeholder) return false;
+    }
+    return true;
 }

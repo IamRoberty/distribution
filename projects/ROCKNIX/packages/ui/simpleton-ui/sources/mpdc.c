@@ -24,6 +24,7 @@
 #include <strings.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MPD_HOST "127.0.0.1"
@@ -101,7 +102,9 @@ static bool connect_conn(conn_t * c)
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
-    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(MPD_PORT) };
+    const char * port_env = getenv("MPD_PORT");          /* off-device tests; same variable mpc uses */
+    int port = port_env && atoi(port_env) > 0 ? atoi(port_env) : MPD_PORT;
+    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port) };
     inet_pton(AF_INET, MPD_HOST, &addr.sin_addr);
     if(connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) { close(fd); return false; }
 
@@ -230,6 +233,64 @@ bool mpd_lsinfo(const char * uri, mpd_listing_t * out)
     }
     apply_tags(cur, title, track);
     return true;
+}
+
+/* "2026-10-04T20:50:27Z" -> epoch seconds, 0 when unparseable. */
+static long iso_time(const char * s)
+{
+    struct tm tm;
+    memset(&tm, 0, sizeof(tm));
+    if(sscanf(s, "%d-%d-%dT%d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec) < 3) return 0;
+    tm.tm_year -= 1900;
+    tm.tm_mon -= 1;
+    return (long)timegm(&tm);
+}
+
+bool mpd_listallinfo(const char * uri, bool (*cb)(const mpd_song_info_t * song, void * ctx), void * ctx)
+{
+    if(!mpd_connect()) return false;
+    char cmd[2048] = "listallinfo";
+    if(uri && uri[0]) append_quoted(cmd, sizeof(cmd), uri);
+    strncat(cmd, "\n", sizeof(cmd) - strlen(cmd) - 1);
+    if(!send_raw(&ui, cmd)) return false;
+
+    static mpd_song_info_t song;        /* 3 KB: not on the stack of a UI thread */
+    bool in_song = false, go_on = true, ok = true;
+    char line[2048];
+    for(;;) {
+        if(!read_line(&ui, line, sizeof(line))) return false;
+        if(strcmp(line, "OK") == 0) break;
+        if(strncmp(line, "ACK ", 4) == 0) { fprintf(stderr, "simpleton-ui: mpd: %s\n", line); ok = false; break; }
+        if(!go_on) continue;
+
+        bool new_entry = strncmp(line, "file: ", 6) == 0 || strncmp(line, "directory: ", 11) == 0 || strncmp(line, "playlist: ", 10) == 0;
+        if(new_entry && in_song) { in_song = false; if(!cb(&song, ctx)) go_on = false; }
+        if(strncmp(line, "file: ", 6) == 0) {
+            memset(&song, 0, sizeof(song));
+            snprintf(song.uri, sizeof(song.uri), "%.1023s", line + 6);   /* URIs longer than this are not addressable anyway */
+            in_song = true;
+            continue;
+        }
+        if(!in_song) continue;
+        char * colon = strchr(line, ':');
+        if(!colon || colon[1] != ' ') continue;
+        *colon = 0;
+        const char * key = line, * val = colon + 2;
+        if(strcasecmp(key, "Title") == 0)              snprintf(song.title, sizeof(song.title), "%s", val);
+        else if(strcasecmp(key, "Artist") == 0)        { if(!song.artist[0]) snprintf(song.artist, sizeof(song.artist), "%s", val); }
+        else if(strcasecmp(key, "AlbumArtist") == 0)   { if(!song.album_artist[0]) snprintf(song.album_artist, sizeof(song.album_artist), "%s", val); }
+        else if(strcasecmp(key, "Album") == 0)         { if(!song.album[0]) snprintf(song.album, sizeof(song.album), "%s", val); }
+        else if(strcasecmp(key, "Date") == 0)          { if(!song.date[0]) snprintf(song.date, sizeof(song.date), "%s", val); }
+        else if(strcasecmp(key, "OriginalDate") == 0)  { if(!song.original_date[0]) snprintf(song.original_date, sizeof(song.original_date), "%s", val); }
+        else if(strcasecmp(key, "Track") == 0)         song.track = atoi(val);
+        else if(strcasecmp(key, "Disc") == 0)          song.disc = atoi(val);
+        else if(strcasecmp(key, "duration") == 0)      song.duration = (float)atof(val);
+        else if(strcasecmp(key, "Time") == 0)          { if(song.duration <= 0) song.duration = (float)atoi(val); }
+        else if(strcasecmp(key, "Last-Modified") == 0) song.mtime = iso_time(val);
+        else if(strcasecmp(key, "Added") == 0)         song.added = iso_time(val);
+    }
+    if(in_song && go_on) cb(&song, ctx);
+    return ok;
 }
 
 void mpd_listing_free(mpd_listing_t * l)
@@ -449,6 +510,18 @@ bool mpd_library_state(long * db_update, bool * updating)
 }
 
 bool mpd_next(void)     { return simple_command("next"); }
+bool mpd_update(void)
+{
+    if(!mpd_connect()) return false;
+    if(!send_raw(&ui, "update\n")) return false;
+    /* reply: "updating_db: N" then OK */
+    char line[128];
+    for(;;) {
+        if(!read_line(&ui, line, sizeof(line))) return false;
+        if(strcmp(line, "OK") == 0) return true;
+        if(strncmp(line, "ACK ", 4) == 0) { fprintf(stderr, "simpleton-ui: mpd: %s\n", line); return false; }
+    }
+}
 bool mpd_previous(void) { return simple_command("previous"); }
 
 bool mpd_seek_relative(float seconds)

@@ -52,12 +52,30 @@
 #     and the sizes XXL..S as row counts; grid and list measurements are
 #     worked out from those (handheld 1x1..4x4, TV 1x2..5x10). The browser
 #     takes its measurements from it; nothing is tied to 720 px.
+# 0.12 (4 Oct 2026): the library layer (Note 05 steps 3b and 3c). Nothing
+# on screen changes yet; the screens that use it come next.
+#   - library.c: the tag layer. One listallinfo per card, grouped into
+#     albums (album artist / artist + title; a folder is an album when
+#     there is no album tag; compilations marked), artists, the picker's
+#     sorts with untagged items last, and folder types (album, collection,
+#     artist, library, plain). Saved as library.idx.
+#   - cache.c + simpleton-cache (a second binary from the same sources, no
+#     LVGL): cover thumbnails at 192/256/384/512 px as JPEG, a colour per
+#     album, kept under /storage/.simpleton/cache/<card>/ and mirrored to
+#     the card's .simpleton/cache so it travels with the card. Only albums
+#     whose tracks changed are redone. Runs at idle priority from
+#     simpleton-cache@<card>.service, started by simpleton-card after a scan.
+#   - art.c: MUSIC_DIR can be overridden for tests; synchronous cover fetch
+#     and decode for the cache. mpdc.c: streaming listallinfo.
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
 #   main.c        - theme/indev setup, screen switch, action dispatch
 #   display.c/h   - DRM/KMS output choice, modeset, page flips, hotplug
 #   theme.c       - the square stage behind theme.h
 #   layout.c/h    - real screen, sizes XXL..S, grid and list measurements
 #   strings.c/h   - string table; strings.def lists every key with its English
+#   library.c/h   - the library index: albums, artists, sorts, folder types
+#   cache.c/h     - thumbnail + index cache for a card, mirrored to the card
+#   simpleton-cache.c - the cache tool's main (build / status / albums / folders)
 #   fonts.c/h     - FreeType fonts with a Noto fallback chain per size
 #   input.c/h     - evdev joypad + volume rocker -> ui_action_t queue, auto-repeat
 #   cec.c/h       - HDMI-CEC: TV remote keys -> same ui_action_t queue
@@ -89,7 +107,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.11"
+PKG_VERSION="0.13"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk"
@@ -106,6 +124,7 @@ make_target() {
   ${CC} ${TARGET_CFLAGS} -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
     -DLV_KCONFIG_IGNORE \
     -DLV_LVGL_H_INCLUDE_SIMPLE \
+    -DSIMPLETON_VERSION=\"${PKG_VERSION}\" \
     -I$(get_install_dir lvgl)/usr/include/lvgl \
     -I$(get_install_dir libdrm)/usr/include/libdrm \
     -I$(get_install_dir libjpeg-turbo)/usr/include \
@@ -116,6 +135,8 @@ make_target() {
     ${PKG_BUILD}/nowplaying.c ${PKG_BUILD}/art.c ${PKG_BUILD}/placeholder.c \
     ${PKG_BUILD}/display.c ${PKG_BUILD}/theme.c ${PKG_BUILD}/cec.c ${PKG_BUILD}/fonts.c \
     ${PKG_BUILD}/playthrough.c ${PKG_BUILD}/strings.c ${PKG_BUILD}/layout.c \
+    ${PKG_BUILD}/library.c ${PKG_BUILD}/config.c ${PKG_BUILD}/shelf.c ${PKG_BUILD}/home.c \
+    ${PKG_BUILD}/settings.c ${PKG_BUILD}/notice.c \
     ${TARGET_LDFLAGS} \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \
@@ -124,11 +145,26 @@ make_target() {
     -L$(get_install_dir zlib)/usr/lib \
     -L$(get_install_dir freetype)/usr/lib \
     -llvgl -lfreetype -ldrm -ljpeg -lpng16 -lz -lpthread -lm
+
+  # The cache tool: the same sources without LVGL or the display.
+  ${CC} ${TARGET_CFLAGS} -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
+    -I$(get_install_dir libjpeg-turbo)/usr/include \
+    -I$(get_install_dir libpng)/usr/include \
+    -o ${PKG_BUILD}/simpleton-cache \
+    ${PKG_BUILD}/simpleton-cache.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/library.c \
+    ${PKG_BUILD}/art.c ${PKG_BUILD}/placeholder.c ${PKG_BUILD}/mpdc.c ${PKG_BUILD}/strings.c \
+    ${PKG_BUILD}/config.c \
+    ${TARGET_LDFLAGS} \
+    -L$(get_install_dir libjpeg-turbo)/usr/lib \
+    -L$(get_install_dir libpng)/usr/lib \
+    -L$(get_install_dir zlib)/usr/lib \
+    -ljpeg -lpng16 -lz -lpthread -lm
 }
 
 makeinstall_target() {
   mkdir -p ${INSTALL}/usr/bin ${INSTALL}/usr/share/simpleton
   cp -a ${PKG_BUILD}/simpleton-ui ${INSTALL}/usr/bin
+  cp -a ${PKG_BUILD}/simpleton-cache ${INSTALL}/usr/bin
   cp -a ${PKG_BUILD}/share/. ${INSTALL}/usr/share/simpleton/
 }
 

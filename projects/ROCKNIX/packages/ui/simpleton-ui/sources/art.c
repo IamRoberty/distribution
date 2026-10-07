@@ -31,8 +31,17 @@
 #include <unistd.h>
 
 /* MPD's music_directory. MPD only answers the `config` command on a local
- * socket, not TCP, so this is fixed here and matches mpd.conf. */
-#define MUSIC_DIR "/storage/music"
+ * socket, not TCP, so this is fixed here and matches mpd.conf. Cards are
+ * symlinks below it (card-<serial>, 0.12), so a track's URI maps straight
+ * to a path. $SIMPLETON_MUSIC_DIR overrides it for off-device tests. */
+#define MUSIC_DIR_DEFAULT "/storage/music"
+static const char * music_dir(void)
+{
+    static const char * dir;
+    if(!dir) { const char * e = getenv("SIMPLETON_MUSIC_DIR"); dir = e && e[0] ? e : MUSIC_DIR_DEFAULT; }
+    return dir;
+}
+#define MUSIC_DIR music_dir()
 
 #define MAX_IMAGE_BYTES (64u << 20)
 
@@ -68,13 +77,17 @@ static bool has_ext(const char * name, const char * const * exts)
 
 static const char * const image_exts[] = { "jpg", "jpeg", "png", NULL };
 
-/* Case-insensitive search for a container marker (".iso/" or ".cue/") in a
- * URI; returns a pointer to the '.' or NULL. */
+/* Case-insensitive search for a container marker in a URI - ".iso/",
+ * ".cue/", and since 0.12 ".dff/" and ".dat/" (the SACD patch presents a
+ * DFF as a container of its tracks: "01 - Black Cow.dff/2C_AUDIO__TRACK001.dff";
+ * without this the album folder was taken to be the .dff file itself and
+ * DFF albums never found their folder cover). Returns the '.' or NULL. */
 static const char * find_container(const char * uri)
 {
     for(const char * p = uri; *p; p++) {
         if(*p != '.') continue;
-        if((strncasecmp(p, ".iso/", 5) == 0) || (strncasecmp(p, ".cue/", 5) == 0)) return p;
+        if(strncasecmp(p, ".iso/", 5) == 0 || strncasecmp(p, ".cue/", 5) == 0 ||
+           strncasecmp(p, ".dff/", 5) == 0 || strncasecmp(p, ".dat/", 5) == 0) return p;
     }
     return NULL;
 }
@@ -458,7 +471,7 @@ static uint8_t * fetch_embedded(const char * uri, size_t * len, char * source, s
         }
         return NULL;
     }
-    if(cont) return NULL;                /* ISO: nothing embedded to read */
+    if(cont) return NULL;                /* ISO / DFF container: nothing embedded MPD can read */
     if(mpd_readpicture(uri, &data, len)) { snprintf(source, slen, "embedded"); return data; }
     return NULL;
 }
@@ -740,4 +753,42 @@ bool art_poll(bool * found, art_result_t * out)
     }
     pthread_mutex_unlock(&mu);
     return got;
+}
+
+/* ------------------------------------------- synchronous, for the cache */
+
+uint8_t * art_fetch_cover(const char * track_uri, size_t * len, char * source, size_t slen)
+{
+    char dir[1200];
+    album_dir(track_uri, dir, sizeof(dir));
+    *len = 0;
+    source[0] = 0;
+    uint8_t * data = fetch_embedded(track_uri, len, source, slen);
+    if(data) return data;
+    char * path = NULL;
+    data = fetch_folder(dir, len, source, slen, &path);
+    free(path);
+    if(data) return data;
+    char * list[MAX_PAGES];
+    int n = collect_images(dir, list);
+    if(n > 0) {
+        data = read_file(list[0], len);
+        if(data) snprintf(source, slen, "%s", strrchr(list[0], '/') + 1);
+    }
+    for(int i = 0; i < n; i++) free(list[i]);
+    return data;
+}
+
+uint8_t * art_decode_fit(const uint8_t * data, size_t len, int box, int * w, int * h)
+{
+    int saved = box_size;
+    box_size = box > 0 ? box : 1;
+    rgb_image_t img;
+    uint8_t * out = NULL;
+    if(decode_any(data, len, false, &img)) {
+        out = resample_fit(&img, w, h);
+        free(img.rgb);
+    }
+    box_size = saved;
+    return out;
 }

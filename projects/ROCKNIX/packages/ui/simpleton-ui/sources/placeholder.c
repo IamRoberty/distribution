@@ -7,6 +7,7 @@
  */
 #define _GNU_SOURCE
 #include "placeholder.h"
+#include "config.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -25,9 +26,6 @@
 #include "stb_truetype.h"          /* public domain, github.com/nothings/stb */
 #pragma GCC diagnostic pop
 
-#define SHARE_DIR_DEFAULT "/usr/share/simpleton"
-#define THEME_FILE        "/storage/.config/simpleton/theme"
-#define THEME_DEFAULT     "pastel"
 
 #define MAX_ZONES  8
 #define MAX_LINES  4
@@ -512,16 +510,8 @@ static void tint(uint32_t * out, const colourway_t * way)
 bool placeholder_init(int box_size)
 {
     box = box_size;
-    const char * env = getenv("SIMPLETON_SHARE");
-    snprintf(share_dir, sizeof(share_dir), "%s", env && env[0] ? env : SHARE_DIR_DEFAULT);
-
-    char name[32] = THEME_DEFAULT;
-    FILE * f = fopen(THEME_FILE, "r");
-    if(f) {
-        if(fgets(name, sizeof(name), f)) name[strcspn(name, " \r\n")] = 0;
-        fclose(f);
-        if(!name[0]) snprintf(name, sizeof(name), "%s", THEME_DEFAULT);
-    }
+    snprintf(share_dir, sizeof(share_dir), "%s", config_share_dir());
+    const char * name = config_theme_name();
     ready = load_theme(name) || (strcmp(name, THEME_DEFAULT) != 0 && load_theme(THEME_DEFAULT));
     fallback_font = font_index("NotoSans-Medium.ttf");   /* label letters the theme's fonts lack */
     if(ready) {

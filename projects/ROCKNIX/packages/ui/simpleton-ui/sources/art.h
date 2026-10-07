@@ -26,6 +26,7 @@
 #define SIMPLETON_ART_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct {
@@ -60,5 +61,16 @@ void art_request_page(int index);
  * `found` false means nothing at all could be drawn (plain placeholder).
  * When found, the caller owns res->pixels. */
 bool art_poll(bool * found, art_result_t * res);
+
+/* ---- for the cache builder (simpleton-cache), single-threaded, no worker ----
+ *
+ * The album cover's encoded bytes for a track, by the lookup order above
+ * (embedded via MPD, the folder's named image, else the first image in the
+ * folder). Caller frees. `source` says where it came from. NULL = none. */
+uint8_t * art_fetch_cover(const char * track_uri, size_t * len, char * source, size_t slen);
+
+/* Decode JPEG/PNG bytes and fit the picture inside a `box` square:
+ * XRGB8888, stride w * 4, caller frees. NULL when undecodable. */
+uint8_t * art_decode_fit(const uint8_t * data, size_t len, int box, int * w, int * h);
 
 #endif

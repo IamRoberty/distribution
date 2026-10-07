@@ -2,13 +2,13 @@
  * SimpletonOS UI - play through folders (implementation). See playthrough.h.
  */
 #include "playthrough.h"
+#include "config.h"
 #include "mpdc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define SETTING_FILE "/storage/.config/simpleton/play_through"
 #define MAX_CLIMB    32      /* folder levels; also the recursion bound going down */
 
 /* The (file, queue length) we last appended for, so one trigger never
@@ -18,12 +18,7 @@ static int  last_len = -1;
 
 bool playthrough_enabled(void)
 {
-    FILE * f = fopen(SETTING_FILE, "r");
-    if(!f) return true;                          /* default: on */
-    char v[16] = "";
-    if(!fgets(v, sizeof(v), f)) v[0] = 0;
-    fclose(f);
-    return !(v[0] == '0' || strncmp(v, "off", 3) == 0 || strncmp(v, "false", 5) == 0);
+    return config_read_bool("play_through", true);   /* default: on */
 }
 
 /* "A/B/track.flac" -> "A/B"; "track.flac" -> "". Caller frees. */

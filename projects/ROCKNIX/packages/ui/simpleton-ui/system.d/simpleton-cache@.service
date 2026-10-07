@@ -1,0 +1,11 @@
+[Unit]
+Description=SimpletonOS: library cache for %i
+# started by simpleton-card after a scan; never at boot by itself
+After=mpd.service
+
+[Service]
+Type=oneshot
+# nothing here may get in the way of playback
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/bin/simpleton-cache build %i

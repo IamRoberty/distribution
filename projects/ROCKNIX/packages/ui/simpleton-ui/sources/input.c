@@ -172,8 +172,11 @@ static void handle_key(uint16_t code, int32_t value, uint32_t t)
         case BTN_TR2:                           /* coming off the hardware   */
             break;                              /* (29 Sep), easy to knock   */
                                                 /* when unplugging HDMI      */
-        /* 314 BTN_SELECT and 316 BTN_MODE are reserved for the settings menu
-         * and favorites; they fall through to the log below until then. */
+        case BTN_SELECT:                        /* 314: settings (0.13) */
+            if(pressed) push(ACT_SETTINGS);
+            break;
+        /* 316 BTN_MODE is reserved for favorites; it falls through to the
+         * log below until then. */
         default:
             /* shoulders, select, F: unmapped. Logged once per press so a
              * button that turns out to use a different code is easy to spot. */

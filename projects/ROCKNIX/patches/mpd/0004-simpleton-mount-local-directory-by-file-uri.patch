@@ -1,0 +1,89 @@
+diff --git a/src/storage/plugins/LocalStorage.cxx b/src/storage/plugins/LocalStorage.cxx
+index 7d0ae621e..8bf3c29cf 100644
+--- a/src/storage/plugins/LocalStorage.cxx
++++ b/src/storage/plugins/LocalStorage.cxx
+@@ -11,8 +11,11 @@
+ #include "fs/AllocatedPath.hxx"
+ #include "fs/DirectoryReader.hxx"
+ #include "util/StringCompare.hxx"
++#include "util/Domain.hxx"
++#include "Log.hxx"
+ 
+ #include <string>
++#include <string_view>
+ 
+ class LocalDirectoryReader final : public StorageDirectoryReader {
+ 	AllocatedPath base_fs;
+@@ -168,8 +171,70 @@ CreateLocalStorage(Path base_fs)
+ 	return std::make_unique<LocalStorage>(base_fs);
+ }
+ 
++/*
++ * Simpleton (4 Oct 2026): let a local directory be mounted as a storage of
++ * its own - "mount card-1234 file:///var/media/<card>" - so a removable
++ * music card gets its own cached database (database { cache_directory })
++ * that can travel with the card. Upstream 0.24 only mounts network storage
++ * and udisks2 this way; the local plugin had no URI form.
++ *
++ * Only directories under SIMPLETON_FILE_MOUNT_ROOT are accepted: MPD's
++ * control socket may be reachable from the network, and a mount makes a
++ * directory's audio files playable and listable.
++ *
++ * The plain path form ("/var/media/<card>") is accepted too, and is the
++ * one to use: MPD records a mount in its state file as Storage::MapUTF8("")
++ * - the plain path - and hands that back to CreateStorageURI() to restore
++ * the mount at the next start, so a card that is still in the slot comes
++ * back by itself. The cached database is named after the string given to
++ * "mount", so always giving the plain path keeps that name stable.
++ *
++ * Nothing here throws: a refusal is logged and returns nullptr, because
++ * the state-file restore at start-up doesn't catch exceptions from here,
++ * and a card that was pulled while MPD was off must not stop MPD starting.
++ */
++#define SIMPLETON_FILE_MOUNT_ROOT "/var/media/"
++
++static constexpr Domain local_storage_domain("local_storage");
++
++static constexpr const char *local_prefixes[] = {
++	"file://", SIMPLETON_FILE_MOUNT_ROOT, nullptr
++};
++
++static std::unique_ptr<Storage>
++CreateLocalStorageURI([[maybe_unused]] EventLoop &event_loop, const char *uri)
++{
++	const char *path = uri;
++	if (StringStartsWith(uri, "file://"))
++		path = uri + 7;
++
++	if (*path != '/')
++		/* "file://host/path" is not supported */
++		return nullptr;
++
++	if (!StringStartsWith(path, SIMPLETON_FILE_MOUNT_ROOT) ||
++	    std::string_view{path}.find("/../") != std::string_view::npos ||
++	    StringEndsWith(path, "/..")) {
++		FmtError(local_storage_domain,
++			 "Refusing to mount {}: only directories under "
++			 SIMPLETON_FILE_MOUNT_ROOT " can be mounted", path);
++		return nullptr;
++	}
++
++	auto fs = AllocatedPath::FromUTF8Throw(path);
++
++	FileInfo fi;
++	if (!GetFileInfo(fs, fi) || !fi.IsDirectory()) {
++		FmtError(local_storage_domain,
++			 "Not mounting {}: not a directory, or not there", path);
++		return nullptr;
++	}
++
++	return CreateLocalStorage(fs);
++}
++
+ constexpr StoragePlugin local_storage_plugin = {
+ 	"local",
+-	nullptr,
+-	nullptr,
++	local_prefixes,
++	CreateLocalStorageURI,
+ };

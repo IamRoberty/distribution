@@ -17,6 +17,7 @@
 
 #include "lvgl.h"
 #include "layout.h"
+#include "config.h"
 
 #define UI_COLOR_BG        0x101418   /* near-black background            */
 #define UI_COLOR_FG        0xE8E8E8   /* primary text                     */
@@ -30,9 +31,23 @@
 const lv_font_t * ui_font(int stage_units);
 const lv_font_t * ui_font_px(int px);
 
+/* A font with a particular typeface at its head (a theme's display face for
+ * a tape spine, say). `file` is a name in <share>/fonts or an absolute
+ * path. With `with_fallbacks` the Noto chain sits behind it as usual;
+ * without, it is the typeface alone (cheaper: one FreeType font), for text
+ * ui_font_covers() has already passed. */
+const lv_font_t * ui_font_face_px(const char * file, int px, bool with_fallbacks);
+
+/* Every letter of `text` (spaces aside) has a real glyph in `font` itself,
+ * ignoring its fallbacks. */
+bool ui_font_covers(const lv_font_t * font, const char * text);
+
 /* Create a transparent, clipping square of the stage size, centred on
  * `screen`. Shared screens build their layout inside one of these. */
 lv_obj_t * ui_stage_create(lv_obj_t * screen);
+
+/* The active theme's name, file and asset folder: config.h (no LVGL there,
+ * so the cache tool can read the theme too). */
 
 /* Stage tokens for the shared screens. */
 #define UI_BASE            (ui_screen.stage)

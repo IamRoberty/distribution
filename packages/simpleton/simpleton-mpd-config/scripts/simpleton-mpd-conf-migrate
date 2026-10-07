@@ -1,0 +1,54 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 Simpleton
+#
+# simpleton-mpd-conf-migrate: bring an existing /storage/.config/mpd/mpd.conf
+# up to date. mpd.conf is seeded once, on first boot, and then belongs to
+# the unit (simpleton-dac-detect edits it in place), so a unit that was set
+# up before 4 Oct 2026 still has the old single-database lines. Runs as
+# ExecStartPre of mpd.service; does nothing when there is nothing to do.
+#
+#   db_file "X"            ->  database { plugin "simple" path "X"
+#                                         cache_directory "/storage/.mpd/cache" }
+#   (no follow_outside_symlinks)  ->  follow_outside_symlinks "no"
+#
+# When it converts the database line it also removes the old database
+# file: the old library listed every card under Cards/, which no longer
+# exists (cards are MPD mounts now), and MPD rebuilds the main database -
+# empty apart from the mounts - in a moment.
+
+CONF="${SIMPLETON_MPD_CONF:-/storage/.config/mpd/mpd.conf}"
+CACHE_DIR="${SIMPLETON_MPD_CACHE:-/storage/.mpd/cache}"
+
+[ -f "$CONF" ] || exit 0
+
+changed=0
+
+if grep -q '^[[:space:]]*db_file[[:space:]]' "$CONF" && ! grep -q '^[[:space:]]*database[[:space:]]*{' "$CONF"; then
+    db=$(sed -n 's/^[[:space:]]*db_file[[:space:]]*"\(.*\)".*/\1/p' "$CONF" | head -n 1)
+    [ -n "$db" ] || db=/storage/.mpd/database
+    awk -v db="$db" -v cache="$CACHE_DIR" '
+        /^[[:space:]]*db_file[[:space:]]/ && !done {
+            print "database {"
+            print "    plugin          \"simple\""
+            print "    path            \"" db "\""
+            print "    cache_directory \"" cache "\""
+            print "}"
+            done = 1
+            next
+        }
+        { print }' "$CONF" > "$CONF.new" && mv "$CONF.new" "$CONF"
+    rm -f "$db"
+    changed=1
+    echo "simpleton-mpd-conf-migrate: database block added (per-card databases in $CACHE_DIR); old library removed, MPD rebuilds it"
+fi
+
+if ! grep -q '^[[:space:]]*follow_outside_symlinks' "$CONF"; then
+    awk '{ print } /^[[:space:]]*music_directory[[:space:]]/ && !done { print "follow_outside_symlinks \"no\""; done = 1 }' "$CONF" > "$CONF.new" && mv "$CONF.new" "$CONF"
+    changed=1
+    echo "simpleton-mpd-conf-migrate: follow_outside_symlinks \"no\" added"
+fi
+
+mkdir -p "$CACHE_DIR"
+[ $changed -eq 1 ] && logger -t simpleton-mpd-conf-migrate "mpd.conf updated for per-card databases" 2>/dev/null
+exit 0

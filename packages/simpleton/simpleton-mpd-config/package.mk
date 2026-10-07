@@ -15,8 +15,12 @@ PKG_VERSION=""
 PKG_LICENSE="GPL"
 PKG_SITE=""
 PKG_URL=""
-PKG_DEPENDS_TARGET="toolchain mpd mpd-mpc libmpdclient"
+PKG_DEPENDS_TARGET="toolchain mpd mpd-mpc libmpdclient simpleton-media-mount"
 PKG_LONGDESC="Simpleton: MPD promoted to a core, always-on service with SimpletonOS config."
+# 4 Oct 2026: per-card databases. mpd.conf gets a database block with a
+# cache_directory, simpleton-mpd-conf-migrate converts older units' files,
+# and mpd.service calls simpleton-card remount-all (simpleton-media-mount)
+# after each start. The MPD side is patch 0004 in projects/ROCKNIX/patches/mpd.
 PKG_TOOLCHAIN="manual"
 
 makeinstall_target() {
@@ -33,6 +37,8 @@ makeinstall_target() {
 
   cp ${PKG_DIR}/scripts/simpleton-dac-detect ${INSTALL}/usr/bin
   chmod 0755 ${INSTALL}/usr/bin/simpleton-dac-detect
+  cp ${PKG_DIR}/scripts/simpleton-mpd-conf-migrate ${INSTALL}/usr/bin
+  chmod 0755 ${INSTALL}/usr/bin/simpleton-mpd-conf-migrate
 
   mkdir -p ${INSTALL}/usr/config/mpd
   cp ${PKG_DIR}/config/mpd.conf ${INSTALL}/usr/config/mpd/mpd.conf

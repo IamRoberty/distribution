@@ -88,11 +88,34 @@ bool mpd_play_uris(char * const * uris, int count, int start_index);
 /* Append URIs to the end of the queue without touching playback. */
 bool mpd_add_uris(char * const * uris, int count);
 
+/* One song as `listallinfo` describes it (0.12, the library index). Fixed
+ * buffers, valid only inside the callback. Times are epoch seconds (UTC);
+ * `added` is when MPD first saw the song (MPD 0.24), `mtime` the file's date. */
+typedef struct {
+    char  uri[1024];
+    char  title[256], artist[256], album_artist[256], album[256];
+    char  date[32], original_date[32];
+    int   track, disc;
+    float duration;
+    long  mtime, added;
+} mpd_song_info_t;
+
+/* Stream every song under `uri` ("" = whole library) through `cb`, in MPD's
+ * order (depth first, as the folders lie). Return false from `cb` to stop
+ * early (the rest of the reply is still drained). Returns false when MPD is
+ * unreachable or refuses. One round trip whatever the library size; the
+ * reply is parsed line by line, never held whole. */
+bool mpd_listallinfo(const char * uri, bool (*cb)(const mpd_song_info_t * song, void * ctx), void * ctx);
+
 /* Library state from `status` + `stats`: `db_update` is MPD's timestamp of
  * the last finished database update (changes every time a rescan completes),
  * `updating` is true while a rescan is running. Returns false when MPD is
  * unreachable. */
 bool mpd_library_state(long * db_update, bool * updating);
+
+/* Ask MPD to rescan the whole library (incremental; `update`). The result
+ * arrives as database notices. */
+bool mpd_update(void);
 
 /* ---- change notifications (MPD `idle`) ---- */
 

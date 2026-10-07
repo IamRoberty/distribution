@@ -52,3 +52,52 @@ STR(DAC_PCM,             "dac.pcm",             "{dac}: PCM {rate} kHz")
 STR(DAC_RUNNING,         "dac.running",         "{dac}: running")
 STR(DAC_IDLE,            "dac.idle",            "DAC idle")
 STR(DAC_UNNAMED,         "dac.unnamed",         "DAC")
+
+/* the Home page (0.13): the places to go. The theme writes these on its
+ * tapes, so keep them short; "mixtapes" is the playlists view under the
+ * Archer Ave. theme's name for it */
+STR(HOME_TITLE,          "home.title",          "Home")
+STR(HOME_FOLDERS,        "home.folders",        "Folders")
+STR(HOME_ALBUMS,         "home.albums",         "Albums")
+STR(HOME_ARTISTS,        "home.artists",        "Artists")
+STR(HOME_TRACKS,         "home.tracks",         "Tracks")
+STR(HOME_RECENT,         "home.recent",         "Recent")
+STR(HOME_FAVORITES,      "home.favorites",      "Favorites")
+STR(HOME_PLAYLISTS,      "home.playlists",      "Playlists")
+STR(HOME_MIXTAPES,       "home.mixtapes",       "Mixtapes")
+STR(HOME_COLLECTIONS,    "home.collections",    "Collections")
+STR(HOME_VISUALIZATION,  "home.visualization",  "Visualization")
+STR(HOME_NOW_PLAYING,    "home.now_playing",    "Now Playing")
+STR(HOME_SETTINGS,       "home.settings",       "Settings")
+STR(HINT_OPEN,           "hint.open",           "open")
+STR(HINT_CHANGE,         "hint.change",         "change")
+
+/* a view the Home page lists before it is built */
+STR(VIEW_NOT_YET,        "view.not_yet",        "Not built yet")
+STR(VIEW_NOT_YET_TEXT,   "view.not_yet_text",   "This view comes in a later version. Folders, Now Playing and Settings work today.")
+
+/* Settings (0.13: the hub and its pages) */
+STR(SET_TITLE,           "settings.title",      "Settings")
+STR(SET_PLAYBACK,        "settings.playback",   "Playback")
+STR(SET_LIBRARY,         "settings.library",    "Library")
+STR(SET_DISPLAY,         "settings.display",    "Display & appearance")
+STR(SET_CONTROLS,        "settings.controls",   "Controls")
+STR(SET_SYSTEM,          "settings.system",     "System")
+STR(SET_VIEWS,           "settings.views",      "Views")
+STR(SET_ALL,             "settings.all",        "All settings")
+STR(SET_VIEW_PAGE,       "settings.view_page",  "{view} view")
+STR(SET_ON,              "settings.on",         "On")
+STR(SET_OFF,             "settings.off",        "Off")
+STR(SET_PLAY_THROUGH,    "settings.play_through", "Play through folders")
+STR(SET_AUTOSCAN,        "settings.autoscan",   "Scan a card when it is inserted")
+STR(SET_CACHE_ON_CARD,   "settings.cache_on_card", "Save the library cache on the card")
+STR(SET_SCAN_NOW,        "settings.scan_now",   "Scan the library now")
+STR(SET_SCANNING,        "settings.scanning",   "Scanning\xE2\x80\xA6")
+STR(SET_THEME,           "settings.theme",      "Theme")
+STR(SET_LANGUAGE,        "settings.language",   "Language")
+STR(SET_SIZE,            "settings.size",       "Size")
+STR(SET_VERSION,         "settings.version",    "Version")
+STR(SET_EMPTY,           "settings.empty",      "Nothing to set here yet")
+
+/* this language's own name, in its own script (the Language setting) */
+STR(LANG_NAME,           "lang.name",           "English")

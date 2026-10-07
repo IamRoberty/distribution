@@ -5,14 +5,18 @@ After=network.target sound.target
 [Service]
 Type=forking
 PIDFile=/storage/.mpd/pid
-ExecStartPre=/bin/mkdir -p /storage/music /storage/.mpd/playlists /storage/.config/mpd
+ExecStartPre=/bin/mkdir -p /storage/music /storage/.mpd/playlists /storage/.mpd/cache /storage/.config/mpd
 ExecStartPre=/bin/sh -c '[ -f /storage/.config/mpd/mpd.conf ] || cp /usr/config/mpd/mpd.conf /storage/.config/mpd/mpd.conf'
+# Older units: convert the single-database config to per-card databases.
+ExecStartPre=/usr/bin/simpleton-mpd-conf-migrate
 # Point MPD at the attached USB DAC by name (never blocks MPD from starting).
 ExecStartPre=-/usr/bin/simpleton-dac-detect
-# Removable cards/drives are mounted by udevil under /var/media (see
-# simpleton-media-mount). One symlink makes them all visible to MPD.
-ExecStartPre=/bin/ln -sfn /var/media /storage/music/Cards
+# Cards are MPD mounts now (simpleton-card, 4 Oct 2026); the old Cards
+# symlink would make MPD index every card a second time.
+ExecStartPre=/bin/rm -f /storage/music/Cards
 ExecStart=/usr/bin/mpd /storage/.config/mpd/mpd.conf
+# Cards already in: their symlinks, their place in MPD, their scan.
+ExecStartPost=-/usr/bin/simpleton-card remount-all
 Restart=on-failure
 RestartSec=5
 

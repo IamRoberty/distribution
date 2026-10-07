@@ -5,7 +5,6 @@
  * layout.c (0.11).
  */
 #include "theme.h"
-
 lv_obj_t * ui_stage_create(lv_obj_t * screen)
 {
     lv_obj_t * s = lv_obj_create(screen);

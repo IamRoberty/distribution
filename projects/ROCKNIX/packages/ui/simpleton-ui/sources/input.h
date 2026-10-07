@@ -6,7 +6,8 @@
  * just another producer feeding the same queue, and touches no UI code.
  *
  * Button grammar (settled): A = select (hold: object menu), B = back,
- * Y = play/pause, X = skip (hold: previous), Start = now-playing screen.
+ * Y = play/pause, X = skip (hold: previous), Start = now-playing screen,
+ * Select = settings (0.13: the page of the view on screen).
  * D-pad navigates with software auto-repeat, since the kernel driver ships
  * with autorepeat disabled. The repeat speeds up the longer a direction is
  * held (1 Oct 2026), and other producers (CEC) use the same repeater through
@@ -34,6 +35,7 @@ typedef enum {
     ACT_HOME,        /* Start: jump to now-playing */
     ACT_PLAY,        /* explicit play (remote keys; no joypad button) */
     ACT_PAUSE,       /* explicit pause (remote Pause / Stop)          */
+    ACT_SETTINGS,    /* Select (314): this view's settings page (0.13) */
 } ui_action_t;
 
 /* Open the joypad by its stable by-path name (never by eventN, which moves

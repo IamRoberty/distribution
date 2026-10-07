@@ -40,6 +40,12 @@ PKG_TOOLCHAIN="manual"
 #   scans, so the library keeps its entries and a reinsert is quick.
 #   Removal detaches the mount lazily: a busy unmount used to fail and leave
 #   a dead mount that stopped the card mounting again (30 Sep 2026).
+#
+# Per-card libraries (4 Oct 2026, Engineering Note 05 section 10): each card
+#   is mounted into MPD as card-<serial> with its own database file, kept in
+#   MPD's cache folder and copied to the card's hidden .simpleton folder, so
+#   a card is browsable the moment it is in, on any unit. See the header of
+#   scripts/simpleton-card and MPD patch 0004.
 
 makeinstall_target() {
   mkdir -p ${INSTALL}/usr/bin
