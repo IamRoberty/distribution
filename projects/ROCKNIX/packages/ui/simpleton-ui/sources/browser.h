@@ -12,19 +12,30 @@
 #include "layout.h"
 
 /* Build the browser on the given screen and bind it to the keypad group.
- * `size` is the list size (the Folders view's setting on this screen).
- * `on_play` is called after a track has been started from a row.
- * `resume_uri` (may be NULL) opens that folder instead of the top level. */
-void browser_create(lv_obj_t * screen, lv_group_t * group, ui_size_t size, void (*on_play)(void), const char * resume_uri);
+ * The view's options (size, sort, jump strip) are read from the settings
+ * files for this screen type. `on_play` is called after a track has been
+ * started from a row; `on_exit` when Back is pressed at the top level
+ * (0.13: main.c shows Home). `resume_uri` (may be NULL) opens that folder
+ * instead of the top level. */
+void browser_create(lv_obj_t * screen, lv_group_t * group, void (*on_play)(void), void (*on_exit)(void), const char * resume_uri);
 
 /* The folder on screen ("" = top level), for handing over across a restart. */
 const char * browser_current_uri(void);
 
-/* True at the top level: Back from here leaves the view (0.13: to Home). */
-bool browser_at_root(void);
+/* The settings files for this view changed (the Settings page): re-read
+ * them and apply what changed - size and sort on the spot, no restart. */
+void browser_reload_options(void);
+
+/* The Settings button on the view: the view picker panel, or away again (0.15). */
+void browser_toggle_picker(void);
+
+/* The picker or the jump strip is up (0.14): every action, UP/DOWN/SELECT
+ * included, must then come through browser_handle_action(). */
+bool browser_overlay_active(void);
 
 /* Handle a non-navigation action (BACK, MENU, ...). UP/DOWN/SELECT are
- * delivered through the LVGL keypad path and never come here. */
+ * delivered through the LVGL keypad path and never come here - except
+ * while the picker or strip is up (browser_overlay_active()). */
 void browser_handle_action(ui_action_t a);
 
 /* Periodic tick from the main loop: retries MPD when it wasn't up yet. */

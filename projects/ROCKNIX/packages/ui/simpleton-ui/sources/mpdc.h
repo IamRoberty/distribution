@@ -30,6 +30,7 @@ typedef struct {
     char * uri;        /* MPD URI, relative to music_directory   */
     char * display;    /* what the list shows: title or basename */
     char * section;    /* divider label to show above this entry ("Disc 1"), or NULL */
+    long   mtime;      /* Last-Modified as epoch seconds, 0 when MPD gave none (0.14) */
 } mpd_entry_t;
 
 typedef struct {

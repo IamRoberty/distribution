@@ -99,5 +99,15 @@ STR(SET_SIZE,            "settings.size",       "Size")
 STR(SET_VERSION,         "settings.version",    "Version")
 STR(SET_EMPTY,           "settings.empty",      "Nothing to set here yet")
 
+/* the browse picker and the jump strip (0.14, Note 05 section 3) */
+STR(PICKER_STYLE,        "picker.style",        "View")
+STR(PICKER_SIZE,         "picker.size",         "Size")
+STR(PICKER_SORT,         "picker.sort",         "Sort")
+STR(PICKER_STRIP,        "picker.strip",        "Alphabet picker")
+STR(STYLE_LIST,          "style.list",          "List")
+STR(SORT_NAME,           "sort.name",           "Name")
+STR(SORT_RECENT,         "sort.recent",         "Recently changed")
+STR(SET_JUMP_STRIP,      "settings.jump_strip", "Alphabet picker")
+
 /* this language's own name, in its own script (the Language setting) */
 STR(LANG_NAME,           "lang.name",           "English")

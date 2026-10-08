@@ -107,7 +107,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.13"
+PKG_VERSION="0.15"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk"
@@ -136,7 +136,7 @@ make_target() {
     ${PKG_BUILD}/display.c ${PKG_BUILD}/theme.c ${PKG_BUILD}/cec.c ${PKG_BUILD}/fonts.c \
     ${PKG_BUILD}/playthrough.c ${PKG_BUILD}/strings.c ${PKG_BUILD}/layout.c \
     ${PKG_BUILD}/library.c ${PKG_BUILD}/config.c ${PKG_BUILD}/shelf.c ${PKG_BUILD}/home.c \
-    ${PKG_BUILD}/settings.c ${PKG_BUILD}/notice.c \
+    ${PKG_BUILD}/settings.c ${PKG_BUILD}/notice.c ${PKG_BUILD}/picker.c \
     ${TARGET_LDFLAGS} \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \

@@ -12,13 +12,14 @@
  *
  * What a page holds today is what the player already has a setting for:
  * play-through, scan on insert, cache on card, a library scan, the theme,
- * the language, and the list size of the Folders view. The groups are
- * all there so the shape of the menu is settled; empty ones say so.
+ * the language, and the Folders view's options (view style, size, sort,
+ * jump strip - the picker's rows, 0.14). The groups are all there so the
+ * shape of the menu is settled; empty ones say so.
  *
  * Every setting is one file (config.h). A change that the running UI
- * can't take on the fly (theme, language, a view's size) is applied by
- * restarting the UI on the same page - the same under-a-second restart
- * the HDMI hotplug uses - so no screen needs a "reload" path of its own.
+ * can't take on the fly (theme, language) is applied by restarting the
+ * UI on the same page - the same under-a-second restart the HDMI hotplug
+ * uses. A view's options are handed to the view live.
  *
  * Shared screen: theme colours and fonts only. Takes every action
  * directly from main.c, like now-playing.
@@ -31,8 +32,10 @@
 #include <stdbool.h>
 
 /* `restart` is called to apply a setting that needs a fresh start; it
- * receives the page to come back to. */
-void settings_create(void (*restart)(const char * page));
+ * receives the page to come back to. `view_changed` is called with a
+ * view's id when one of that view's options (size, sort, jump strip)
+ * changed, so the view can take it on the spot (0.14). */
+void settings_create(void (*restart)(const char * page), void (*view_changed)(const char * view));
 
 /* Load the screen on `page`: NULL or "hub" for the hub, a group ("playback",
  * "library", "display", "controls", "system") or a view id ("folders" ...).
@@ -46,8 +49,5 @@ set_result_t settings_handle_action(ui_action_t a);
 
 /* MPD said the library changed: the scan row's state. */
 void settings_mpd_changed(void);
-
-/* The size setting of a view on this screen type ("folders" -> L...). */
-ui_size_t settings_view_size(const char * view);
 
 #endif

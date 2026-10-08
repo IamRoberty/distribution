@@ -201,9 +201,11 @@ static void dispatch(ui_action_t a)
             return;
         case ACT_SETTINGS:
             switch(cur) {
-                case SCR_BROWSER:    enter_settings("folders", true); break;
+                /* a toggle, like the now-playing button: press again, it goes */
+                case SCR_BROWSER:    browser_toggle_picker(); break;       /* the view picker (0.15) */
                 case SCR_NOWPLAYING: enter_settings("playback", true); break;
                 case SCR_HOME:       enter_settings("hub", false); break;
+                case SCR_SETTINGS:   go_back(); break;
                 default: break;
             }
             return;
@@ -227,14 +229,14 @@ static void dispatch(ui_action_t a)
             break;
     }
 
+    /* the picker or the strip takes everything while it is up (0.14) */
+    if(browser_overlay_active()) { browser_handle_action(a); return; }
+
     switch(a) {
         case ACT_UP:        key_tap(LV_KEY_PREV);  break;
         case ACT_DOWN:      key_tap(LV_KEY_NEXT);  break;
         case ACT_SELECT:    key_tap(LV_KEY_ENTER); break;
-        case ACT_BACK:
-            if(browser_at_root()) { show_home(); break; }
-            browser_handle_action(a);
-            break;
+        case ACT_BACK:      browser_handle_action(a); break;     /* up a folder, the strip, or Home */
         case ACT_PLAYPAUSE: case ACT_NEXT: case ACT_PREV: break;   /* handled above */
         case ACT_VOL_UP:
         case ACT_VOL_DOWN:  /* Fixed-volume mode: overlay comes with Settings work */ break;
@@ -267,6 +269,12 @@ static void restart_ui(void)
 static void restart_for_setting(const char * page)
 {
     snprintf(restart_page, sizeof(restart_page), "%s", page ? page : "hub");
+}
+
+/* A view's options changed on its settings page: the view takes them now. */
+static void view_options_changed(const char * view)
+{
+    if(strcmp(view, "folders") == 0) browser_reload_options();
 }
 
 /* Hand MPD's change notices to whoever shows or acts on that state. */
@@ -345,9 +353,9 @@ int main(int argc, char ** argv)
     mpd_connect();   /* may fail: browser shows "Starting library" and retries */
     mpd_idle_start();/* change notices; retried with the connection if MPD isn't up */
     browser_scr = lv_screen_active();
-    browser_create(browser_scr, grp, settings_view_size("folders"), on_play, resume_folder);
+    browser_create(browser_scr, grp, on_play, show_home, resume_folder);
     nowplaying_create();
-    settings_create(restart_for_setting);
+    settings_create(restart_for_setting, view_options_changed);
     notice_create();
     home_create(open_view);
     lv_timer_create(mpd_retry_cb, 2000, NULL);

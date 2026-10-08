@@ -32,7 +32,7 @@
 #endif
 
 typedef enum { ROW_PAGE, ROW_TOGGLE, ROW_CHOICE, ROW_ACTION, ROW_TEXT, ROW_HUB } row_kind_t;
-typedef enum { CH_NONE, CH_THEME, CH_LANGUAGE, CH_SIZE } choice_kind_t;
+typedef enum { CH_NONE, CH_THEME, CH_LANGUAGE, CH_SIZE, CH_SORT, CH_STYLE } choice_kind_t;
 
 #define MAX_ROWS     32
 #define MAX_CHOICES  32
@@ -59,10 +59,12 @@ static lv_obj_t * scr, * header, * list_box, * footer;
 static ui_list_t lm;
 static row_t rows[MAX_ROWS];
 static int row_count, focus;
+static int hub_focus;                /* the hub row a page was opened from: Back lands on it */
 static char page[32] = "hub";
 static bool from_view;
 static bool active;
 static void (*restart_cb)(const char * page);
+static void (*view_changed_cb)(const char * view);
 static choice_t choices[MAX_CHOICES];
 static int choice_count;
 
@@ -133,19 +135,27 @@ static int choice_index(const char * code)
 
 /* --------------------------------------------------------- settings */
 
-static void size_key(const char * view, char * out, size_t len)
+/* A view's option files: <what>-<view>-<screen kind> (the browser reads
+ * the same names). */
+static void view_key(const char * what, const char * view, char * out, size_t len)
 {
-    snprintf(out, len, "size-%s-%s", view, ui_screen_kind_name());
+    snprintf(out, len, "%s-%s-%s", what, view, ui_screen_kind_name());
 }
 
-ui_size_t settings_view_size(const char * view)
+static void sort_choices(void)
 {
-    char key[64], v[16];
-    size_key(view, key, sizeof(key));
-    config_read(key, v, sizeof(v), ui_size_name(UI_SIZE_DEFAULT));
-    for(int s = 0; s < UI_SIZE_COUNT; s++)
-        if(strcmp(ui_size_name((ui_size_t)s), v) == 0 && ui_size_offered((ui_size_t)s)) return (ui_size_t)s;
-    return UI_SIZE_DEFAULT;
+    choice_count = 2;
+    snprintf(choices[0].code, sizeof(choices[0].code), "name");
+    snprintf(choices[0].name, sizeof(choices[0].name), "%s", T(S_SORT_NAME));
+    snprintf(choices[1].code, sizeof(choices[1].code), "recent");
+    snprintf(choices[1].name, sizeof(choices[1].name), "%s", T(S_SORT_RECENT));
+}
+
+static void style_choices(void)
+{
+    choice_count = 1;
+    snprintf(choices[0].code, sizeof(choices[0].code), "list");
+    snprintf(choices[0].name, sizeof(choices[0].name), "%s", T(S_STYLE_LIST));
 }
 
 /* --------------------------------------------------------- the rows */
@@ -242,13 +252,23 @@ static void build_rows(void)
         snprintf(r->value, sizeof(r->value), "%s", SIMPLETON_VERSION);
     }
     else {
-        /* a view's page */
+        /* a view's page: the picker's rows, remembered for this screen type */
         home_view_t v = home_view_from_id(page);
         if(v == HOME_FOLDERS) {
-            char key[64];
-            size_key(page, key, sizeof(key));
+            char key[64], cur[32];
+            view_key("style", page, key, sizeof(key));
+            style_choices();
+            add_choice(T(S_PICKER_STYLE), key, CH_STYLE, "list");
+            view_key("size", page, key, sizeof(key));
             size_choices();
-            add_choice(T(S_SET_SIZE), key, CH_SIZE, ui_size_name(settings_view_size(page)));
+            config_read(key, cur, sizeof(cur), ui_size_name(UI_SIZE_DEFAULT));
+            add_choice(T(S_PICKER_SIZE), key, CH_SIZE, cur);
+            view_key("sort", page, key, sizeof(key));
+            sort_choices();
+            config_read(key, cur, sizeof(cur), "name");
+            add_choice(T(S_PICKER_SORT), key, CH_SORT, cur);
+            view_key("jump", page, key, sizeof(key));
+            add_toggle(T(S_SET_JUMP_STRIP), key, true);
         }
         else add_row(ROW_TEXT, T(S_SET_EMPTY));
         add_row(ROW_HUB, T(S_SET_ALL));
@@ -350,6 +370,13 @@ static void refresh_value(row_t * r)
     lv_label_set_text(r->val_label, txt);
 }
 
+/* A key of the form <what>-<view>-<kind> belongs to a view's page. */
+static bool is_view_key(const char * key)
+{
+    return strncmp(key, "size-", 5) == 0 || strncmp(key, "sort-", 5) == 0 ||
+           strncmp(key, "jump-", 5) == 0 || strncmp(key, "style-", 6) == 0;
+}
+
 static void flip_toggle(row_t * r)
 {
     bool on = config_read_bool(r->key, r->def);
@@ -357,6 +384,7 @@ static void flip_toggle(row_t * r)
     if(!config_write(r->key, on ? "1" : "0")) fprintf(stderr, "simpleton-ui: settings: cannot write %s\n", r->key);
     snprintf(r->value, sizeof(r->value), "%s", T(on ? S_SET_ON : S_SET_OFF));
     refresh_value(r);
+    if(is_view_key(r->key) && view_changed_cb) view_changed_cb(page);
 }
 
 static void step_choice(row_t * r, int dir)
@@ -367,6 +395,8 @@ static void step_choice(row_t * r, int dir)
     if(r->choice == CH_THEME) scan_choices("themes", ".theme", true);
     else if(r->choice == CH_LANGUAGE) scan_choices("lang", ".txt", false);
     else if(r->choice == CH_SIZE) size_choices();
+    else if(r->choice == CH_SORT) sort_choices();
+    else if(r->choice == CH_STYLE) style_choices();
     if(choice_count < 2) return;
     r->index = (r->index + dir + choice_count) % choice_count;
     const choice_t * c = &choices[r->index];
@@ -374,9 +404,10 @@ static void step_choice(row_t * r, int dir)
     snprintf(r->value, sizeof(r->value), "%s", c->name);
     refresh_value(r);
     fprintf(stderr, "simpleton-ui: settings: %s = %s\n", r->key, c->code);
-    /* the theme, the language and a view's size are read at start-up:
-     * come straight back here with the new one */
-    if(restart_cb) restart_cb(page);
+    /* a view's option: the view takes it now; the theme and the language
+     * are read at start-up: come straight back here with the new one */
+    if(is_view_key(r->key)) { if(view_changed_cb) view_changed_cb(page); }
+    else if(restart_cb) restart_cb(page);
 }
 
 static void run_action(row_t * r)
@@ -389,9 +420,10 @@ static void run_action(row_t * r)
 
 /* ------------------------------------------------------------ public */
 
-void settings_create(void (*restart)(const char *))
+void settings_create(void (*restart)(const char *), void (*view_changed)(const char *))
 {
     restart_cb = restart;
+    view_changed_cb = view_changed;
     scr = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(scr, lv_color_hex(UI_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
@@ -426,6 +458,7 @@ void settings_show(const char * p, bool fv)
 {
     active = true;
     from_view = fv;
+    hub_focus = 0;                   /* a fresh visit starts at the top */
     open_page(p && p[0] ? p : "hub");
     lv_screen_load(scr);
 }
@@ -467,7 +500,7 @@ set_result_t settings_handle_action(ui_action_t a)
         case ACT_SELECT:
             if(!r) return SET_HANDLED;
             switch(r->kind) {
-                case ROW_PAGE:   open_page(r->page); break;
+                case ROW_PAGE:   if(strcmp(page, "hub") == 0) hub_focus = focus; open_page(r->page); break;
                 case ROW_TOGGLE: flip_toggle(r); break;
                 case ROW_CHOICE: step_choice(r, 1); break;
                 case ROW_ACTION: run_action(r); break;
@@ -478,6 +511,7 @@ set_result_t settings_handle_action(ui_action_t a)
         case ACT_BACK:
             if(strcmp(page, "hub") == 0 || from_view) return SET_EXIT;
             open_page("hub");
+            if(hub_focus > 0 && hub_focus < row_count && rows[hub_focus].kind != ROW_TEXT) set_focus(hub_focus);
             return SET_HANDLED;
         default:
             return SET_HANDLED;

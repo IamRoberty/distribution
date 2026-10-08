@@ -81,4 +81,16 @@ settings.size = Size
 settings.version = Version
 settings.empty = Nothing to set here yet
 
+picker.style = View
+picker.size = Size
+picker.sort = Sort
+picker.strip = Alphabet picker
+
+style.list = List
+
+sort.name = Name
+sort.recent = Recently changed
+
+settings.jump_strip = Alphabet picker
+
 lang.name = English

@@ -174,12 +174,15 @@ static void listing_push(mpd_listing_t * l, mpd_entry_kind_t kind, const char * 
     e->uri = strdup(uri);
     e->display = basename_label(uri, kind == MPD_ENTRY_FILE);
     e->section = NULL;
+    e->mtime = 0;
 }
 
 /* Replace a file entry's display label with "NN Title" if MPD gave us tags.
  * A track number alone (SACD tracks with no text on the disc) reads
  * "Track NN" (string table: track.numbered) rather than the container's
  * internal file name. */
+static long iso_time(const char * s);
+
 static void apply_tags(mpd_entry_t * e, const char * title, const char * track)
 {
     if(!e) return;
@@ -204,7 +207,8 @@ bool mpd_lsinfo(const char * uri, mpd_listing_t * out)
 
     char line[2048];
     char title[256] = "", track[16] = "";
-    mpd_entry_t * cur = NULL;
+    mpd_entry_t * cur = NULL;          /* the file entry tags apply to      */
+    mpd_entry_t * last = NULL;         /* the entry (file or folder) a Last-Modified line belongs to */
 
     for(;;) {
         if(!read_line(&ui, line, sizeof(line))) { mpd_listing_free(out); return false; }
@@ -215,11 +219,16 @@ bool mpd_lsinfo(const char * uri, mpd_listing_t * out)
             apply_tags(cur, title, track); title[0] = track[0] = 0;
             listing_push(out, MPD_ENTRY_DIR, line + 11);
             cur = NULL;
+            last = out->count ? &out->items[out->count - 1] : NULL;
         }
         else if(strncmp(line, "file: ", 6) == 0) {
             apply_tags(cur, title, track); title[0] = track[0] = 0;
             listing_push(out, MPD_ENTRY_FILE, line + 6);
             cur = out->count ? &out->items[out->count - 1] : NULL;
+            last = cur;
+        }
+        else if(strncmp(line, "Last-Modified: ", 15) == 0) {
+            if(last) last->mtime = iso_time(line + 15);       /* folders and files alike (0.14: the recently-changed sort) */
         }
         else if(strncmp(line, "Title: ", 7) == 0) {
             snprintf(title, sizeof(title), "%s", line + 7);
@@ -229,7 +238,7 @@ bool mpd_lsinfo(const char * uri, mpd_listing_t * out)
             int n = atoi(line + 7);
             if(n > 0) snprintf(track, sizeof(track), "%02d", n);
         }
-        /* playlist:, Last-Modified:, other tags: ignored */
+        /* playlist:, other tags: ignored */
     }
     apply_tags(cur, title, track);
     return true;
@@ -347,6 +356,7 @@ static void listing_push_copy(mpd_listing_t * l, const mpd_entry_t * e)
     n->uri = strdup(e->uri);
     n->display = strdup(e->display);
     n->section = e->section ? strdup(e->section) : NULL;
+    n->mtime = e->mtime;
 }
 
 bool mpd_lsinfo_expanded(const char * uri, mpd_listing_t * out)
