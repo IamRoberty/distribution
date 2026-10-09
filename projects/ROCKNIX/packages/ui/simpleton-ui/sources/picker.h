@@ -57,9 +57,13 @@ typedef struct {
 
 typedef enum { PICKER_NONE, PICKER_STRIP, PICKER_FULL } picker_mode_t;
 
-/* Build the (hidden) objects on a view's stage. `lm` is the view's list
- * measurements; call picker_relayout() when they change. */
-void picker_create(lv_obj_t * stage, const ui_list_t * lm);
+/* Put the (hidden) objects on a view's stage: built on the first call,
+ * moved to the new stage and closed after that - one picker serves every
+ * browse view, whichever is on screen. `lm` is the view's list area (the
+ * pill sits in its top row band, the panel centred on it); call
+ * picker_relayout() when it changes. The faces are drawn at the menu size,
+ * not the view's. */
+void picker_attach(lv_obj_t * stage, const ui_list_t * lm);
 void picker_relayout(const ui_list_t * lm);
 
 /* Open as the pill or the panel. `on_jump` fires as the pill's letter

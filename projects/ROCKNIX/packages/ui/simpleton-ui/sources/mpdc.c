@@ -203,7 +203,20 @@ bool mpd_lsinfo(const char * uri, mpd_listing_t * out)
     char cmd[2048] = "lsinfo";
     if(uri && uri[0]) append_quoted(cmd, sizeof(cmd), uri);
     strncat(cmd, "\n", sizeof(cmd) - strlen(cmd) - 1);
-    if(!send_raw(&ui, cmd)) return false;
+    /* A connection MPD dropped while we were idle only shows when we use it:
+     * the write fails, or the first reply line never comes. Reconnect and
+     * ask once more before giving up (0.16b: an album sometimes opened the
+     * card list instead, because this failed once and the browser fell back
+     * to the root). */
+    for(int attempt = 0;; attempt++) {
+        if(!mpd_connect()) return false;
+        if(send_raw(&ui, cmd) && ui.rf) {
+            int c = fgetc(ui.rf);
+            if(c != EOF) { ungetc(c, ui.rf); break; }
+            disconnect(&ui);
+        }
+        if(attempt >= 1) return false;
+    }
 
     char line[2048];
     char title[256] = "", track[16] = "";

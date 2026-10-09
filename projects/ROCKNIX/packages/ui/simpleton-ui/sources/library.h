@@ -119,6 +119,12 @@ typedef enum {
     LIB_SORT_COUNT
 } lib_sort_t;
 
+/* The sort's comparison of two albums (any libraries): the grid merges the
+ * albums of several cards with it (0.16). `lacks`: the album goes to the
+ * end section of this sort. */
+int  library_album_cmp(const lib_album_t * a, const lib_album_t * b, lib_sort_t sort);
+bool library_album_lacks(const lib_album_t * a, lib_sort_t sort);
+
 /* Fill `order` (nalbums entries) with album indices in sort order. Items
  * lacking what the sort needs come last, in folder order. */
 void library_sort_albums(const library_t * lib, lib_sort_t sort, int * order);

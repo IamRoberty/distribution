@@ -40,4 +40,12 @@ bool placeholder_init(int box);
  * XRGB8888 buffer (box * box * 4 bytes) or NULL. */
 uint8_t * placeholder_render(const char * artist, const char * album, const char * title, int * w, int * h);
 
+/* The theme's colourways and label fonts, for tiles drawn in the tape's
+ * colours without the tape (the grid's no-art tiles, 0.16). A colourway's
+ * `label` zone colour and its ink; a line's font file (1 = artist, 2 =
+ * album, 3 = track) and whether it is set in capitals. */
+int          placeholder_colourway_count(void);
+bool         placeholder_colourway(int i, uint32_t * label_rgb, uint32_t * ink_rgb);
+const char * placeholder_line_font(int line, bool * caps);
+
 #endif

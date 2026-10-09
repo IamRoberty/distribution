@@ -29,6 +29,14 @@ void browser_reload_options(void);
 /* The Settings button on the view: the view picker panel, or away again (0.15). */
 void browser_toggle_picker(void);
 
+/* 0.16: the browser shares its picker with the grids; call when the browser
+ * screen is shown again. A grid opens an album's folder straight in
+ * (Back then leaves to the grid); Folders from Home goes back to the root. */
+void browser_shown(void);
+bool browser_open_folder(const char * uri);   /* false: the folder could not be read; nothing changed */
+void browser_open_root(void);
+bool browser_opened_at_folder(void);
+
 /* The picker or the jump strip is up (0.14): every action, UP/DOWN/SELECT
  * included, must then come through browser_handle_action(). */
 bool browser_overlay_active(void);

@@ -43,6 +43,7 @@
 #include "cec.h"
 #include "display.h"
 #include "fonts.h"
+#include "grid.h"
 #include "home.h"
 #include "input.h"
 #include "layout.h"
@@ -54,8 +55,12 @@
 #include "strings.h"
 #include "theme.h"
 
+#include <execinfo.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -89,11 +94,13 @@ static void keypad_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 
 /* ---- screens ---- */
 
-typedef enum { SCR_HOME, SCR_BROWSER, SCR_NOWPLAYING, SCR_SETTINGS, SCR_NOTICE } screen_t;
+typedef enum { SCR_HOME, SCR_BROWSER, SCR_NOWPLAYING, SCR_SETTINGS, SCR_NOTICE, SCR_ALBUMS } screen_t;
 
 static lv_obj_t * browser_scr;
 static screen_t cur = SCR_HOME;
 static screen_t back_to = SCR_HOME;          /* where now-playing / Settings / a notice return to */
+static screen_t browser_return = SCR_HOME;   /* where Back out of the browser goes: Home, or the
+                                              * grid when an album was opened from it (0.16) */
 static char * argv0;
 static char restart_page[32];                /* set by a setting that needs a fresh start */
 
@@ -104,8 +111,16 @@ static void leave_current(void)
         case SCR_NOWPLAYING: nowplaying_hide(); break;
         case SCR_SETTINGS:   settings_hide(); break;
         case SCR_NOTICE:     notice_hide(); break;
+        case SCR_ALBUMS:     grid_hide(); break;
         default: break;
     }
+}
+
+static void show_albums(bool fresh)
+{
+    leave_current();
+    cur = SCR_ALBUMS;
+    grid_show(fresh);
 }
 
 static void show_home(void)
@@ -120,6 +135,24 @@ static void show_browser(void)
     leave_current();
     cur = SCR_BROWSER;
     lv_screen_load(browser_scr);
+    browser_shown();
+}
+
+/* Back out of the browser: Home, or the grid it was opened from. */
+static void browser_exited(void)
+{
+    if(browser_return == SCR_ALBUMS) { browser_return = SCR_HOME; show_albums(false); }
+    else show_home();
+}
+
+/* The grid chose an album: its folder in the browser until the album page
+ * exists (step 6b); Back returns to the grid. */
+static void open_album(const char * folder, const char * first_uri)
+{
+    (void)first_uri;
+    if(!browser_open_folder(folder)) return;        /* unreadable just now: stay in the grid */
+    browser_return = SCR_ALBUMS;
+    show_browser();
 }
 
 static void enter_nowplaying(void)
@@ -157,6 +190,7 @@ static void go_back(void)
     switch(to) {
         case SCR_BROWSER:    show_browser(); break;
         case SCR_NOWPLAYING: enter_nowplaying(); break;
+        case SCR_ALBUMS:     show_albums(false); break;
         default:             show_home(); break;
     }
 }
@@ -165,7 +199,14 @@ static void go_back(void)
 static void open_view(home_view_t v)
 {
     switch(v) {
-        case HOME_FOLDERS:     show_browser(); break;
+        case HOME_FOLDERS:
+            /* the browser may still be sitting in an album opened from the
+             * grid: Folders is the library from the top */
+            browser_return = SCR_HOME;
+            if(browser_opened_at_folder()) browser_open_root();
+            show_browser();
+            break;
+        case HOME_ALBUMS:      show_albums(true); break;
         case HOME_NOW_PLAYING: enter_nowplaying(); break;
         case HOME_SETTINGS:    enter_settings("hub", false); break;
         default: {
@@ -203,6 +244,7 @@ static void dispatch(ui_action_t a)
             switch(cur) {
                 /* a toggle, like the now-playing button: press again, it goes */
                 case SCR_BROWSER:    browser_toggle_picker(); break;       /* the view picker (0.15) */
+                case SCR_ALBUMS:     grid_toggle_picker(); break;
                 case SCR_NOWPLAYING: enter_settings("playback", true); break;
                 case SCR_HOME:       enter_settings("hub", false); break;
                 case SCR_SETTINGS:   go_back(); break;
@@ -224,6 +266,9 @@ static void dispatch(ui_action_t a)
             return;
         case SCR_NOTICE:
             if(notice_handle_action(a)) go_back();
+            return;
+        case SCR_ALBUMS:
+            grid_handle_action(a);
             return;
         case SCR_BROWSER:
             break;
@@ -257,6 +302,7 @@ static void restart_ui(void)
     if(folder && folder[0]) { args[n++] = "--folder"; args[n++] = (char *)folder; }
     if(cur == SCR_NOWPLAYING) args[n++] = "--nowplaying";
     else if(cur == SCR_BROWSER) args[n++] = "--browser";
+    else if(cur == SCR_ALBUMS) args[n++] = "--albums";
     if(restart_page[0]) { args[n++] = "--settings"; args[n++] = restart_page; }
     args[n] = NULL;
     for(int fd = 3; fd < 256; fd++) close(fd);
@@ -275,6 +321,7 @@ static void restart_for_setting(const char * page)
 static void view_options_changed(const char * view)
 {
     if(strcmp(view, "folders") == 0) browser_reload_options();
+    if(strcmp(view, "albums") == 0) grid_reload_options();
 }
 
 /* Hand MPD's change notices to whoever shows or acts on that state. */
@@ -282,6 +329,7 @@ static void mpd_changed(unsigned what)
 {
     if(what & (MPD_CHANGED_DATABASE | MPD_CHANGED_UPDATE))
         browser_library_changed(what & MPD_CHANGED_DATABASE);
+    if(what & MPD_CHANGED_DATABASE) grid_library_changed();
     if(what & (MPD_CHANGED_PLAYER | MPD_CHANGED_MIXER | MPD_CHANGED_OPTIONS |
                MPD_CHANGED_PLAYLIST | MPD_CHANGED_OUTPUT))
         nowplaying_mpd_changed();
@@ -299,15 +347,55 @@ static void mpd_retry_cb(lv_timer_t * t)
     if(mpd_idle_start()) mpd_changed(MPD_CHANGED_ALL);
 }
 
+/* A crash prints where it happened (0.16c, 8 Oct: the UI died twice on the
+ * unit with MPD playing on, and nothing said where). The frames go to
+ * stderr and to /storage/simpleton-crash.txt, then the signal is re-raised
+ * so the exit status still says "crashed". Only async-signal-safe calls
+ * here; the function names come from -rdynamic in package.mk. */
+static void crash_handler(int sig)
+{
+    void * frames[48];
+    int n = backtrace(frames, 48);
+    static const char head[] = "simpleton-ui " SIMPLETON_VERSION ": crashed, signal ";
+    char num[4] = { (char)('0' + sig / 10), (char)('0' + sig % 10), '\n', 0 };
+    int fds[2] = { 2, open("/storage/simpleton-crash.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644) };
+    for(int i = 0; i < 2; i++) {
+        if(fds[i] < 0) continue;
+        (void)!write(fds[i], head, sizeof(head) - 1);
+        (void)!write(fds[i], num, 3);
+        backtrace_symbols_fd(frames, n, fds[i]);
+    }
+    if(fds[1] >= 0) close(fds[1]);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void crash_handler_install(void)
+{
+    /* an alternate stack, so a blown stack still reports */
+    static char altstack[64 * 1024];
+    stack_t ss = { .ss_sp = altstack, .ss_size = sizeof(altstack), .ss_flags = 0 };
+    sigaltstack(&ss, NULL);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = crash_handler;
+    sa.sa_flags = SA_ONSTACK | SA_RESETHAND;
+    sigemptyset(&sa.sa_mask);
+    int sigs[] = { SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SIGILL };
+    for(size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) sigaction(sigs[i], &sa, NULL);
+}
+
 int main(int argc, char ** argv)
 {
+    crash_handler_install();
     const char * resume_folder = NULL, * resume_settings = NULL;
-    bool resume_nowplaying = false, resume_browser = false;
+    bool resume_nowplaying = false, resume_browser = false, resume_albums = false;
     argv0 = argv[0];
     for(int i = 1; i < argc; i++) {
         if(strcmp(argv[i], "--folder") == 0 && i + 1 < argc) resume_folder = argv[++i];
         else if(strcmp(argv[i], "--nowplaying") == 0) resume_nowplaying = true;
         else if(strcmp(argv[i], "--browser") == 0) resume_browser = true;
+        else if(strcmp(argv[i], "--albums") == 0) resume_albums = true;
         else if(strcmp(argv[i], "--settings") == 0 && i + 1 < argc) resume_settings = argv[++i];
         /* the built-in English table as a language file: the master copy of
          * share/lang/en.txt and the template for a new language */
@@ -353,7 +441,8 @@ int main(int argc, char ** argv)
     mpd_connect();   /* may fail: browser shows "Starting library" and retries */
     mpd_idle_start();/* change notices; retried with the connection if MPD isn't up */
     browser_scr = lv_screen_active();
-    browser_create(browser_scr, grp, on_play, show_home, resume_folder);
+    browser_create(browser_scr, grp, on_play, browser_exited, resume_folder);
+    grid_create(open_album, show_home);
     nowplaying_create();
     settings_create(restart_for_setting, view_options_changed);
     notice_create();
@@ -363,6 +452,7 @@ int main(int argc, char ** argv)
     cur = SCR_HOME;
     home_show();
     if(resume_browser) show_browser();
+    if(resume_albums) show_albums(false);
     if(resume_nowplaying) enter_nowplaying();
     if(resume_settings) enter_settings(resume_settings, false);
     fprintf(stderr, "simpleton-ui: play-through folders: %s\n", playthrough_enabled() ? "on" : "off");

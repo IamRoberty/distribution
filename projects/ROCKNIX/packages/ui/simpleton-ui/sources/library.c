@@ -455,9 +455,8 @@ static bool lacks(const lib_album_t * a, lib_sort_t s)
     }
 }
 
-static int album_order_cmp(const void * pa, const void * pb)
+int library_album_cmp(const lib_album_t * a, const lib_album_t * b, lib_sort_t sort_kind)
 {
-    const lib_album_t * a = &sort_lib->albums[*(const int *)pa], * b = &sort_lib->albums[*(const int *)pb];
     bool la = lacks(a, sort_kind), lb = lacks(b, sort_kind);
     if(la != lb) return la ? 1 : -1;
     if(la) return strcmp(a->folder, b->folder);            /* the end section: folder order */
@@ -472,6 +471,13 @@ static int album_order_cmp(const void * pa, const void * pb)
     }
     if(!c) c = strcmp(a->folder, b->folder);
     return c;
+}
+
+bool library_album_lacks(const lib_album_t * a, lib_sort_t s) { return lacks(a, s); }
+
+static int album_order_cmp(const void * pa, const void * pb)
+{
+    return library_album_cmp(&sort_lib->albums[*(const int *)pa], &sort_lib->albums[*(const int *)pb], sort_kind);
 }
 
 void library_sort_albums(const library_t * lib, lib_sort_t sort, int * order)

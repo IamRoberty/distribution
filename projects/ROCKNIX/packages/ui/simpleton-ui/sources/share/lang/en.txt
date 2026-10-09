@@ -90,6 +90,14 @@ style.list = List
 
 sort.name = Name
 sort.recent = Recently changed
+style.grid = Grid
+sort.title = Title
+sort.artist_title = Artist, title
+sort.artist_year = Artist, year
+sort.year = Year
+sort.newest = Newest on card
+library.various = Various Artists
+grid.empty = No albums yet
 
 settings.jump_strip = Alphabet picker
 

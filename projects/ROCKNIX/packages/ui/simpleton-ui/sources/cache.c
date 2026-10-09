@@ -409,7 +409,11 @@ bool cache_build(const char * card, bool verbose)
                 if(c->fingerprint == a->fingerprint && strcmp(c->folder, a->folder) == 0 && strcmp(c->title, a->title) == 0 && strcmp(c->artist, a->artist) == 0) { o = c; break; }
             }
         }
-        if(o && (!o->has_art || all_thumbs_present(card, a))) {
+        /* unchanged and thumbnailed: keep. An album that had no art is
+         * looked up again every build (0.16): a cover file dropped into its
+         * folder changes nothing in the tracks' fingerprint, and the lookup
+         * of a bare folder is cheap. */
+        if(o && o->has_art && all_thumbs_present(card, a)) {
             a->has_art = o->has_art;
             a->colour = o->colour;
             a->thumb_sizes = o->thumb_sizes;

@@ -266,7 +266,7 @@ static bool same_bytes(const char * path, const uint8_t * data, size_t len)
 
 /* ------------------------------------------------------------- decode */
 
-typedef struct { uint8_t * rgb; int w, h; int src_w, src_h; int dst_w, dst_h; } rgb_image_t;
+typedef struct { uint8_t * rgb; int w, h; int src_w, src_h; int dst_w, dst_h; int box; } rgb_image_t;
 
 /* Wider than this and a page is shown full height and panned instead of
  * shrunk to fit: a 2:1 gatefold fitted to a square is a thin strip. */
@@ -275,13 +275,13 @@ typedef struct { uint8_t * rgb; int w, h; int src_w, src_h; int dst_w, dst_h; } 
 
 /* On-screen size for a source image. Fitted inside the box, or for a wide
  * page (`pan` true) the box height with the width following, up to 4:1. */
-static void target_size(int sw, int sh, bool pan, int * dw, int * dh)
+static void target_size(int sw, int sh, bool pan, int box, int * dw, int * dh)
 {
     double aspect = (double)sw / sh, scale;
     if(pan && aspect >= WIDE_ASPECT)
-        scale = aspect <= MAX_ASPECT ? (double)box_size / sh : box_size * MAX_ASPECT / sw;
+        scale = aspect <= MAX_ASPECT ? (double)box / sh : box * MAX_ASPECT / sw;
     else
-        scale = (double)box_size / (sw > sh ? sw : sh);
+        scale = (double)box / (sw > sh ? sw : sh);
     *dw = (int)lround(sw * scale);
     *dh = (int)lround(sh * scale);
     if(*dw < 1) *dw = 1;
@@ -311,7 +311,7 @@ static bool decode_jpeg(const uint8_t * data, size_t len, bool pan, rgb_image_t 
 
     /* DCT scaling: shrink as far as possible while staying >= the final
      * size, so the resampler below only ever works on <= 2x. */
-    target_size(out->src_w, out->src_h, pan, &out->dst_w, &out->dst_h);
+    target_size(out->src_w, out->src_h, pan, out->box, &out->dst_w, &out->dst_h);
     unsigned denom = 1;
     while(denom < 8 && out->src_w / (int)(denom * 2) >= out->dst_w && out->src_h / (int)(denom * 2) >= out->dst_h) denom *= 2;
     cinfo.scale_num = 1;
@@ -385,16 +385,25 @@ static bool decode_png(const uint8_t * data, size_t len, bool pan, rgb_image_t *
     out->rgb = rgb;
     out->w = out->src_w = (int)w;
     out->h = out->src_h = (int)h;
-    target_size(out->w, out->h, pan, &out->dst_w, &out->dst_h);
+    target_size(out->w, out->h, pan, out->box, &out->dst_w, &out->dst_h);
     return true;
+}
+
+/* `box` is the square to fit; the art worker's own box when 0. Carried in
+ * the image so another thread (the grid's thumbnail decoder, 0.16) can
+ * decode to its own size at the same time. */
+static bool decode_any_box(const uint8_t * data, size_t len, bool pan, int box, rgb_image_t * out)
+{
+    memset(out, 0, sizeof(*out));
+    out->box = box > 0 ? box : box_size;
+    if(len > 3 && data[0] == 0xFF && data[1] == 0xD8) return decode_jpeg(data, len, pan, out);
+    if(len > 8 && memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0) return decode_png(data, len, pan, out);
+    return false;
 }
 
 static bool decode_any(const uint8_t * data, size_t len, bool pan, rgb_image_t * out)
 {
-    memset(out, 0, sizeof(*out));
-    if(len > 3 && data[0] == 0xFF && data[1] == 0xD8) return decode_jpeg(data, len, pan, out);
-    if(len > 8 && memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0) return decode_png(data, len, pan, out);
-    return false;
+    return decode_any_box(data, len, pan, 0, out);
 }
 
 /* Scale `src` to its target size (see target_size), producing XRGB8888.
@@ -781,14 +790,11 @@ uint8_t * art_fetch_cover(const char * track_uri, size_t * len, char * source, s
 
 uint8_t * art_decode_fit(const uint8_t * data, size_t len, int box, int * w, int * h)
 {
-    int saved = box_size;
-    box_size = box > 0 ? box : 1;
     rgb_image_t img;
     uint8_t * out = NULL;
-    if(decode_any(data, len, false, &img)) {
+    if(decode_any_box(data, len, false, box > 0 ? box : 1, &img)) {
         out = resample_fit(&img, w, h);
         free(img.rgb);
     }
-    box_size = saved;
     return out;
 }

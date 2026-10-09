@@ -107,7 +107,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.15"
+PKG_VERSION="0.16e"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk"
@@ -121,7 +121,10 @@ PKG_TOOLCHAIN="manual"
 PKG_NEED_UNPACK="$(get_pkg_directory lvgl)"
 
 make_target() {
-  ${CC} ${TARGET_CFLAGS} -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
+  # -g and -rdynamic: the crash handler in main.c prints a backtrace; the
+  # image build strips the installed copy, the one under build/ keeps the
+  # symbols for addr2line (album-grid-0.16.md, 0.16c).
+  ${CC} ${TARGET_CFLAGS} -g -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
     -DLV_KCONFIG_IGNORE \
     -DLV_LVGL_H_INCLUDE_SIMPLE \
     -DSIMPLETON_VERSION=\"${PKG_VERSION}\" \
@@ -137,7 +140,8 @@ make_target() {
     ${PKG_BUILD}/playthrough.c ${PKG_BUILD}/strings.c ${PKG_BUILD}/layout.c \
     ${PKG_BUILD}/library.c ${PKG_BUILD}/config.c ${PKG_BUILD}/shelf.c ${PKG_BUILD}/home.c \
     ${PKG_BUILD}/settings.c ${PKG_BUILD}/notice.c ${PKG_BUILD}/picker.c \
-    ${TARGET_LDFLAGS} \
+    ${PKG_BUILD}/grid.c ${PKG_BUILD}/thumbs.c ${PKG_BUILD}/cache.c \
+    ${TARGET_LDFLAGS} -rdynamic \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \
     -L$(get_install_dir libjpeg-turbo)/usr/lib \

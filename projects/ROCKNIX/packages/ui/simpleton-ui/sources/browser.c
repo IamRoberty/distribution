@@ -70,6 +70,8 @@ static void (*exit_cb)(void);        /* Back at the top level: leave the view */
 
 static nav_frame_t stack[MAX_DEPTH];
 static int depth;                  /* number of frames above root */
+static int exit_depth;             /* Back at this depth leaves the view: 0 normally, 1 when
+                                    * opened straight at an album folder from a grid (0.16) */
 static int root_focus;             /* remembered row at the root listing */
 static mpd_listing_t cur;          /* listing currently on screen */
 static mpd_entry_t * mpd_order;    /* cur.items as MPD listed them, so a sort can be undone */
@@ -564,7 +566,7 @@ void browser_create(lv_obj_t * scr, lv_group_t * group, void (*on_play)(void), v
              T(S_HINT_SELECT), T(S_HINT_BACK), T(S_HINT_PAGE), T(S_HINT_PLAY), T(S_HINT_NEXT), T(S_HINT_NOW_PLAYING));
     lv_label_set_text(footer, hints);
 
-    picker_create(stage, &lm);
+    picker_attach(stage, &lm);
 
     /* Coming back after a display switch: rebuild the folder stack from the
      * path, so Back still walks up through it (landing on the folder we came
@@ -638,6 +640,51 @@ bool browser_overlay_active(void)
     return picker_mode() != PICKER_NONE;
 }
 
+/* Back on screen after another view had it: the picker (one for every
+ * browse view) comes back to this stage, closed. */
+void browser_shown(void)
+{
+    picker_attach(stage, &lm);
+    list_inset(false);
+}
+
+static void drop_stack(void)
+{
+    while(depth) { free(stack[--depth].uri); stack[depth].uri = NULL; }
+}
+
+/* Open straight at a folder (a grid's album): just that folder on the
+ * stack, so Back leaves the view rather than climbing. No picker or pill:
+ * the person chose the album, not a listing. */
+bool browser_open_folder(const char * uri)
+{
+    close_overlay();
+    drop_stack();
+    stack[depth].uri = strdup(uri);
+    stack[depth].focus = 0;
+    depth = 1;
+    exit_depth = 1;
+    suppress_overlay = true;
+    bool ok = load(uri, 0);
+    if(!ok) { drop_stack(); exit_depth = 0; }       /* the caller stays where it was */
+    suppress_overlay = false;
+    return ok;
+}
+
+/* The Folders view from Home, after the browser was opened at an album:
+ * back to the library root as the view's own entry. */
+void browser_open_root(void)
+{
+    if(exit_depth == 0) return;
+    close_overlay();
+    drop_stack();
+    exit_depth = 0;
+    root_focus = 0;
+    if(load("", 0)) after_enter();
+}
+
+bool browser_opened_at_folder(void) { return exit_depth != 0; }
+
 const char * browser_current_uri(void) { return cur_uri(); }
 bool browser_at_root(void) { return depth == 0; }
 
@@ -655,7 +702,7 @@ static void focus_uri(const char * uri)
 /* Up one folder, or out of the view at the top. */
 static void go_up(void)
 {
-    if(depth == 0) { if(exit_cb) exit_cb(); return; }
+    if(depth <= exit_depth) { if(exit_cb) exit_cb(); return; }
     char * left = stack[--depth].uri;
     stack[depth].uri = NULL;
     int f = depth ? stack[depth - 1].focus : root_focus;

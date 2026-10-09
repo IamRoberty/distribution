@@ -285,8 +285,19 @@ static void panel_build(void)
 
 /* ------------------------------------------------------------ public */
 
-void picker_create(lv_obj_t * st, const ui_list_t * m)
+static void show(picker_mode_t m);
+
+void picker_attach(lv_obj_t * st, const ui_list_t * m)
 {
+    if(strip) {
+        /* built already: move both faces to this view, closed */
+        show(PICKER_NONE);
+        lv_obj_set_parent(strip, st);
+        lv_obj_set_parent(panel, st);
+        stage = st;
+        picker_relayout(m);
+        return;
+    }
     stage = st;
     lm = *m;
     ui_list_metrics(UI_SIZE_DEFAULT, &mm);

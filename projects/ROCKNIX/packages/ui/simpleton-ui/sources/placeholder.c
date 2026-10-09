@@ -523,6 +523,25 @@ bool placeholder_init(int box_size)
     return ready;
 }
 
+int placeholder_colourway_count(void) { return ready ? way_count : 0; }
+
+bool placeholder_colourway(int i, uint32_t * label_rgb, uint32_t * ink_rgb)
+{
+    if(!ready || i < 0 || i >= way_count) return false;
+    const colourway_t * w = &ways[i];
+    int z = zone_index("label");
+    if(label_rgb) *label_rgb = z >= 0 ? w->zone_rgb[z] : w->zone_rgb[0];
+    if(ink_rgb) *ink_rgb = w->ink;
+    return true;
+}
+
+const char * placeholder_line_font(int line, bool * caps)
+{
+    if(!ready || line < 1 || line > MAX_LINES || line_font[line - 1] < 0) return NULL;
+    if(caps) *caps = line_caps[line - 1];
+    return fonts[line_font[line - 1]].file;
+}
+
 uint8_t * placeholder_render(const char * artist, const char * album, const char * title, int * w, int * h)
 {
     if(!ready) return NULL;

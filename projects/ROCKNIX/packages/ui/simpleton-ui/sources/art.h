@@ -70,7 +70,8 @@ bool art_poll(bool * found, art_result_t * res);
 uint8_t * art_fetch_cover(const char * track_uri, size_t * len, char * source, size_t slen);
 
 /* Decode JPEG/PNG bytes and fit the picture inside a `box` square:
- * XRGB8888, stride w * 4, caller frees. NULL when undecodable. */
+ * XRGB8888, stride w * 4, caller frees. NULL when undecodable. Safe from
+ * any thread (0.16: the grid's thumbnail decoder uses it). */
 uint8_t * art_decode_fit(const uint8_t * data, size_t len, int box, int * w, int * h);
 
 #endif

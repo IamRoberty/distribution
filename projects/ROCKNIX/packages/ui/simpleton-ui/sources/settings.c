@@ -18,6 +18,7 @@
 #include "settings.h"
 #include "config.h"
 #include "home.h"
+#include "library.h"
 #include "mpdc.h"
 #include "strings.h"
 #include "theme.h"
@@ -142,8 +143,18 @@ static void view_key(const char * what, const char * view, char * out, size_t le
     snprintf(out, len, "%s-%s-%s", what, view, ui_screen_kind_name());
 }
 
+/* The sorts and styles of the view whose page is on screen (`page`). */
 static void sort_choices(void)
 {
+    if(strcmp(page, "albums") == 0) {
+        static const int ids[LIB_SORT_COUNT] = { S_SORT_TITLE, S_SORT_ARTIST_TITLE, S_SORT_ARTIST_YEAR, S_SORT_YEAR, S_SORT_NEWEST };
+        choice_count = LIB_SORT_COUNT;
+        for(int i = 0; i < LIB_SORT_COUNT; i++) {
+            snprintf(choices[i].code, sizeof(choices[i].code), "%s", library_sort_name((lib_sort_t)i));
+            snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(ids[i]));
+        }
+        return;
+    }
     choice_count = 2;
     snprintf(choices[0].code, sizeof(choices[0].code), "name");
     snprintf(choices[0].name, sizeof(choices[0].name), "%s", T(S_SORT_NAME));
@@ -153,9 +164,10 @@ static void sort_choices(void)
 
 static void style_choices(void)
 {
+    bool grid = strcmp(page, "albums") == 0;
     choice_count = 1;
-    snprintf(choices[0].code, sizeof(choices[0].code), "list");
-    snprintf(choices[0].name, sizeof(choices[0].name), "%s", T(S_STYLE_LIST));
+    snprintf(choices[0].code, sizeof(choices[0].code), "%s", grid ? "grid" : "list");
+    snprintf(choices[0].name, sizeof(choices[0].name), "%s", T(grid ? S_STYLE_GRID : S_STYLE_LIST));
 }
 
 /* --------------------------------------------------------- the rows */
@@ -254,18 +266,18 @@ static void build_rows(void)
     else {
         /* a view's page: the picker's rows, remembered for this screen type */
         home_view_t v = home_view_from_id(page);
-        if(v == HOME_FOLDERS) {
+        if(v == HOME_FOLDERS || v == HOME_ALBUMS) {
             char key[64], cur[32];
             view_key("style", page, key, sizeof(key));
             style_choices();
-            add_choice(T(S_PICKER_STYLE), key, CH_STYLE, "list");
+            add_choice(T(S_PICKER_STYLE), key, CH_STYLE, v == HOME_ALBUMS ? "grid" : "list");
             view_key("size", page, key, sizeof(key));
             size_choices();
             config_read(key, cur, sizeof(cur), ui_size_name(UI_SIZE_DEFAULT));
             add_choice(T(S_PICKER_SIZE), key, CH_SIZE, cur);
             view_key("sort", page, key, sizeof(key));
             sort_choices();
-            config_read(key, cur, sizeof(cur), "name");
+            config_read(key, cur, sizeof(cur), v == HOME_ALBUMS ? library_sort_name(LIB_SORT_TITLE) : "name");
             add_choice(T(S_PICKER_SORT), key, CH_SORT, cur);
             view_key("jump", page, key, sizeof(key));
             add_toggle(T(S_SET_JUMP_STRIP), key, true);
