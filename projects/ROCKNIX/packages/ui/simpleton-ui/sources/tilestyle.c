@@ -11,10 +11,13 @@
 
 #define PAL_MAX     128       /* palette colours kept */
 #define PAIR_MAX    512       /* (bg, ink) pairs in the theme / generate pools */
-#define FONT_MAX    16
+#define FONT_MAX    24
+#define SHARE_DEFAULT 10
+#define LONG_LETTERS  18      /* a title with this many letters counts as long */
 #define INKS_MAX    24        /* inks remembered per mix background */
 #define GEN_COUNT   40        /* colourways invented per visit */
 #define CONTRAST_DEFAULT  3.5   /* without a tilecontrast line */
+#define TEXT_MIN_DEFAULT  0.12f /* without a tiletextmin line: a title never smaller than this fraction of the tile */
 #define BG_MIN_LUM  0.05      /* darker than this is an ink, not a tile: it vanishes on the dark UI */
 #define NEAR_SAME   28.0      /* redmean distance under which two colours count as one */
 #define TOO_CLOSE   70.0      /* neighbouring tiles closer than this are skipped */
@@ -29,13 +32,14 @@ static int      set_of[PAL_MAX];       /* ...and which set each belongs to      
 static int      nset_col, nsets;
 static pair_t   theme_pairs[PAIR_MAX];
 static int      ntheme;
-static char     fonts[FONT_MAX][64];
-static bool     font_caps[FONT_MAX];
+static tile_font_t fonts[FONT_MAX];
 static int      nfonts;
+static int      total_share;
 static double   min_contrast;          /* tilecontrast: how readable an ink must be */
 static uint32_t cream;                 /* tilecream: the shared cream ink, 0 = none  */
 static bool     has_cream;
 static int      w_pal, w_cream, w_dark; /* tileinks: how often each kind of ink is drawn */
+static float    text_min;              /* tiletextmin: the smallest title size, as a fraction of the tile */
 
 /* ----------------------------------------------------------- colour */
 
@@ -147,16 +151,17 @@ static void pal_add(uint32_t c)
 void tilestyle_load(const char * theme_path)
 {
     mode = TILE_COLOURS_THEME;
-    npal = ntheme = nfonts = nset_col = nsets = 0;
+    npal = ntheme = nfonts = nset_col = nsets = total_share = 0;
     min_contrast = CONTRAST_DEFAULT;
     has_cream = false;
     w_pal = 100; w_cream = 0; w_dark = 0;
+    text_min = TEXT_MIN_DEFAULT;
     FILE * f = theme_path ? fopen(theme_path, "r") : NULL;
     char line[512];
     while(f && fgets(line, sizeof(line), f)) {
         char * semi = strchr(line, ';');
         if(semi) *semi = 0;
-        char a[64], b[64];
+        char a[64];
         if(sscanf(line, "tilecolours %63s", a) == 1) {
             if(strcmp(a, "palettes") == 0) mode = TILE_COLOURS_PALETTES;
             else if(strcmp(a, "mix") == 0) mode = TILE_COLOURS_MIX;
@@ -166,6 +171,10 @@ void tilestyle_load(const char * theme_path)
         else if(strncmp(line, "tilecontrast", 12) == 0) {
             double v = atof(line + 12);
             if(v >= 1.0 && v <= 21.0) min_contrast = v;
+        }
+        else if(strncmp(line, "tiletextmin", 11) == 0) {
+            double v = atof(line + 11);
+            if(v >= 0.04 && v <= 0.5) text_min = (float)v;
         }
         else if(sscanf(line, "tilecream %63s", a) == 1) {
             has_cream = parse_hex(a, &cream);
@@ -191,12 +200,28 @@ void tilestyle_load(const char * theme_path)
             }
             if(any) nsets++;
         }
-        else if(sscanf(line, "tilefont %63s %63s", a, b) >= 1 && strncmp(line, "tilefont", 8) == 0) {
-            if(nfonts < FONT_MAX) {
-                snprintf(fonts[nfonts], sizeof(fonts[0]), "%s", a);
-                font_caps[nfonts] = strcmp(b, "caps") == 0;
-                nfonts++;
+        else if(strncmp(line, "coverfont", 9) == 0 && nfonts < FONT_MAX) {
+            tile_font_t * f = &fonts[nfonts];
+            memset(f, 0, sizeof(*f));
+            f->leading = 100;
+            f->share = SHARE_DEFAULT;
+            f->max_letters = 0;
+            char * save;
+            int k = 0;
+            bool ok = false;
+            for(char * tok = strtok_r(line + 9, " \t\n", &save); tok; tok = strtok_r(NULL, " \t\n", &save), k++) {
+                int v; double dv;
+                if(k == 0) { snprintf(f->file, sizeof(f->file), "%s", tok); ok = true; }
+                else if(k == 1) f->caps = strcmp(tok, "caps") == 0;
+                else if(sscanf(tok, "leading=%d", &v) == 1) f->leading = v < 30 ? 30 : v > 200 ? 200 : v;
+                else if(sscanf(tok, "share=%d", &v) == 1) f->share = v < 0 ? 0 : v > 100 ? 100 : v;
+                else if(sscanf(tok, "max=%d", &v) == 1) f->max_letters = v < 1 ? 1 : v;
+                else if(sscanf(tok, "min=%lf", &dv) == 1) f->min_size = (float)(dv < 0 ? 0 : dv > 0.5 ? 0.5 : dv);
+                else if(sscanf(tok, "contrast=%lf", &dv) == 1) f->contrast = dv < 1 ? 1 : dv;
+                else if(strcmp(tok, "long") == 0) f->for_long = true;
+                else if(strcmp(tok, "big") == 0) f->big = true;
             }
+            if(ok && f->share > 0) { total_share += f->share; nfonts++; }
         }
         else if(strncmp(line, "colourway", 9) == 0 || strncmp(line, "tileway", 7) == 0) {
             bool tileway = line[0] == 't';
@@ -220,7 +245,7 @@ void tilestyle_load(const char * theme_path)
     }
     if(f) fclose(f);
     fprintf(stderr, "simpleton-ui: tiles: colours %s, %d colourways, %d sets (%d colours), %d palette colours, "
-            "contrast %.1f, inks palette %d cream %d dark %d, %d fonts\n",
+            "contrast %.1f, inks palette %d cream %d dark %d, %d cover fonts\n",
             tilestyle_mode_name(), ntheme, nsets, nset_col, npal, min_contrast, w_pal, has_cream ? w_cream : 0, w_dark, nfonts);
 }
 
@@ -231,13 +256,22 @@ const char * tilestyle_mode_name(void)
     return mode == TILE_COLOURS_PALETTES ? "palettes" : mode == TILE_COLOURS_MIX ? "mix" : mode == TILE_COLOURS_GENERATE ? "generate" : "theme";
 }
 
+float tilestyle_text_min(void) { return text_min; }
+
 int tilestyle_font_count(void) { return nfonts; }
 
-const char * tilestyle_font(int i, bool * caps)
+const tile_font_t * tilestyle_font(int i)
 {
-    if(i < 0 || i >= nfonts) return NULL;
-    if(caps) *caps = font_caps[i];
-    return fonts[i];
+    return i >= 0 && i < nfonts ? &fonts[i] : NULL;
+}
+
+bool tilestyle_font_fits(int i, int letters, uint32_t bg, uint32_t ink)
+{
+    const tile_font_t * f = tilestyle_font(i);
+    if(!f) return false;
+    if(f->max_letters && letters > f->max_letters) return false;
+    if(f->contrast > 0 && tilestyle_contrast(bg, ink) < f->contrast) return false;
+    return true;
 }
 
 /* ----------------------------------------------------------- pools */
@@ -413,18 +447,26 @@ static bool colour_ok(int card, const void * vctx)
     return true;
 }
 
-typedef struct { int left, up; } font_ctx_t;
+/* The font deck holds `share` cards per face; card -> face through face_of. */
+static int face_of[FONT_MAX * 100];
+
+typedef struct { int left, up; int letters; uint32_t bg, ink; bool want_long; } font_ctx_t;
 
 static bool font_ok(int card, const void * vctx)
 {
     const font_ctx_t * c = vctx;
-    return card != c->left && card != c->up;
+    int i = face_of[card];
+    if(i == c->left || i == c->up) return false;
+    if(!tilestyle_font_fits(i, c->letters, c->bg, c->ink)) return false;
+    if(c->want_long && !fonts[i].for_long) return false;
+    return true;
 }
 
-void tilestyle_deal(unsigned seed, int n, int cols, const bool * noart, tile_style_t * out)
+void tilestyle_deal(unsigned seed, int n, int cols, const bool * noart, const int * letters, tile_style_t * out)
 {
     if(n <= 0 || !out) return;
     memset(out, 0, sizeof(tile_style_t) * (size_t)n);
+    for(int e = 0; e < n; e++) out[e].font = TILE_FONT_NONE;
     if(cols < 1) cols = 1;
     rng_t r = { seed * 2654435761u + 0x51ED270Bu };
 
@@ -444,7 +486,11 @@ void tilestyle_deal(unsigned seed, int n, int cols, const bool * noart, tile_sty
 
     deck_t cd, fd;
     deck_init(&cd, pool, &r);
-    deck_init(&fd, nfonts, &r);
+    int cards = 0;
+    for(int i = 0; i < nfonts; i++) for(int k = 0; k < fonts[i].share && cards < (int)(sizeof(face_of) / sizeof(face_of[0])); k++) face_of[cards++] = i;
+    bool any_long = false;
+    for(int i = 0; i < nfonts; i++) if(fonts[i].for_long) any_long = true;
+    deck_init(&fd, cards, &r);
 
     for(int e = 0; e < n; e++) {
         if(!noart[e]) continue;
@@ -458,9 +504,21 @@ void tilestyle_deal(unsigned seed, int n, int cols, const bool * noart, tile_sty
             else out[e].ink = pick_ink(&mix[card], &r);
         }
         else { out[e].bg = 0x333333; out[e].ink = 0xEEEEEE; }
-        if(nfonts > 0) {
-            font_ctx_t fc = { l >= 0 ? out[l].font : -1, u >= 0 ? out[u].font : -1 };
-            out[e].font = (uint8_t)deck_take(&fd, font_ok, &fc);
+        if(cards > 0) {
+            int let = letters ? letters[e] : 0;
+            /* a long title goes to a condensed face half the time (Ian:
+             * "prioritize Anton SC for long titles") */
+            bool want_long = any_long && let >= LONG_LETTERS && (rnd(&r) & 1);
+            font_ctx_t fc = { l >= 0 ? out[l].font : -1, u >= 0 ? out[u].font : -1, let, out[e].bg, out[e].ink, want_long };
+            int card = deck_take(&fd, font_ok, &fc);
+            /* deck_take falls back to the next card when nothing passes; make
+             * sure what we hand out at least fits the title and colours */
+            int face = face_of[card];
+            if(!tilestyle_font_fits(face, let, out[e].bg, out[e].ink)) {
+                face = TILE_FONT_NONE;
+                for(int k = 0; k < nfonts; k++) { int j = (face_of[card] + 1 + k) % nfonts; if(tilestyle_font_fits(j, let, out[e].bg, out[e].ink)) { face = j; break; } }
+            }
+            out[e].font = (uint8_t)face;
         }
     }
     free(cd.cards);

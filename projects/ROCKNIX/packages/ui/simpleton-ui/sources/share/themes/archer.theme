@@ -52,6 +52,38 @@ tilecream FAEFD0
 # off-black (the sets' darkest colours). A kind that doesn't read on a tile
 # gives its share to the others.
 tileinks palette=60 cream=25 dark=15
+# The smallest a title may be set on a tile, as a fraction of the tile side
+# (0.12 = 28 px at 3 across on the handheld); below it the title is trimmed
+# with dots instead of shrinking, and a bracketed tail is trimmed or dropped
+# first (Ian, 10 Oct).
+tiletextmin 0.12
+# Cover fonts: the face an album title is set in on a no-art tile (0.16i,
+# Ian's type notes of 9 Oct; 10 Oct: Oi, Wendy One and Sigmar One taken out
+# for the liner pages instead). Dealt per visit from a deck with share= cards
+# of each (default 10, so roughly equal), never the same face as the no-art
+# tile to the left or above. Jost Bold caps at 70% leading is the Archer Ave.
+# look.
+#   coverfont <file> caps|mixed leading=<% of the face's own line spacing>
+#             [share=N] [max=<letters>] [min=<fraction of the tile>] [contrast=<ratio>] [long] [big]
+#   max:      only titles up to that many letters (wide faces)
+#   min:      only when the title fits at that fraction of the tile or bigger (faces that must be large)
+#   contrast: only on tiles whose ink reads at that ratio or better
+#   long:     first choice for long titles (condensed faces)
+#   big:      the size ladder starts a step bigger (a short title fills the tile)
+coverfont Jost-Bold.ttf caps leading=70
+coverfont Jost-SemiBold.ttf caps leading=70
+coverfont Jost-Black.ttf caps leading=70
+coverfont Jost-Medium.ttf mixed leading=80
+coverfont Jost-Light.ttf mixed leading=80 max=9 big contrast=4.5
+coverfont Arvo-Bold.ttf mixed leading=90
+coverfont Monoton-Regular.ttf caps leading=100 max=10 big min=0.15 contrast=4.5
+coverfont Caprasimo-Regular.ttf mixed leading=100
+coverfont AntonSC-Regular.ttf mixed leading=65 long
+coverfont BBHHegarty-Regular.ttf caps leading=70 max=8 big min=0.14
+coverfont Shrikhand-Regular.ttf mixed leading=80
+coverfont Creepster-Regular.ttf mixed leading=80 share=1
+coverfont GravitasOne.ttf mixed leading=80 big
+coverfont Bevan-Regular.ttf mixed leading=70
 
 # The Home page: a shelf of cassette spines (Ian, 4-7 Oct 2026; home.h).
 # Tiles are 180x1080 PNGs in themes/archer/ with the label left blank; the

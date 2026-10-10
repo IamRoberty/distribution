@@ -76,6 +76,28 @@
 # a cream (FAEFD0) common but not dominant, some off-black; the contrast
 # floor is a theme setting (Archer: 2.0, vibe over contrast). tilecontrast,
 # tilecream and tileinks lines in the theme.
+# 0.16h (9 Oct 2026): the album grid fills in by itself when a card's index
+# appears after it was opened (after a boot it said "No albums yet" until
+# the UI restarted).
+# 0.16i (10 Oct 2026): cover fonts for the no-art tiles, from Ian's type
+# notes: seventeen faces listed in the theme (coverfont lines) with case,
+# leading, share and rules (short titles only, must be large, needs
+# contrast, first for long titles), dealt per visit like the colours; type
+# sizes on one fixed scale. New OFL faces in share/fonts (Jost Light /
+# SemiBold / Black cut from the variable Jost; Monoton, Oi, Anton SC,
+# Creepster, Wendy One, Gravitas One; Arvo Regular, Dekko, Updock for the
+# album page's track lists later).
+# 0.16j (10 Oct 2026): a floor on the title size (tiletextmin, a fraction of
+# the tile): below it the title is trimmed with dots, and a bracketed tail
+# is trimmed or dropped before the title shrinks. Leading tuned (Anton SC
+# 65, BBH Hegarty 70, Bevan 70, Arvo 90); Oi, Wendy One and Sigmar One out
+# of the cover fonts (kept for the liner pages).
+# 0.16k (10 Oct 2026): the size floor is for the title only; a bracketed
+# tail may go as small as the ladder allows before it is trimmed.
+# 0.16l (10 Oct 2026): a word is never broken in two: a title whose one wide
+# word can't sit on a line at the floor goes below the floor just as far as
+# it needs (never under 16 px), and a face that can't take a title whole
+# passes it to the next.
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
 #   main.c        - theme/indev setup, screen switch, action dispatch
 #   display.c/h   - DRM/KMS output choice, modeset, page flips, hotplug
@@ -116,7 +138,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.16g"
+PKG_VERSION="0.16l"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk"

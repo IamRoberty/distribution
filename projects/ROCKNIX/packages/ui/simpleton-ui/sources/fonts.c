@@ -29,7 +29,7 @@
 
 #define MAX_SIZES         8         /* UI typeface sizes (the shared screens use four or five) */
 #define MAX_TAILS         32        /* sizes the Noto chain has been built at */
-#define MAX_FACES         256       /* (typeface, size) pairs for the theme-owned screens */
+#define MAX_FACES         512       /* (typeface, size) pairs for the theme-owned screens (0.16i: 17 cover faces) */
 #define MAX_CHAIN         24
 
 /* The fallback chain behind the theme's typeface, in lookup order. Noto Sans

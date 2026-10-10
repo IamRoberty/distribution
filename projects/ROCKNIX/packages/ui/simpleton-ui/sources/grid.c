@@ -366,8 +366,8 @@ static void tile_refresh_bitmap(tile_t * t)
  * smallest step of the ladder will not take it does it wrap and trail off
  * with dots. */
 
-#define LADDER_STEPS 9
-#define MAIN_TRIES   6
+#define LADDER_STEPS 12
+#define TEXT_MIN_PX  16                       /* never below this, whatever the theme says */
 
 static int text_w(const lv_font_t * f, const char * s)
 {
@@ -415,29 +415,51 @@ static int wrap_words(const lv_font_t * f, const char * s, int maxw, char * out,
 typedef struct {
     const lv_font_t * font;
     int  px, lines, h;
+    int  space;                 /* line space (negative = tighter than the face's own) */
     bool whole;                 /* every word on one line, nothing trimmed */
     char text[400];
 } fit_t;
 
+/* Sizes come from one fixed scale (~12% a step) so every tile size, face
+ * and grid size shares the same few font objects: with seventeen faces,
+ * free sizes would soon run the font cache out (0.16i). */
+static const int type_scale[] = { 10, 11, 12, 14, 16, 18, 20, 22, 25, 28, 32, 36, 40, 45, 50, 56, 63, 72, 80, 90, 100, 112, 126, 140, 160, 180 };
+#define TYPE_STEPS ((int)(sizeof(type_scale) / sizeof(type_scale[0])))
+
 static void ladder_fill(int * lad, int start)
 {
-    lad[0] = start;
-    for(int i = 1; i < LADDER_STEPS; i++) { lad[i] = lad[i - 1] * 86 / 100; if(lad[i] < 10) lad[i] = 10; }
+    int k = 0;
+    while(k + 1 < TYPE_STEPS && type_scale[k + 1] <= start) k++;
+    for(int i = 0; i < LADDER_STEPS; i++) lad[i] = type_scale[k - i < 0 ? 0 : k - i];
+}
+
+/* Leading (Ian, 9 Oct): a face's lines set at `pct` of its own line
+ * height; the extra (usually negative) space between lines. */
+static int leading_space(const lv_font_t * f, int pct)
+{
+    int lh = lv_font_get_line_height(f);
+    return lh * (pct - 100) / 100;
+}
+
+static int lines_height(const lv_font_t * f, int lines, int space)
+{
+    return lines * lv_font_get_line_height(f) + (lines > 1 ? (lines - 1) * space : 0);
 }
 
 /* The largest rung from `from` on (to `last`) where `text` sits in maxw x maxh
  * in whole words and at most max_lines lines. Returns the rung, or -1. */
-static int fit_rung(const char * file, const int * lad, int from, int last, const char * text,
+static int fit_rung(const char * file, int leading, const int * lad, int from, int last, const char * text,
                     int maxw, int maxh, int max_lines, fit_t * out)
 {
     for(int k = from; k <= last; k++) {
         const lv_font_t * f = face_px(file, lad[k]);
         bool whole;
         int lines = wrap_words(f, text, maxw, out->text, sizeof(out->text), &whole);
-        int h = lines * lv_font_get_line_height(f);
+        int space = leading_space(f, leading);
+        int h = lines_height(f, lines, space);
         if(k > from && lad[k] == lad[k - 1]) break;            /* the ladder has bottomed out */
         if(whole && lines <= max_lines && h <= maxh) {
-            out->font = f; out->px = lad[k]; out->lines = lines; out->h = h; out->whole = true;
+            out->font = f; out->px = lad[k]; out->lines = lines; out->h = h; out->space = space; out->whole = true;
             return k;
         }
     }
@@ -452,6 +474,7 @@ static lv_obj_t * tile_label(lv_obj_t * box, const fit_t * ft, int w, int top)
     lv_obj_t * l = lv_label_create(box);
     lv_obj_set_style_text_font(l, ft->font, 0);
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_line_space(l, ft->space, 0);
     lv_label_set_long_mode(l, ft->whole ? LV_LABEL_LONG_MODE_CLIP : LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_size(l, w, ft->h);
     lv_obj_set_style_margin_top(l, top, 0);
@@ -480,6 +503,118 @@ static void caps_inplace(char * s)
     for(; *s; s++) if(*s >= 'a' && *s <= 'z') *s -= 32;
 }
 
+static tile_style_t * styles;         /* per entry: colours + cover font, dealt per visit */
+static int            styles_n;
+
+/* Letters in a title (for the cover-font rules): everything but spaces and
+ * punctuation, counted as code points. */
+static int count_letters(const char * s)
+{
+    int n = 0;
+    for(const unsigned char * p = (const unsigned char *)s; *p; p++) {
+        if((*p & 0xC0) == 0x80) continue;                        /* UTF-8 continuation */
+        if(*p < 0x80 && !((*p >= '0' && *p <= '9') || (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z'))) continue;
+        n++;
+    }
+    return n;
+}
+
+/* The smallest size a title may be set at (Ian, 10 Oct: "set a size limit
+ * for how small a font can get; use the ... before something gets too
+ * small to read"): the theme's fraction of the tile, never under
+ * TEXT_MIN_PX. */
+static int text_min_px(int side)
+{
+    int m = (int)(tilestyle_text_min() * (float)side);
+    return m < TEXT_MIN_PX ? TEXT_MIN_PX : m;
+}
+
+/* The last rung of the ladder that is still at or above min_px. */
+static int ladder_floor(const int * lad, int min_px)
+{
+    int last = 0;
+    for(int i = 0; i < LADDER_STEPS; i++) if(lad[i] >= min_px) last = i;
+    return last;
+}
+
+/* Fit the main part of the title in `file` into w x room, in whole words,
+ * at the biggest rung down to the floor. Returns the rung, or -1.
+ * `big`: the ladder starts a step bigger (short titles fill the tile). */
+static int fit_main(const char * file, int leading, bool big, int side, int w, int room, int max_lines,
+                    const char * main, int min_px, int * lad, fit_t * fm)
+{
+    int start = big ? side / 4 : side / 6;
+    if(start < 16) start = 16;
+    if(start > 180) start = 180;
+    ladder_fill(lad, start);
+    int floor_k = ladder_floor(lad, text_min_px(side));
+    int k = fit_rung(file, leading, lad, 0, floor_k, main, w, room, max_lines, fm);
+    if(k >= 0) return k;
+    if(getenv("SIMPLETON_DEBUG_FIT")) fprintf(stderr, "fit: %s '%s' side %d w %d floor %d (rung %d = %d px) min %d start %d\n", file, main, side, w, text_min_px(side), floor_k, lad[floor_k], min_px, lad[0]);
+    /* Below the floor only when a single word is too wide for a line at
+     * the floor, and only down to min_px: a word is never broken (Ian,
+     * 10 Oct: "Transformer", "Preservation", "Dreamboat" were being cut in
+     * two). A title that merely has too many words is trimmed with dots at
+     * the floor instead. */
+    char tmp[400];
+    bool whole;
+    wrap_words(face_px(file, lad[floor_k]), main, w, tmp, sizeof(tmp), &whole);
+    if(whole) return -1;
+    int bottom = ladder_floor(lad, min_px < TEXT_MIN_PX ? TEXT_MIN_PX : min_px);
+    if(bottom <= floor_k) return -1;
+    return fit_rung(file, leading, lad, floor_k + 1, bottom, main, w, room, max_lines, fm);
+}
+
+/* The bracketed tail under a placed main part: whole, three rungs smaller
+ * than the main, down the whole ladder (Ian, 10 Oct: "words in a
+ * parenthesis you can make as small as you want" - the floor is for the
+ * title); else one line at the bottom rung trimmed with dots; else nothing.
+ * The extra information packed into some titles "we don't need to know"
+ * never shrinks the title. Returns whether there is a tail to show. */
+static bool fit_tail(const char * file, int leading, int side, int w, int room, int gap, const char * br,
+                     const int * lad, int k_main, fit_t * fb)
+{
+    (void)side;
+    int floor_k = LADDER_STEPS - 1;
+    int kb = k_main + 3 > floor_k ? floor_k : k_main + 3;
+    int tail_room = room - gap / 2;
+    if(tail_room <= 0) return false;
+    if(fit_rung(file, leading, lad, kb, floor_k, br, w, tail_room, 2, fb) >= 0) return true;
+    const lv_font_t * f = face_px(file, lad[floor_k]);
+    int lh = lv_font_get_line_height(f);
+    if(lh > tail_room) return false;
+    fb->font = f; fb->px = lad[floor_k]; fb->whole = false; fb->space = 0;
+    snprintf(fb->text, sizeof(fb->text), "%s", br);
+    fb->lines = 1; fb->h = lh;
+    return true;
+}
+
+/* Nothing fits whole: the biggest rung at or above the floor where
+ * max_lines lines fit the room (else the floor), wrapped by LVGL, trailing
+ * off with dots. */
+static void fit_fallback(const char * file, int leading, int side, int room, int max_lines, const char * text, bool caps, fit_t * fm)
+{
+    int lad[LADDER_STEPS];
+    int start = side / 6;
+    if(start < 16) start = 16;
+    ladder_fill(lad, start);
+    int floor_k = ladder_floor(lad, text_min_px(side));
+    int k = floor_k;
+    for(int j = 2; j <= floor_k; j++) {
+        const lv_font_t * f = face_px(file, lad[j]);
+        if(lines_height(f, max_lines, leading_space(f, leading)) <= room) { k = j; break; }
+    }
+    fm->font = face_px(file, lad[k]); fm->px = lad[k]; fm->whole = false;
+    snprintf(fm->text, sizeof(fm->text), "%s", text);
+    if(caps) caps_inplace(fm->text);
+    fm->space = leading_space(fm->font, leading);
+    int lh = lv_font_get_line_height(fm->font);
+    int lines = (room - fm->space) / (lh + fm->space);
+    if(lines < 1) lines = 1;
+    if(lines > max_lines) lines = max_lines;
+    fm->lines = lines; fm->h = lines_height(fm->font, lines, fm->space);
+}
+
 static void tile_make_text(tile_t * t)
 {
     const lib_album_t * a = album_of(t->entry);
@@ -488,24 +623,26 @@ static void tile_make_text(tile_t * t)
     int w = side - 2 * pad, avail = side - 2 * pad;
     bool big = side >= BIG_TILE_PX;
 
-    /* the typeface: steady per album, a little variety across the screen */
+    /* the theme's trio, used when the theme lists no cover fonts (and as
+     * the last fallback): steady per album, a little variety across the
+     * screen */
     unsigned hsh = 2166136261u;
     for(const char * p = a->title; *p; p++) hsh = (hsh ^ (unsigned char)*p) * 16777619u;
-    bool caps_t = false, caps_a = false;
-    const char * file_t;
-    switch((hsh >> 8) % 3) {
-        case 0:  file_t = placeholder_line_font(2, &caps_t); break;                         /* the tape's album line */
-        case 1:  file_t = placeholder_line_font(3, &caps_t); break;                         /* mixed case            */
-        default: file_t = "Caprasimo-Regular.ttf"; caps_t = false; break;                  /* a display face        */
-    }
+    bool caps_a = false;
     const char * file_a = placeholder_line_font(1, &caps_a);
+    bool trio_caps = false;
+    const char * trio_file;
+    switch((hsh >> 8) % 3) {
+        case 0:  trio_file = placeholder_line_font(2, &trio_caps); break;                   /* the tape's album line */
+        case 1:  trio_file = placeholder_line_font(3, &trio_caps); break;                   /* mixed case            */
+        default: trio_file = "Caprasimo-Regular.ttf"; trio_caps = false; break;            /* a display face        */
+    }
 
-    char title[300], main[300], br[300], artist[300];
+    char title[300], main[300], br[300], artist[300], raw_main[300], raw_br[300];
     snprintf(title, sizeof(title), "%s", a->title);
     snprintf(artist, sizeof(artist), "%s", artist_text(a));
-    bool has_br = split_bracket(title, main, sizeof(main), br, sizeof(br));
-    if(!has_br) snprintf(main, sizeof(main), "%s", title);
-    if(caps_t) { caps_inplace(main); if(has_br) caps_inplace(br); }
+    bool has_br = split_bracket(title, raw_main, sizeof(raw_main), raw_br, sizeof(raw_br));
+    if(!has_br) { snprintf(raw_main, sizeof(raw_main), "%s", title); raw_br[0] = 0; }
     if(caps_a) caps_inplace(artist);
 
     int gap = pad / 2;
@@ -515,46 +652,69 @@ static void tile_make_text(tile_t * t)
     if(big && artist[0]) {
         int lad[LADDER_STEPS];
         ladder_fill(lad, side / 12 < 12 ? 12 : side / 12 > 34 ? 34 : side / 12);
-        if(fit_rung(file_a, lad, 0, 4, artist, w, avail / 3, 2, &fa) < 0) {
-            fa.font = face_px(file_a, lad[4]); fa.px = lad[4]; fa.whole = false;
+        if(fit_rung(file_a, 100, lad, 0, 4, artist, w, avail / 3, 2, &fa) < 0) {
+            fa.font = face_px(file_a, lad[4]); fa.px = lad[4]; fa.whole = false; fa.space = 0;
             snprintf(fa.text, sizeof(fa.text), "%s", artist);
             fa.lines = 1; fa.h = lv_font_get_line_height(fa.font);
         }
         used_h = fa.h + gap;
     }
 
-    /* title: the biggest rung where the main part and its bracket both fit */
-    int lad[LADDER_STEPS];
-    int start = side / 6;
-    if(start < 16) start = 16;
-    if(start > 72) start = 72;
-    ladder_fill(lad, start);
+    /* the title: the dealt cover font first, then the next faces that fit
+     * its rules, and the theme's trio last (0.16i, Ian's type notes) */
     int room = avail - used_h;
     int max_lines = big ? 5 : 4;
     fit_t fm = { 0 }, fb = { 0 };
-    bool placed = false;
-    for(int k = 0; k < MAIN_TRIES && !placed; k++) {
-        if(fit_rung(file_t, lad, k, k, main, w, room, max_lines, &fm) < 0) continue;
-        if(!has_br) { placed = true; break; }
-        int kb = k + 3 > LADDER_STEPS - 1 ? LADDER_STEPS - 1 : k + 3;
-        if(fit_rung(file_t, lad, kb, LADDER_STEPS - 1, br, w, room - fm.h - gap / 2, 2, &fb) >= 0) { placed = true; break; }
+    bool placed = false, done = false, show_br = false;
+    int lad[LADDER_STEPS];
+    int nfaces = tilestyle_font_count();
+    int dealt = (t->entry >= 0 && t->entry < styles_n) ? styles[t->entry].font : TILE_FONT_NONE;
+    uint32_t bg = 0, ink = 0;
+    if(t->entry >= 0 && t->entry < styles_n) { bg = styles[t->entry].bg; ink = styles[t->entry].ink; }
+    int letters = count_letters(raw_main);
+    const char * file_t = trio_file;
+    bool caps_t = trio_caps;
+    int leading = 100;
+    for(int k = 0; k < nfaces && !done && dealt != TILE_FONT_NONE; k++) {
+        int i = (dealt + k) % nfaces;
+        const tile_font_t * f = tilestyle_font(i);
+        if(!f || !tilestyle_font_fits(i, letters, bg, ink)) continue;
+        snprintf(main, sizeof(main), "%s", raw_main);
+        snprintf(br, sizeof(br), "%s", raw_br);
+        if(f->caps) { caps_inplace(main); caps_inplace(br); }
+        int km = fit_main(f->file, f->leading, f->big, side, w, room, max_lines, main, text_min_px(side) * 3 / 4, lad, &fm);
+        placed = km >= 0;
+        if(!placed) continue;                                 /* not whole within 3/4 of the floor: a narrower face may take it */
+        if(f->min_size > 0 && fm.px < (int)(f->min_size * side)) continue;               /* must be large */
+        if(has_br) show_br = fit_tail(f->file, f->leading, side, w, room - fm.h, gap, br, lad, km, &fb);
+        file_t = f->file; caps_t = f->caps; leading = f->leading;
+        done = true;
+    }
+    if(!done) {
+        /* no face could take it near the floor: the dealt face (else the
+         * trio's) goes as small as it must for whole words */
+        const tile_font_t * f = dealt != TILE_FONT_NONE ? tilestyle_font(dealt) : NULL;
+        const char * file = f ? f->file : trio_file;
+        bool caps = f ? f->caps : trio_caps;
+        int lead = f ? f->leading : 100;
+        snprintf(main, sizeof(main), "%s", raw_main);
+        snprintf(br, sizeof(br), "%s", raw_br);
+        if(caps) { caps_inplace(main); caps_inplace(br); }
+        int km = fit_main(file, lead, f ? f->big : false, side, w, room, max_lines, main, TEXT_MIN_PX, lad, &fm);
+        placed = km >= 0;
+        if(placed && has_br) show_br = fit_tail(file, lead, side, w, room - fm.h, gap, br, lad, km, &fb);
+        file_t = file; caps_t = caps; leading = lead;
     }
     if(!placed) {
-        /* nothing fits whole: the biggest rung whose max_lines lines fit the
-         * room, wrapped by LVGL, trailing off */
-        int k = MAIN_TRIES - 1;
-        for(int j = 2; j < MAIN_TRIES; j++)
-            if(lv_font_get_line_height(face_px(file_t, lad[j])) * max_lines <= room) { k = j; break; }
-        fm.font = face_px(file_t, lad[k]); fm.px = lad[k]; fm.whole = false;
-        snprintf(fm.text, sizeof(fm.text), "%s", has_br ? title : main);
-        if(has_br && caps_t) caps_inplace(fm.text);
-        int lh = lv_font_get_line_height(fm.font);
-        int lines = room / lh;
-        if(lines < 1) lines = 1;
-        if(lines > max_lines) lines = max_lines;
-        fm.lines = lines; fm.h = lines * lh;
-        has_br = false;
+        /* the main part alone, trimmed: the tail is the first thing to go */
+        fit_fallback(file_t, leading, side, room, max_lines, raw_main, caps_t, &fm);
+        show_br = false;
     }
+    has_br = show_br;
+    static int debug_tiles = -1;
+    if(debug_tiles < 0) debug_tiles = getenv("SIMPLETON_DEBUG_TILES") != NULL;
+    if(debug_tiles) fprintf(stderr, "simpleton-ui: tile \"%s\": %s %d px, %d line%s, dealt %d%s\n", a->title, file_t, fm.px,
+                            fm.lines, fm.lines == 1 ? "" : "s", dealt, done ? "" : " (fallback)");
 
     lv_obj_t * box = lv_obj_create(t->obj);
     lv_obj_remove_style_all(box);
@@ -576,9 +736,6 @@ static void tile_make_text(tile_t * t)
  * colour once before repeating and no tile matches the one left or above.
  * Held while in the grid: the same seed, entries and columns deal the same
  * colours again, so paging back shows what it showed before. */
-static tile_style_t * styles;
-static int            styles_n;
-
 static void deal_colours(void)
 {
     free(styles);
@@ -587,12 +744,19 @@ static void deal_colours(void)
     if(nentries == 0) return;
     styles = calloc((size_t)nentries, sizeof(*styles));
     bool * noart = calloc((size_t)nentries, sizeof(bool));
-    if(styles && noart) {
-        for(int e = 0; e < nentries; e++) noart[e] = !album_of(e)->has_art;
-        tilestyle_deal(visit_seed, nentries, cols(), noart, styles);
+    int * letters = calloc((size_t)nentries, sizeof(int));
+    if(styles && noart && letters) {
+        for(int e = 0; e < nentries; e++) {
+            const lib_album_t * a = album_of(e);
+            noart[e] = !a->has_art;
+            char m[300], b[300];
+            letters[e] = count_letters(split_bracket(a->title, m, sizeof(m), b, sizeof(b)) ? m : a->title);
+        }
+        tilestyle_deal(visit_seed, nentries, cols(), noart, letters, styles);
         styles_n = nentries;
     }
     free(noart);
+    free(letters);
 }
 
 static uint32_t tile_colour(int entry, uint32_t * ink)
@@ -1021,12 +1185,37 @@ static void sort_entries(void)
     build_labels();
 }
 
+/* Cards MPD had mounted at the last load whose index did not exist yet: a
+ * card still being scanned, or its index still being copied back after a
+ * boot. Watched so the grid fills in by itself when the index appears
+ * (0.16h, Ian 9 Oct: after a reboot on HDMI the grid said "No albums yet"
+ * until the UI restarted, while Folders already showed the card - the old
+ * check only looked at cards that had an index at load). */
+#define MAX_PENDING 8
+static char pending_idx[MAX_PENDING][320];
+static int  npending;
+
 static bool index_changed(void)
 {
     for(int s = 0; s < nsources; s++) {
         struct stat st;
         if(stat(sources[s].idx_path, &st) != 0) return true;
         if(st.st_mtime != sources[s].idx_mtime) return true;
+    }
+    for(int i = 0; i < npending; i++) {
+        struct stat st;
+        if(stat(pending_idx[i], &st) == 0) return true;
+    }
+    /* nothing to show: ask MPD again whether a card has been mounted since
+     * (one short lsinfo every 3 s, only while the grid is empty) */
+    if(nsources == 0 && npending == 0) {
+        mpd_listing_t root;
+        if(!mpd_lsinfo("", &root)) return false;
+        bool card = false;
+        for(int i = 0; i < root.count && !card; i++)
+            card = root.items[i].kind == MPD_ENTRY_DIR && strncmp(root.items[i].uri, "card-", 5) == 0 && !strchr(root.items[i].uri, '/');
+        mpd_listing_free(&root);
+        if(card) return true;
     }
     return false;
 }
@@ -1037,6 +1226,7 @@ static void load_library(const char * keep_folder)
 {
     for(int s = 0; s < nsources; s++) library_free(&sources[s].lib);
     nsources = 0;
+    npending = 0;
     entries_free();
     lib_loaded = false;
 
@@ -1050,7 +1240,10 @@ static void load_library(const char * keep_folder)
         snprintf(s->card, sizeof(s->card), "%s", e->uri);
         cache_index_path(s->card, s->idx_path, sizeof(s->idx_path));
         struct stat st;
-        if(stat(s->idx_path, &st) != 0) continue;
+        if(stat(s->idx_path, &st) != 0) {
+            if(npending < MAX_PENDING) snprintf(pending_idx[npending++], sizeof(pending_idx[0]), "%s", s->idx_path);
+            continue;
+        }
         if(!library_load(&s->lib, s->idx_path)) continue;
         s->idx_mtime = st.st_mtime;
         nsources++;
