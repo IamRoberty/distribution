@@ -67,6 +67,15 @@
 #     simpleton-cache@<card>.service, started by simpleton-card after a scan.
 #   - art.c: MUSIC_DIR can be overridden for tests; synchronous cover fetch
 #     and decode for the cache. mpdc.c: streaming listallinfo.
+# 0.16f (9 Oct 2026): more colour in the grid's no-art tiles. Ian's twelve
+# colour sets go in the theme as tilepalette lines and a tilecolours line
+# picks how they're used (theme / palettes / mix / generate; tilestyle.c),
+# dealt per visit so a screenful doesn't repeat and neighbours differ.
+# Fonts unchanged pending a design talk.
+# 0.16g (9 Oct 2026): inks after Ian's first look - mostly palette colours,
+# a cream (FAEFD0) common but not dominant, some off-black; the contrast
+# floor is a theme setting (Archer: 2.0, vibe over contrast). tilecontrast,
+# tilecream and tileinks lines in the theme.
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
 #   main.c        - theme/indev setup, screen switch, action dispatch
 #   display.c/h   - DRM/KMS output choice, modeset, page flips, hotplug
@@ -107,7 +116,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.16e"
+PKG_VERSION="0.16g"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk"
@@ -140,7 +149,7 @@ make_target() {
     ${PKG_BUILD}/playthrough.c ${PKG_BUILD}/strings.c ${PKG_BUILD}/layout.c \
     ${PKG_BUILD}/library.c ${PKG_BUILD}/config.c ${PKG_BUILD}/shelf.c ${PKG_BUILD}/home.c \
     ${PKG_BUILD}/settings.c ${PKG_BUILD}/notice.c ${PKG_BUILD}/picker.c \
-    ${PKG_BUILD}/grid.c ${PKG_BUILD}/thumbs.c ${PKG_BUILD}/cache.c \
+    ${PKG_BUILD}/grid.c ${PKG_BUILD}/thumbs.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/tilestyle.c \
     ${TARGET_LDFLAGS} -rdynamic \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \

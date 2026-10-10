@@ -29,6 +29,7 @@
 #include "strings.h"
 #include "theme.h"
 #include "thumbs.h"
+#include "tilestyle.h"
 #include "src/misc/cache/instance/lv_image_cache.h"   /* lv_image_cache_drop, not in lvgl.h */
 
 #include <stdint.h>
@@ -569,49 +570,29 @@ static void tile_make_text(tile_t * t)
     if(has_br) t->t_extra = tile_label(box, &fb, w, gap / 2);
 }
 
-/* The no-art colourways, dealt round the list so a screenful never repeats
- * one and neighbours differ in hue (Ian, 8 Oct: "the colours repeat too
- * often on the same screen"). The theme's colourways are put in hue order,
- * then walked with a stride coprime to their number from a random start,
- * both random per visit and held while in the grid, so the same album keeps
- * its colours when paged back to. */
-#define WAYS_MAX 32
-static int way_order[WAYS_MAX];
-static int way_n;
+/* The no-art colours (0.16f, Ian 9 Oct: more variety). Dealt per visit by
+ * tilestyle.c from the theme's tilecolours setting - Ian's colour sets, a
+ * mix of them, or colourways generated from them - so a screenful uses each
+ * colour once before repeating and no tile matches the one left or above.
+ * Held while in the grid: the same seed, entries and columns deal the same
+ * colours again, so paging back shows what it showed before. */
+static tile_style_t * styles;
+static int            styles_n;
 
-static int hue_of(uint32_t rgb)
+static void deal_colours(void)
 {
-    int r = (rgb >> 16) & 255, g = (rgb >> 8) & 255, b = rgb & 255;
-    int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
-    int mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
-    int d = mx - mn;
-    if(d == 0) return 0;
-    int h;
-    if(mx == r) h = 60 * (g - b) / d;
-    else if(mx == g) h = 120 + 60 * (b - r) / d;
-    else h = 240 + 60 * (r - g) / d;
-    return h < 0 ? h + 360 : h;
-}
-
-static void deal_colourways(void)
-{
-    int n = placeholder_colourway_count();
-    if(n > WAYS_MAX) n = WAYS_MAX;
-    way_n = n;
-    if(n == 0) return;
-    int by_hue[WAYS_MAX], hue[WAYS_MAX];
-    for(int i = 0; i < n; i++) { uint32_t bg; placeholder_colourway(i, &bg, NULL); hue[i] = hue_of(bg); by_hue[i] = i; }
-    for(int i = 1; i < n; i++)                                           /* insertion sort by hue */
-        for(int j = i; j > 0 && hue[by_hue[j]] < hue[by_hue[j - 1]]; j--) { int t = by_hue[j]; by_hue[j] = by_hue[j - 1]; by_hue[j - 1] = t; }
-    /* a stride near a third of the way round, coprime to n */
-    int stride = n / 3 < 1 ? 1 : n / 3;
-    unsigned r = visit_seed | 1u;
-    r ^= r << 13; r ^= r >> 17; r ^= r << 5;
-    stride += (int)(r % 3u);
-    for(;; stride++) { int a = stride % n, b = n; while(b) { int t = a % b; a = b; b = t; } if(a == 1) break; }
-    r ^= r << 13; r ^= r >> 17; r ^= r << 5;
-    int start = (int)(r % (unsigned)n);
-    for(int i = 0; i < n; i++) way_order[i] = by_hue[(start + i * stride) % n];
+    free(styles);
+    styles = NULL;
+    styles_n = 0;
+    if(nentries == 0) return;
+    styles = calloc((size_t)nentries, sizeof(*styles));
+    bool * noart = calloc((size_t)nentries, sizeof(bool));
+    if(styles && noart) {
+        for(int e = 0; e < nentries; e++) noart[e] = !album_of(e)->has_art;
+        tilestyle_deal(visit_seed, nentries, cols(), noart, styles);
+        styles_n = nentries;
+    }
+    free(noart);
 }
 
 static uint32_t tile_colour(int entry, uint32_t * ink)
@@ -619,7 +600,7 @@ static uint32_t tile_colour(int entry, uint32_t * ink)
     const lib_album_t * a = album_of(entry);
     if(a->has_art && a->colour) { if(ink) *ink = 0xFFFFFF; return a->colour; }
     uint32_t bg = 0x333333, fg = 0xEEEEEE;
-    if(way_n > 0) placeholder_colourway(way_order[entry % way_n], &bg, &fg);
+    if(entry >= 0 && entry < styles_n) { bg = styles[entry].bg; fg = styles[entry].ink; }
     if(ink) *ink = fg;
     return bg;
 }
@@ -1139,6 +1120,7 @@ static void rebuild(void)
     bmp_clear_all();
     measure();
     rows_total = nentries ? (nentries + cols() - 1) / cols() : 0;
+    deal_colours();
     layout_screen();
     picker_relayout(&plm);
     if(sel > nentries - 1) sel = nentries ? nentries - 1 : 0;
@@ -1248,6 +1230,9 @@ void grid_create(void (*on_open)(const char *, const char *), void (*on_exit)(vo
     exit_cb = on_exit;
     for(int i = 0; i < MAX_TILES; i++) tiles[i].entry = -1;
     thumbs_init();
+    char theme_path[512];
+    config_theme_file(theme_path, sizeof(theme_path));
+    tilestyle_load(theme_path);
     read_options();
     measure();
 
@@ -1294,8 +1279,7 @@ void grid_create(void (*on_open)(const char *, const char *), void (*on_exit)(vo
 void grid_show(bool fresh)
 {
     shown = true;
-    if(fresh) { visit_seed = (unsigned)time(NULL) ^ (unsigned)lv_tick_get() ^ (unsigned)rand(); deal_colourways(); }
-    if(way_n == 0) deal_colourways();
+    if(fresh) visit_seed = (unsigned)time(NULL) ^ (unsigned)lv_tick_get() ^ (unsigned)rand();
     suppress_overlay = !fresh;                 /* back from an album: no pill, the cursor on it */
     read_options();
     lv_screen_load(scr);

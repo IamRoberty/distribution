@@ -22,6 +22,37 @@ colourway background=5BBCD6 shell=F2AD00 label=00A08A text=FAEFD1 ; Darjeeling
 colourway background=35274A shell=EABE94 label=0B775E text=E1BD6D ; Rushmore
 uifont Jost-Medium.ttf
 
+# Artless album tiles in the grid (0.16f, 9 Oct 2026; tilestyle.h).
+# Ian's colour sets, one per line: tilepalette <name> <colours...>
+tilepalette GP1  F1BB7B FD6467 5B1A17 D67237
+tilepalette GP2  E6A0C4 C6CCF8 D8A499 7194D4
+tilepalette MR1  F3DF6C CEAC08 D5D5D3 24281B
+tilepalette MR2  7A8E88 C27D39 CBC590 29221E
+tilepalette MR3  85D4E3 F4B5BE 9C974A CDBF8B FBD77C
+tilepalette CHV  456455 FDD263 D3DDDD C7B19C
+tilepalette R1   8A9DA4 C93312 FAEFD0 DD863B
+tilepalette R2   998721 F5CDB5 F8AEA8 FDDDA0 74A089
+tilepalette CVC  D7B707 01401D A2A475 82A88E 982D13
+tilepalette FOX  DD8D29 E4D104 45ACC8 E58601 B41820
+tilepalette DJ   FF2500 00A089 F3AD01 F88400 5BBBD7
+tilepalette ZS   3C9AB2 78B7C6 EBCC2A E0AF00 F22300
+#   tilecolours theme     the tape colourways above, as before 0.16f
+#   tilecolours palettes  any colour of any set as the tile, its palette
+#                         inks from the same set
+#   tilecolours mix       any colour as the tile, palette inks from any set
+#   tilecolours generate  tile colours invented each visit from the sets'
+#                         hues, saturation and lightness, inked as mix
+tilecolours palettes
+# The least contrast an ink may have (1 = none, 21 = black on white). Low on
+# purpose: Archer Ave. is about vibe more than contrast.
+tilecontrast 2.0
+# A cream any non-pastel tile may take as its ink.
+tilecream FAEFD0
+# How often each kind of ink is drawn: a palette colour, the cream, an
+# off-black (the sets' darkest colours). A kind that doesn't read on a tile
+# gives its share to the others.
+tileinks palette=60 cream=25 dark=15
+
 # The Home page: a shelf of cassette spines (Ian, 4-7 Oct 2026; home.h).
 # Tiles are 180x1080 PNGs in themes/archer/ with the label left blank; the
 # name is written on at run time, so it follows the language setting.
