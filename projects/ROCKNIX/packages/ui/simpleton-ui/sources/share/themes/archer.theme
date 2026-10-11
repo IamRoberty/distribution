@@ -91,13 +91,13 @@ coverfont Bevan-Regular.ttf mixed leading=70
 # 9 Oct: Jost, Arvo, Caprasimo, Shrikhand, Anton SC, Dekko, Updock for the
 # liner). Dealt by share when a layout says liner=any.
 #   linerfont <file> caps|mixed [leading=N] [share=N]
-linerfont Jost-Medium.ttf mixed leading=100 share=30
+linerfont Jost-Medium.ttf mixed leading=100 share=40
 linerfont Arvo-Regular.ttf mixed leading=100 share=20
 linerfont Caprasimo-Regular.ttf mixed leading=100 share=10
 linerfont Shrikhand-Regular.ttf mixed leading=95 share=5
 linerfont AntonSC-Regular.ttf mixed leading=85 share=10
-linerfont Dekko-Regular.ttf mixed leading=95 share=5
-linerfont Updock-Regular.ttf mixed leading=95 share=5
+# 11 Oct: Dekko and Updock out (Ian: Dekko doesn't sit with the other
+# faces, Updock is too small to read); their shares go to Jost Medium.
 linerfont Jost-Light.ttf mixed leading=100 share=10
 
 # Page layouts, one drawn per visit for the screen (every one once before

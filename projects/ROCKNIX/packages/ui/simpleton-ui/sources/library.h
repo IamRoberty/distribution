@@ -15,6 +15,11 @@
  * Rules (Ian + proposed, Note 05 section 8):
  *   - An album is the tracks sharing album artist (else artist) and album
  *     title, wherever they lie: a two-folder two-disc album is one album.
+ *   - Releases (11 Oct): two folders that each hold most of the same album
+ *     (the same titles both ways, 60 %) are two albums - a remaster, a DSD
+ *     edition - each labelled by what its folder name adds to the title,
+ *     else the year, else its format; a few tracks of the album lying in
+ *     another folder (a hits compilation) still join the biggest copy.
  *   - Tracks whose artists differ with no album artist tag are grouped by
  *     album title within one folder, and the album is marked `various`.
  *   - With no album tag, one folder is one album: its title is the folder
@@ -61,6 +66,9 @@ typedef struct {
     bool     various;          /* tracks by different artists, no album artist*/
     bool     in_collection;    /* lies in a collection folder (singles): the  */
                                /* Albums view may leave it out                */
+    char *   release;          /* "" or what tells this release of the album  */
+                               /* from the others: "2019 Remaster", "1987",   */
+                               /* "dsd64:2" (11 Oct)                          */
     uint64_t fingerprint;      /* of its tracks' URIs and dates               */
     /* filled by the cache (0 / false until it has run) */
     uint32_t colour;           /* 0xRRGGBB preview of the cover, 0 = none     */
@@ -86,7 +94,7 @@ typedef enum {
 typedef struct {
     char *        uri;
     folder_type_t type;
-    int           album;       /* FOLDER_ALBUM: which album; else -1          */
+    int           album;       /* FOLDER_ALBUM: which album (most of its tracks'; else -1 */
     int           tracks;      /* tracks directly inside                      */
     int           subfolders;  /* folders directly inside that hold music     */
 } lib_folder_t;

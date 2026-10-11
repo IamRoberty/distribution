@@ -56,6 +56,7 @@ typedef struct {
     char  title[256];
     char  artist[256];
     char  album[256];
+    char  error[256];      /* MPD's "error:" line ("Failed to open "DAC" (alsa); ..."), "" when none (11 Oct) */
 } mpd_status_t;
 
 /* Try to connect (fast fail on localhost). Safe to call repeatedly; returns

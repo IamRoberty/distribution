@@ -62,6 +62,10 @@ void nowplaying_expect_file(const char * uri);
 /* The file the art on screen belongs to ("" when none). */
 const char * nowplaying_art_file(void);
 void nowplaying_unembed(void);
+/* Hosted: the album's own cover before any of it plays - the first track's
+ * art set (11 Oct); and the "n / m" badge flashed on demand. */
+void nowplaying_preview(const char * uri, const char * artist, const char * album, const char * title);
+void nowplaying_show_badge(void);
 /* Pop the controls up (a track started, or the user asked) and let them
  * fade as usual; hide them now; whether they are up. */
 void nowplaying_poke(void);

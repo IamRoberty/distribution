@@ -67,6 +67,12 @@ void albumpage_create(void (*on_exit)(void), void (*on_play)(void));
  * An album whose index line has no palette yet gets one from its 192 px
  * thumbnail here. False when the album has no tracks. */
 bool albumpage_open(const library_t * lib, int album, const char * card, const tile_style_t * tile);
+/* The same page for a folder the browser is entering (11 Oct): the look of
+ * `album` (the one most of its tracks are of), the list every track under
+ * `folder` in file order, nothing sorted or folded. */
+bool albumpage_open_folder(const library_t * lib, const char * folder, int album, const char * card, const tile_style_t * tile);
+/* True when the page was opened as a folder (the restart line says so). */
+bool albumpage_by_folder(void);
 
 /* `fresh`: a new visit (the layout and colours are dealt again, the first
  * track selected); false coming back from now-playing or Settings, which

@@ -201,6 +201,60 @@
 # in /proc/asound/cards) open with zeros, 48 kHz 16-bit stereo. Music still
 # goes only to the USB DAC. /storage/.config/simpleton/hdmi_silence = off
 # turns it off. Links libasound (alsa-lib, already in the image for MPD).
+# 0.17k (11 Oct 2026): after Ian's day with 0.17j.
+#   - Releases: the same album in two folders (a remaster, a DSD edition)
+#     is two albums (library.c: a folder is a release when it and the
+#     album's biggest folder hold most of each other's titles), labelled
+#     by what the folder name adds to the title, else the year, else the
+#     format ("2019 Remaster", "SACD"; in the grid's name tail and on the
+#     page); a few tracks of an album in another folder still join it and
+#     fold on the page. library.idx gains the label (last A field).
+#   - Folder mode: a folder opened from the browser gets the page's look
+#     but lists every track in the folder, in file order, nothing sorted by
+#     tag, nothing folded (albumpage_open_folder; --folderpage on the
+#     restart line); CD1/CD2 subfolders count as discs when the tracks
+#     carry none. An album folder is one whose tracks are mostly (2/3) of
+#     one album, so a bonus track tagged otherwise no longer unmakes it.
+#   - The page's art: the album's own cover from the start (now-playing
+#     decodes the first track's art as a preview, pages and all, so Select
+#     turns them before anything plays) and the page's thumbnail placed by
+#     now-playing's rules (fitted and letterboxed, or full height from the
+#     left edge when wide), so nothing jumps when a track starts. The
+#     themed placeholder never comes over the page's own picture.
+#   - Handheld: Left/Right turn the album over - the art (badge, Select
+#     for the next picture, Up/Down the controls) or the tile, cassette or
+#     record - Left/Right/Back turn it back; the list wraps round the ends.
+#   - Dekko and Updock are out of the liner faces (Ian).
+# 0.17l (11 Oct 2026): a release is a container when the track lies in one
+# - two cue (or ISO / DFF) rips side by side in one folder are two albums
+# too (Ian's case), labelled from the cue's name; a title's trailing
+# punctuation doesn't stop its folder name matching.
+# 0.17m (11 Oct 2026): now-playing's format line shows MPD's own error
+# when it can't open its output ("Can't open the DAC: hw:CARD=AUDIO,DEV=0")
+# instead of "DAC idle" (mpdc.c reads status's error line). Found with
+# Ian's survey: MPD had been left on a DAC swapped out hours before. The
+# fix proper is in simpleton-mpd-config (the hotplug script waits for the
+# card, follows the card that appeared, checks that MPD restarted, says
+# what it did in the journal) and needs a full image build.
+# 0.17n (11 Oct 2026): no UI change - the version marks the round that found
+# the reboots: a DST-compressed SACD track resets the RGB20SX (twice on a
+# stereo track, once with the DAC off; memory fine, no kernel line). The
+# SACD plugin's DST decoder runs one thread per core; four A55s at 1.8 GHz
+# take the SoC past its 95 C hardware thermal shutdown (rockchip,hw-tshut-
+# temp) in seconds. Proven by capping the clock: 1104 MHz played the track
+# for minutes peaking at 78 C, 1416 MHz still reset the unit. The fix lives
+# elsewhere in the tree: projects/ROCKNIX/patches/mpd/0005 (a dstdec_threads
+# option, set to 2 in mpd.conf), simpleton-mpd-config's simpleton-thermal
+# boot unit (1104 MHz ceiling, passive trips 75/82 C) and restore_paused.
+# 0.17o (11 Oct 2026): no UI change either - the round that locks the fix
+# in: MPD patch 0006 (MPD aborted at every stop - the SACD/DSDIFF plugins'
+# finish() built an AllocatedPath from a null path inside a noexcept
+# function; root of the "status=6/ABRT" bug and of the 27 Sep "hot-swap
+# crash"), simpleton-mpd-config's package.mk installs simpleton-thermal and
+# enables its service, and simpleton-mpd-conf-migrate restores the decoder
+# blocks and restore_paused in a unit's existing mpd.conf. Measured: with
+# the ceiling and two DST threads the SoC peaks at 73 C on the track that
+# reset it at 90+ (threads2.txt).
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
 #   main.c        - theme/indev setup, screen switch, action dispatch
 #   display.c/h   - DRM/KMS output choice, modeset, page flips, hotplug
@@ -250,7 +304,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.17j"
+PKG_VERSION="0.17o"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk alsa-lib"

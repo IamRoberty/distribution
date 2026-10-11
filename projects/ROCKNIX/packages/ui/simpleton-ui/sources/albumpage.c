@@ -55,6 +55,8 @@ typedef struct {
 
 static struct {
     char   title[300], artist[300], folder[1024], card[64], thumb[320];
+    char   release[120];         /* "2019 Remaster": this release of an album that exists twice (11 Oct) */
+    bool   by_folder;            /* opened from the browser as a folder: every track in it, in file order (11 Oct) */
     bool   has_art;
     uint32_t colour;             /* the cover's preview colour */
     art_palette_t palette;
@@ -86,6 +88,8 @@ static focus_t focus;
 static bool    art_paged;            /* Select has turned a page: the frame stays off until the cover is left and re-entered */
 
 static bool     shown, opened, tv;
+static bool     front;               /* handheld: the album's front is up (the art, or the tile / cassette / record) - Ian, 11 Oct */
+static lv_obj_t * front_obj;         /* handheld: the front's container, the stage's size, hidden on the back */
 static unsigned seed;
 static int      gen;                 /* thumbnail request generation */
 static uint8_t * art_px;
@@ -171,14 +175,14 @@ static void palette_from_thumb(const lib_album_t * a)
     free(px);
 }
 
-bool albumpage_open(const library_t * lib, int album, const char * card, const tile_style_t * tile)
+/* The look of the page from an album: names, art, colours, the grid's tile. */
+static void open_look(const library_t * lib, int album, const char * card, const tile_style_t * tile)
 {
-    if(!lib || album < 0 || album >= lib->nalbums) return false;
     const lib_album_t * a = &lib->albums[album];
-    if(a->track_count <= 0) return false;
     album_free();
     snprintf(alb.title, sizeof(alb.title), "%s", a->title);
     snprintf(alb.artist, sizeof(alb.artist), "%s", a->various ? T(S_VARIOUS_ARTISTS) : a->artist);
+    snprintf(alb.release, sizeof(alb.release), "%s", a->release ? a->release : "");
     snprintf(alb.folder, sizeof(alb.folder), "%s", a->folder);
     snprintf(alb.card, sizeof(alb.card), "%s", card ? card : "");
     alb.has_art = a->has_art;
@@ -188,25 +192,60 @@ bool albumpage_open(const library_t * lib, int album, const char * card, const t
     if(tile) alb.tile = *tile;
     cache_thumb_path(alb.card, a, LIB_THUMB_COUNT - 1, alb.thumb, sizeof(alb.thumb));
     if(alb.has_art && !palette_complete(&alb.palette)) palette_from_thumb(a);
+}
+
+static bool add_track(const lib_track_t * t)
+{
+    track_t * p = &alb.tr[alb.n++];
+    p->uri = strdup(t->uri);
+    p->title = strdup(t->title[0] ? t->title : "");
+    p->disc = t->disc;
+    p->track = t->track;
+    p->rank = library_format_rank(t->format);
+    return p->uri && p->title;
+}
+
+/* After the tracks are in: discs, untitled tracks, the cursor. */
+static bool open_finish(void)
+{
+    int last_disc = -1;
+    alb.discs = 0;
+    for(int i = 0; i < alb.n; i++) if(alb.tr[i].disc != last_disc) { alb.discs++; last_disc = alb.tr[i].disc; }
+    /* an untitled track shows its number (the browser's rule) */
+    for(int i = 0; i < alb.n; i++) if(!alb.tr[i].title[0]) {
+        char num[16], buf[64];
+        snprintf(num, sizeof(num), "%02d", i + 1);
+        ui_strf(buf, sizeof(buf), S_TRACK_NUMBERED, "n", num, NULL);
+        free(alb.tr[i].title);
+        alb.tr[i].title = strdup(buf);
+    }
+    opened = alb.n > 0;
+    sel = 0;
+    playing = -1;
+    return opened;
+}
+
+bool albumpage_open(const library_t * lib, int album, const char * card, const tile_style_t * tile)
+{
+    if(!lib || album < 0 || album >= lib->nalbums) return false;
+    const lib_album_t * a = &lib->albums[album];
+    if(a->track_count <= 0) return false;
+    open_look(lib, album, card, tile);
     alb.tr = calloc((size_t)a->track_count, sizeof(track_t));
     if(!alb.tr) { memset(&alb, 0, sizeof(alb)); return false; }
     bool numbered = true;
     for(int i = a->first_track; i < lib->ntracks && alb.n < a->track_count; i++) {
         const lib_track_t * t = &lib->tracks[i];
         if(t->album != album) continue;
-        track_t * p = &alb.tr[alb.n++];
-        p->uri = strdup(t->uri);
-        p->title = strdup(t->title[0] ? t->title : "");
-        p->disc = t->disc;
-        p->track = t->track;
-        p->rank = library_format_rank(t->format);
+        add_track(t);
         if(t->track <= 0) numbered = false;
     }
     if(numbered && alb.n > 1) qsort(alb.tr, (size_t)alb.n, sizeof(track_t), track_cmp);
-    /* the same track in two places (a second rip of the album in another
-     * folder joins the same album): one of each shows and plays (Ian,
-     * 10 Oct 20:09) - the same disc and number with the same title, or the
-     * same title where numbers are missing; the first in library order wins */
+    /* the same track in two places (a few tracks of the album in a hits
+     * folder join it; two whole copies are two albums since 11 Oct): one of
+     * each shows and plays (Ian, 10 Oct 20:09) - the same disc and number
+     * with the same title, or the same title where numbers are missing;
+     * the first in library order wins */
     int kept = 0;
     for(int i = 0; i < alb.n; i++) {
         int dup = -1;
@@ -233,23 +272,56 @@ bool albumpage_open(const library_t * lib, int album, const char * card, const t
     }
     if(kept < alb.n) fprintf(stderr, "simpleton-ui: album page: \"%s\": %d of %d tracks are second copies, not shown\n", alb.title, alb.n - kept, alb.n);
     alb.n = kept;
-    int last_disc = -1;
-    for(int i = 0; i < alb.n; i++) if(alb.tr[i].disc != last_disc) { alb.discs++; last_disc = alb.tr[i].disc; }
-    /* an untitled track shows its number (the browser's rule) */
-    for(int i = 0; i < alb.n; i++) if(!alb.tr[i].title[0]) {
-        char num[16], buf[64];
-        snprintf(num, sizeof(num), "%02d", i + 1);
-        ui_strf(buf, sizeof(buf), S_TRACK_NUMBERED, "n", num, NULL);
-        free(alb.tr[i].title);
-        alb.tr[i].title = strdup(buf);
+    return open_finish();
+}
+
+/* The browser's way in (Ian, 11 Oct): a folder that holds an album takes
+ * the page's look from that album but lists what the folder holds - every
+ * track under it, in file order as the browser shows them, nothing sorted
+ * by tag and nothing folded; the folder's own subfolders (CD1, CD2) count
+ * as discs when the tracks carry no disc numbers. */
+bool albumpage_open_folder(const library_t * lib, const char * folder, int album, const char * card, const tile_style_t * tile)
+{
+    if(!lib || !folder || !folder[0] || album < 0 || album >= lib->nalbums) return false;
+    size_t fl = strlen(folder);
+    int count = 0;
+    for(int i = 0; i < lib->ntracks; i++) if(strncmp(lib->tracks[i].uri, folder, fl) == 0 && lib->tracks[i].uri[fl] == '/') count++;
+    if(count == 0) return false;
+    open_look(lib, album, card, tile);
+    alb.by_folder = true;
+    snprintf(alb.folder, sizeof(alb.folder), "%s", folder);
+    alb.tr = calloc((size_t)count, sizeof(track_t));
+    if(!alb.tr) { memset(&alb, 0, sizeof(alb)); return false; }
+    bool any_disc = false;
+    for(int i = 0; i < lib->ntracks && alb.n < count; i++) {
+        const lib_track_t * t = &lib->tracks[i];
+        if(strncmp(t->uri, folder, fl) != 0 || t->uri[fl] != '/') continue;
+        add_track(t);
+        if(t->disc > 0) any_disc = true;
     }
-    opened = alb.n > 0;
-    sel = 0;
-    playing = -1;
-    return opened;
+    if(!any_disc) {
+        /* discs from the direct subfolders, in order of first appearance */
+        char subs[8][256];
+        int nsubs = 0;
+        for(int i = 0; i < alb.n; i++) {
+            const char * rest = alb.tr[i].uri + fl + 1;
+            const char * slash = strchr(rest, '/');
+            if(!slash) { alb.tr[i].disc = 0; continue; }
+            char sub[256];
+            snprintf(sub, sizeof(sub), "%.*s", (int)(slash - rest), rest);
+            int k;
+            for(k = 0; k < nsubs; k++) if(strcmp(subs[k], sub) == 0) break;
+            if(k == nsubs && nsubs < 8) snprintf(subs[nsubs++], sizeof(subs[0]), "%s", sub);
+            alb.tr[i].disc = k < nsubs ? k + 1 : 0;
+        }
+        if(nsubs < 2) for(int i = 0; i < alb.n; i++) alb.tr[i].disc = 0;
+    }
+    fprintf(stderr, "simpleton-ui: album page: folder %s as \"%s\": %d tracks in file order\n", folder, alb.title, alb.n);
+    return open_finish();
 }
 
 const char * albumpage_folder(void) { return opened ? alb.folder : NULL; }
+bool albumpage_by_folder(void) { return opened && alb.by_folder; }
 
 /* ---- marks: the playing triangle and the favourite heart ---- */
 
@@ -446,7 +518,8 @@ static void choose_for_layout(void)
         if(uris) for(int i = 0; i < alb.n; i++) uris[i] = alb.tr[i].uri;
         placeholder_prefer(uris, uris ? alb.n : 0, alb.artist, alb.title, sq_tints, sq_ntints, tst[0].bg, sq_ink, sq_font[0] ? sq_font : NULL, sq_caps);
         free(uris);
-        if(tv) {
+        {
+            /* the TV's square, or the handheld's front (11 Oct) */
             const char * opt[3];
             int nopt = 0;
             opt[nopt++] = NULL;
@@ -469,7 +542,7 @@ static void choose_for_layout(void)
     fprintf(stderr, "simpleton-ui: album page: \"%s\" layout %s, colours %s bg %06x ink %06x text %06x playing %06x selected %06x, liner %s, %d tracks%s%s%s\n",
             alb.title, lay->name, from_art ? (lay->colours == PAGE_COLOURS_PAPER ? "paper" : "art") : "tile",
             c_bg, c_ink, c_text, c_play, c_sel, liner_file ? liner_file : "ui", alb.n, split < alb.n ? " split" : "",
-            tv && !alb.has_art ? ", square " : "", tv && !alb.has_art ? (square_design ? square_design : "tile") : "");
+            !alb.has_art ? ", square " : "", !alb.has_art ? (square_design ? square_design : "tile") : "");
     if(!alb.has_art) fprintf(stderr, "simpleton-ui: album page: picture colours background %06x label %06x shell %06x disc %06x ink %06x, album face %s\n",
                              sq_tints[0].rgb, sq_tints[1].rgb, sq_tints[2].rgb, sq_tints[5].rgb, sq_ink, sq_font[0] ? sq_font : "theme");
 }
@@ -505,6 +578,7 @@ static void page_clear(void)
     if(page) { lv_obj_delete(page); page = NULL; }
     marks_free();
     if(frame) { lv_obj_delete(frame); frame = NULL; }
+    if(front_obj) { nowplaying_unembed(); lv_obj_delete(front_obj); front_obj = NULL; }   /* now-playing's stage lives in it: out first */
     art_img = field[0] = field[1] = content[0] = content[1] = mark = NULL;
     for(int i = 0; i < alb.n; i++) { alb.tr[i].num = alb.tr[i].lab = alb.tr[i].heart = NULL; }
 }
@@ -519,11 +593,23 @@ static void page_begin(void)
     lv_obj_move_background(page);
 }
 
+/* The square's picture placed as now-playing places its art (Ian, 11 Oct:
+ * one set of rules, so nothing moves when a track starts and the full
+ * cover takes over): fitted inside the square, centred, the page colour
+ * round it; a wide one (1.2:1 and up) the square's height from its left
+ * edge, as now-playing's first pan stop shows it. */
 static void art_apply(void)
 {
     if(!art_img || !art_px) return;
     lv_image_set_src(art_img, &art_dsc);
-    if(!(tv && nowplaying_art_ready())) lv_obj_remove_flag(art_img, LV_OBJ_FLAG_HIDDEN);
+    int side = ui_screen.stage, w = (int)art_dsc.header.w, h = (int)art_dsc.header.h;
+    int dw, dh;
+    if(w <= 0 || h <= 0) { dw = dh = side; }
+    else if(w * 10 >= h * 12) { dh = side; dw = (int)((long)w * side / h); if(dw > side * 4) dw = side * 4; }
+    else { int m = w > h ? w : h; dw = (int)((long)w * side / m); dh = (int)((long)h * side / m); }
+    lv_obj_set_size(art_img, dw, dh);
+    lv_obj_set_pos(art_img, dw > side ? 0 : (side - dw) / 2, (side - dh) / 2);
+    if(!(nowplaying_embedded() && nowplaying_art_ready())) lv_obj_remove_flag(art_img, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void art_free(void)
@@ -600,7 +686,7 @@ static void square_drop(void)
 /* The playing track changed: a cassette with a title line gets the new one. */
 static void square_retitle(void)
 {
-    if(!tv || !shown || !art_img || !square_design || placeholder_design_lines(square_design) < 3) return;
+    if(!shown || !art_img || !square_design || placeholder_design_lines(square_design) < 3) return;
     square_render();
 }
 
@@ -627,7 +713,7 @@ static void poll_cb(lv_timer_t * tm)
         art_apply();
     }
     else pthread_mutex_unlock(&sq_lock);
-    if(tv && art_img && nowplaying_embedded()) {
+    if(art_img && nowplaying_embedded()) {
         /* now-playing's own cover arrives on its own time: ours gives way then */
         bool np_up = nowplaying_art_ready();
         bool ours_hidden = lv_obj_has_flag(art_img, LV_OBJ_FLAG_HIDDEN);
@@ -653,17 +739,17 @@ static void poll_cb(lv_timer_t * tm)
 
 /* The cover square on the TV: the art (its preview colour until the
  * thumbnail is decoded), or the no-art tile. */
-static void build_square(int ax)
+static void build_square(lv_obj_t * parent, int ax, int ay)
 {
     int side = ui_screen.stage;
-    lv_obj_t * sq = plain(page);
-    lv_obj_set_pos(sq, ax, ui_screen.stage_y);
+    lv_obj_t * sq = plain(parent);
+    lv_obj_set_pos(sq, ax, ay);
     lv_obj_set_size(sq, side, side);
     if(alb.has_art) {
-        lv_obj_set_style_bg_color(sq, lv_color_hex(alb.colour ? alb.colour : c_bg), 0);
+        lv_obj_set_style_bg_color(sq, lv_color_hex(c_bg), 0);       /* the page colour round a cover that isn't square, as now-playing paints it */
         lv_obj_set_style_bg_opa(sq, LV_OPA_COVER, 0);
         art_img = lv_image_create(sq);
-        lv_obj_set_size(art_img, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_size(art_img, side, side);
         lv_obj_set_pos(art_img, 0, 0);
         lv_image_set_inner_align(art_img, LV_IMAGE_ALIGN_STRETCH);
         lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN);
@@ -681,7 +767,7 @@ static void build_square(int ax)
         if(square_design) {
             /* the cassette or record, in the tile's colours */
             art_img = lv_image_create(sq);
-            lv_obj_set_size(art_img, LV_PCT(100), LV_PCT(100));
+            lv_obj_set_size(art_img, side, side);
             lv_obj_set_pos(art_img, 0, 0);
             lv_image_set_inner_align(art_img, LV_IMAGE_ALIGN_STRETCH);
             lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN);
@@ -694,6 +780,8 @@ static void build_square(int ax)
         }
     }
 }
+
+static int build_release_line(lv_obj_t * parent, int x, int y, int w, bool centred, int px);
 
 /* One name of the handheld header, fitted into w; returns its height. */
 static int build_name(const char * text_in, const tile_font_t * face, int start_px, int maxh, int max_lines,
@@ -755,7 +843,27 @@ static int build_header(int x, int y, int w)
         int h = build_name(line[k].text, line[k].face, px, maxh, max_lines, centred, x, y, w);
         y += h + gap;
     }
+    if(alb.release[0]) y += build_release_line(page, x, y, w, centred, PX(26)) + gap;
     return y + PX(6);
+}
+
+/* "2019 Remaster": which release of an album that exists twice this is
+ * (11 Oct), a small line in the list's face and the text colour. */
+static int build_release_line(lv_obj_t * parent, int x, int y, int w, bool centred, int px)
+{
+    const lv_font_t * f = face_px(liner_file, px);
+    lv_obj_t * l = lv_label_create(parent);
+    lv_obj_set_style_text_font(l, f, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(c_text), 0);
+    lv_obj_set_style_text_align(l, centred ? LV_TEXT_ALIGN_CENTER : LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_pos(l, x, y);
+    lv_obj_set_size(l, w, lv_font_get_line_height(f));
+    char text[140];
+    snprintf(text, sizeof(text), "%s", alb.release);
+    if(liner_caps) caps_inplace(text);
+    lv_label_set_text(l, text);
+    return lv_font_get_line_height(f);
 }
 
 /* A side label over a split list ("Side A"), in the artist face. */
@@ -929,6 +1037,7 @@ static void build_list(void)
 
 static void apply_focus(void);
 static void np_host(void);
+static int build_release_line(lv_obj_t * parent, int x, int y, int w, bool centred, int px);
 
 static void build(void)
 {
@@ -952,7 +1061,7 @@ static void build(void)
         int stage = ui_screen.stage, rest = ui_screen.w - stage;
         int ax = lay->art == PAGE_ART_LEFT ? 0 : lay->art == PAGE_ART_RIGHT ? rest : rest / 2;
         sq_x = ax;
-        build_square(ax);
+        build_square(page, ax, ui_screen.stage_y);
         col_y = ui_screen.stage_y + tvpx(80);
         col_h = stage - tvpx(80) - tvpx(40);
         if(lay->art == PAGE_ART_CENTRE) {
@@ -974,6 +1083,12 @@ static void build(void)
             col_w[0] = rest - 2 * margin - gut;
             col_x[1] = col_x[0]; col_w[1] = col_w[0];
         }
+        if(alb.release[0]) {
+            /* which release, small, where the list begins; the list moves down a line */
+            int lh_rel = build_release_line(page, col_x[0], col_y - tvpx(8), col_w[0], lay->align == PAGE_ALIGN_CENTRE, tvpx(30));
+            col_y += lh_rel + tvpx(8);
+            col_h -= lh_rel + tvpx(8);
+        }
     }
     else {
         int margin = PX(50);
@@ -986,6 +1101,20 @@ static void build(void)
         if(col_h < lh) col_h = lh;
     }
     build_list();
+    if(!tv) {
+        /* the front of the album (Ian, 11 Oct): the art - now-playing's
+         * stage, with its badge and controls - or the tile, cassette or
+         * record, the stage's size, over the list while it is up */
+        front_obj = plain(scr);
+        lv_obj_set_pos(front_obj, ui_screen.stage_x, ui_screen.stage_y);
+        lv_obj_set_size(front_obj, ui_screen.stage, ui_screen.stage);
+        lv_obj_set_style_bg_color(front_obj, lv_color_hex(c_bg), 0);
+        lv_obj_set_style_bg_opa(front_obj, LV_OPA_COVER, 0);
+        build_square(front_obj, 0, 0);
+        if(!front) lv_obj_add_flag(front_obj, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
+        np_host();
+    }
     if(tv) {
         /* the cover's frame, above now-playing's stage when that is hosted here */
         frame = plain(scr);
@@ -1019,13 +1148,12 @@ static bool album_has_uri(const char * uri)
 
 static void page_art_mode(void)
 {
-    if(!tv) return;
     /* now-playing's art may stay up across a track change within this album
      * (same picture); art of another album stays hidden until the new
      * track's is decoded - no flash of the previous cover (Ian) */
     /* an album without art keeps its own picture: now-playing's cassette
      * never comes over it (Ian, 10 Oct 20:49) */
-    if(nowplaying_embedded()) nowplaying_embed_art(playing >= 0 && alb.has_art, c_bg, album_has_uri(nowplaying_art_file()));
+    if(nowplaying_embedded()) nowplaying_embed_art(alb.has_art, c_bg, album_has_uri(nowplaying_art_file()));
     bool np_up = nowplaying_art_ready();            /* its picture is actually up: ours gives way */
     if(art_img) { if(np_up) lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN); else if(art_px) lv_obj_remove_flag(art_img, LV_OBJ_FLAG_HIDDEN); }
 }
@@ -1036,9 +1164,16 @@ static void page_art_mode(void)
  * come over it. */
 static void np_host(void)
 {
-    if(!tv || !shown) return;
-    nowplaying_embed(scr, sq_x, ui_screen.stage_y, playing >= 0 && alb.has_art, c_bg);
+    if(!shown) return;
+    if(tv) nowplaying_embed(scr, sq_x, ui_screen.stage_y, alb.has_art, c_bg);
+    else if(front_obj) nowplaying_embed(front_obj, 0, 0, alb.has_art, c_bg);
+    else return;
     if(frame) lv_obj_move_foreground(frame);
+    /* the album's own cover from the start (Ian, 11 Oct: its pages could
+     * only be turned once a track of it played): now-playing decodes the
+     * first track's art as a preview, the full set, placed by its rules */
+    if(alb.has_art && alb.n > 0 && !album_has_uri(nowplaying_art_file()))
+        nowplaying_preview(alb.tr[0].uri, alb.artist, alb.title, alb.tr[0].title);
     page_art_mode();
 }
 
@@ -1096,6 +1231,7 @@ void albumpage_show(bool fresh)
     }
     focus = FOCUS_LIST;
     art_paged = false;
+    front = false;
     lv_screen_load(scr);
     lv_timer_resume(poll_timer);
     playing = -1;
@@ -1178,7 +1314,7 @@ static void tv_handle(ui_action_t a)
                 nowplaying_poke();                    /* the controls come up; from now on they have the D-pad */
                 return;
             case ACT_SELECT:
-                if(playing >= 0 && alb.has_art) {     /* the cover shown is now-playing's: turn its pages */
+                if(alb.has_art) {                     /* turn the cover's pages (the album's own, since 11 Oct) */
                     art_paged = true;
                     apply_focus();
                     nowplaying_browse();
@@ -1202,8 +1338,8 @@ static void tv_handle(ui_action_t a)
         }
     }
     switch(a) {
-        case ACT_UP:   set_sel(sel - 1); return;
-        case ACT_DOWN: set_sel(sel + 1); return;
+        case ACT_UP:   set_sel(sel > 0 ? sel - 1 : alb.n - 1); return;      /* round the ends (Ian, 11 Oct) */
+        case ACT_DOWN: set_sel(sel < alb.n - 1 ? sel + 1 : 0); return;
         case ACT_LEFT:
         case ACT_RIGHT:
             if(art_is_towards(a, side_of(sel))) set_focus(FOCUS_ART);
@@ -1214,17 +1350,58 @@ static void tv_handle(ui_action_t a)
     }
 }
 
-void albumpage_handle_action(ui_action_t a)
+/* Handheld: the back of the album (the list) or its front (Ian, 11 Oct). */
+static void flip(bool to_front)
 {
-    if(!shown || alb.n == 0) return;
-    if(tv) { tv_handle(a); return; }
+    if(front == to_front || !front_obj || !page) return;
+    front = to_front;
+    if(front) {
+        lv_obj_remove_flag(front_obj, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
+        nowplaying_hide_controls();                 /* quiet until Up/Down asks */
+        if(alb.has_art) nowplaying_show_badge();     /* "1 / 1", "1 / 9": how many pictures there are */
+    }
+    else {
+        nowplaying_hide_controls();
+        lv_obj_add_flag(front_obj, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(page, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void hh_handle(ui_action_t a)
+{
+    if(front) {
+        if(nowplaying_controls_visible()) {
+            if(a == ACT_BACK) { nowplaying_hide_controls(); return; }
+            nowplaying_handle_action(a);            /* the controls have the D-pad */
+            return;
+        }
+        switch(a) {
+            case ACT_UP:
+            case ACT_DOWN:   nowplaying_poke(); return;                     /* the controls come up */
+            case ACT_SELECT: if(alb.has_art) nowplaying_browse(); return;   /* the next picture */
+            case ACT_LEFT:
+            case ACT_RIGHT:
+            case ACT_BACK:   flip(false); return;
+            default:         return;
+        }
+    }
     switch(a) {
-        case ACT_DOWN:   set_sel(sel + 1); return;
-        case ACT_UP:     set_sel(sel - 1); return;
+        case ACT_DOWN:   set_sel(sel < alb.n - 1 ? sel + 1 : 0); return;   /* round the ends (Ian, 11 Oct) */
+        case ACT_UP:     set_sel(sel > 0 ? sel - 1 : alb.n - 1); return;
+        case ACT_LEFT:
+        case ACT_RIGHT:  flip(true); return;                                 /* turn the album over */
         case ACT_SELECT: play_from(sel); return;
         case ACT_BACK:   if(exit_cb) exit_cb(); return;
         default:         return;
     }
+}
+
+void albumpage_handle_action(ui_action_t a)
+{
+    if(!shown || alb.n == 0) return;
+    if(tv) tv_handle(a);
+    else hh_handle(a);
 }
 
 void albumpage_mpd_changed(void)
@@ -1232,5 +1409,5 @@ void albumpage_mpd_changed(void)
     if(!shown) return;
     bool started = false;
     find_playing(&started);
-    if(started && tv) nowplaying_poke();      /* a track started: the controls pop up over the cover and fade */
+    if(started && (tv || front)) nowplaying_poke();      /* a track started: the controls pop up over the cover and fade */
 }

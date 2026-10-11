@@ -1,0 +1,58 @@
+#!/bin/sh
+# simpleton-thermal - keep the RK3566 away from its hardware thermal shutdown.
+#
+# The TSADC resets the board at 95 C (rockchip,hw-tshut-temp) with no
+# software involved; the kernel's own throttling only starts at 83 C and
+# steps the clock down one notch per poll, far too slow for a die that goes
+# 66 -> 90 C in a second when four cores run flat out at 1.8 GHz (the DST
+# decoder of a SACD ISO did exactly that, 11 Oct 2026: two resets, no log).
+#
+# So, once at boot:
+#   1. a ceiling on the CPU clock (1104 MHz: the same DST track then peaked
+#      at 78 C over four minutes; at 1416 MHz it still reset the unit), and
+#   2. earlier passive trip points (75 / 82 C) so the kernel's throttling
+#      begins while there is still room, for every workload (the cache
+#      run, the UI on a TV), not only MPD.
+#
+# Settings: /storage/.config/simpleton/cpu_max_khz   (e.g. 1104000; "max"
+#           lifts the ceiling), SIMPLETON_CPU_MAX_KHZ overrides for tests.
+# Logs to the journal as simpleton-thermal.
+
+say() { echo "simpleton-thermal: $*"; logger -t simpleton-thermal "$*" 2>/dev/null; }
+
+P=/sys/devices/system/cpu/cpufreq/policy0
+CONF=/storage/.config/simpleton/cpu_max_khz
+MAX=${SIMPLETON_CPU_MAX_KHZ:-}
+[ -z "$MAX" ] && [ -r "$CONF" ] && MAX=$(tr -dc '0-9a-z' < "$CONF")
+[ -z "$MAX" ] && MAX=1104000
+
+# cpufreq can come up a little after us (the PMIC regulator probes late).
+n=0
+while [ ! -e "$P/scaling_max_freq" ] && [ $n -lt 40 ]; do sleep 0.25 2>/dev/null || sleep 1; n=$((n + 1)); done
+if [ -e "$P/scaling_max_freq" ]; then
+    if [ "$MAX" = "max" ]; then
+        MAX=$(cat "$P/cpuinfo_max_freq")
+    fi
+    if echo "$MAX" > "$P/scaling_max_freq" 2>/dev/null; then
+        say "CPU clock ceiling $(cat "$P/scaling_max_freq") kHz (governor $(cat "$P/scaling_governor"), hardware max $(cat "$P/cpuinfo_max_freq"))"
+    else
+        say "could not set the CPU clock ceiling $MAX"
+    fi
+else
+    say "no cpufreq policy at $P; no ceiling set"
+fi
+
+for z in /sys/class/thermal/thermal_zone*; do
+    [ -e "$z/type" ] || continue
+    case $(cat "$z/type") in
+        cpu-thermal|gpu-thermal)
+            before="$(cat "$z/trip_point_0_temp" 2>/dev/null)/$(cat "$z/trip_point_1_temp" 2>/dev/null)"
+            if echo 75000 > "$z/trip_point_0_temp" 2>/dev/null && echo 82000 > "$z/trip_point_1_temp" 2>/dev/null; then
+                say "$(cat "$z/type"): passive trips $before -> $(cat "$z/trip_point_0_temp")/$(cat "$z/trip_point_1_temp") (critical $(cat "$z/trip_point_2_temp" 2>/dev/null))"
+            else
+                say "$(cat "$z/type"): trip points not writable (kernel without THERMAL_WRITABLE_TRIPS); left at $before"
+            fi
+            ;;
+    esac
+done
+exit 0

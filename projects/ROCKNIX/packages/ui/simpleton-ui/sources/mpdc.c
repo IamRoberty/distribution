@@ -621,6 +621,7 @@ bool mpd_status(mpd_status_t * out)
         else if(strcmp(key, "Title") == 0)    copy_field(out->title, sizeof(out->title), val);
         else if(strcmp(key, "Artist") == 0)   copy_field(out->artist, sizeof(out->artist), val);
         else if(strcmp(key, "Album") == 0)    copy_field(out->album, sizeof(out->album), val);
+        else if(strcmp(key, "error") == 0)    copy_field(out->error, sizeof(out->error), val);
         /* "Time:" (integer duration) is a fallback when "duration" is absent */
         else if(strcmp(key, "Time") == 0 && out->duration == 0) out->duration = (float)atof(val);
     }

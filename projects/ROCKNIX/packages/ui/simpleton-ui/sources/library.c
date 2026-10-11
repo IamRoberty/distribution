@@ -52,6 +52,21 @@ static void folder_of(const char * uri, char * out, size_t len)
     snprintf(out, len, "%.*s", (int)n, uri);
 }
 
+/* The release a track belongs to for the two-copies rule (11 Oct): the
+ * container when it lies in one ("Album/rip 2009.cue" - two cue rips side
+ * by side in one folder are two releases), else its folder. */
+static void release_of(const char * uri, char * out, size_t len)
+{
+    for(const char * p = uri; *p; p++) {
+        if(*p == '.' && (strncasecmp(p, ".iso/", 5) == 0 || strncasecmp(p, ".cue/", 5) == 0 ||
+                         strncasecmp(p, ".dff/", 5) == 0 || strncasecmp(p, ".dat/", 5) == 0)) {
+            snprintf(out, len, "%.*s", (int)(p + 4 - uri), uri);
+            return;
+        }
+    }
+    folder_of(uri, out, len);
+}
+
 static const char * base_name(const char * uri)
 {
     const char * slash = strrchr(uri, '/');
@@ -105,10 +120,12 @@ const char * library_folder_type_name(folder_type_t t)
 
 typedef struct {
     library_t * lib;
+    int releases;              /* albums made by splitting (for the log)  */
     /* per-track scratch, freed after grouping */
     char ** album_tag;         /* the raw album tag, "" if none   */
     char ** album_artist;      /* album artist tag, "" if none    */
     char ** folder;
+    char ** release;           /* the folder, or the container (11 Oct) */
     int   * year;
 } build_t;
 
@@ -121,6 +138,7 @@ static bool take_song(const mpd_song_info_t * s, void * ctx)
     b->album_tag = grow(b->album_tag, i, sizeof(char *));
     b->album_artist = grow(b->album_artist, i, sizeof(char *));
     b->folder = grow(b->folder, i, sizeof(char *));
+    b->release = grow(b->release, i, sizeof(char *));
     b->year = grow(b->year, i, sizeof(int));
 
     lib_track_t * t = &lib->tracks[i];
@@ -141,6 +159,9 @@ static bool take_song(const mpd_song_info_t * s, void * ctx)
     b->album_tag[i] = xstrdup(s->album);
     b->album_artist[i] = xstrdup(s->album_artist);
     b->folder[i] = xstrdup(f);
+    char rel[1024];
+    release_of(s->uri, rel, sizeof(rel));
+    b->release[i] = xstrdup(rel);
     b->year[i] = year_of(s->original_date, s->date);
     lib->ntracks++;
     return true;
@@ -154,6 +175,140 @@ static int keyed_cmp(const void * pa, const void * pb)
     const keyed_t * a = pa, * b = pb;
     int c = strcmp(a->key, b->key);
     return c ? c : (a->track - b->track);        /* stable: MPD order within an album */
+}
+
+/* Lower-cased title of track i for release matching; the number when
+ * untitled ("#7"), so untitled rips still compare. */
+static void match_name(const build_t * b, int i, char * out, size_t len)
+{
+    const lib_track_t * t = &b->lib->tracks[i];
+    if(t->title[0]) { snprintf(out, len, "%s", t->title); for(char * p = out; *p; p++) *p = (char)tolower((unsigned char)*p); }
+    else snprintf(out, len, "#%d/%d", t->disc, t->track);
+}
+
+#define RELEASE_OVERLAP 60      /* % of a folder's titles the other must hold, both ways */
+#define RELEASE_MIN_TRACKS 2
+
+/* How many of folder `fa`'s tracks (indices in keyed[s..e)) have a title
+ * among folder `fb`'s. Quadratic in the tracks of one album: fine. */
+static int titles_in_common(const build_t * b, const keyed_t * keyed, int s, int e, const char * fa, const char * fb)
+{
+    int common = 0;
+    for(int i = s; i < e; i++) {
+        if(strcmp(b->release[keyed[i].track], fa) != 0) continue;
+        char na[300];
+        match_name(b, keyed[i].track, na, sizeof(na));
+        for(int k = s; k < e; k++) {
+            if(strcmp(b->release[keyed[k].track], fb) != 0) continue;
+            char nb[300];
+            match_name(b, keyed[k].track, nb, sizeof(nb));
+            if(strcmp(na, nb) == 0) { common++; break; }
+        }
+    }
+    return common;
+}
+
+static void split_releases(build_t * b, keyed_t * keyed, int n)
+{
+    for(int s = 0; s < n;) {
+        int e = s;
+        while(e < n && strcmp(keyed[e].key, keyed[s].key) == 0) e++;
+        if(keyed[s].key[0] == 'a' && e - s >= 2 * RELEASE_MIN_TRACKS) {
+            /* the folders of this run and their track counts */
+            enum { MAXF = 64 };
+            const char * folders[MAXF];
+            int counts[MAXF], nf = 0;
+            for(int i = s; i < e && nf < MAXF; i++) {
+                const char * f = b->release[keyed[i].track];
+                int k;
+                for(k = 0; k < nf; k++) if(strcmp(folders[k], f) == 0) break;
+                if(k == nf) { folders[nf] = f; counts[nf] = 0; nf++; }
+                counts[k]++;
+            }
+            if(nf >= 2) {
+                int big = 0;
+                for(int k = 1; k < nf; k++) if(counts[k] > counts[big]) big = k;
+                bool is_release[MAXF] = { false };
+                int nrel = 0;
+                for(int k = 0; k < nf; k++) {
+                    if(k == big || counts[k] < RELEASE_MIN_TRACKS) continue;
+                    int in_big = titles_in_common(b, keyed, s, e, folders[k], folders[big]);
+                    int in_k = titles_in_common(b, keyed, s, e, folders[big], folders[k]);
+                    if(in_big * 100 < counts[k] * RELEASE_OVERLAP || in_k * 100 < counts[big] * RELEASE_OVERLAP) continue;
+                    is_release[k] = true;
+                    nrel++;
+                }
+                if(nrel > 0) {
+                    /* each release's tracks get its folder in the key, the
+                     * biggest folder's too, so every release is labelled; the
+                     * other folders' few tracks stay with the biggest */
+                    is_release[big] = true;
+                    for(int i = s; i < e; i++) {
+                        const char * f = b->release[keyed[i].track];
+                        int k;
+                        for(k = 0; k < nf; k++) if(strcmp(folders[k], f) == 0) break;
+                        const char * with = (k < nf && is_release[k]) ? folders[k] : folders[big];
+                        char * nk = NULL;
+                        if(asprintf(&nk, "%s\x1f%s", keyed[i].key, with) < 0 || !nk) abort();
+                        free(keyed[i].key);
+                        keyed[i].key = nk;
+                    }
+                    b->releases += nrel + 1;
+                }
+            }
+        }
+        s = e;
+    }
+}
+
+/* A release's label: what its folder name adds to the title ("Abbey Road
+ * [2019 Remaster]" -> "2019 Remaster"), else the whole folder name when it
+ * doesn't contain the title, else "" (the caller may fall back to the year
+ * or the format). */
+static void release_label(const char * folder, const char * title, char * out, size_t len)
+{
+    char basebuf[300];
+    snprintf(basebuf, sizeof(basebuf), "%s", base_name(folder));
+    size_t bn = strlen(basebuf);
+    if(bn > 4 && basebuf[bn - 4] == '.' && (strcasecmp(basebuf + bn - 3, "cue") == 0 || strcasecmp(basebuf + bn - 3, "iso") == 0
+                                           || strcasecmp(basebuf + bn - 3, "dff") == 0 || strcasecmp(basebuf + bn - 3, "dat") == 0)) basebuf[bn - 4] = 0;
+    const char * base = basebuf;
+    /* the title without its trailing punctuation: "Exile on Main St." is
+     * named "Exile on Main St.cue" */
+    char tbuf[300];
+    snprintf(tbuf, sizeof(tbuf), "%s", title);
+    size_t tl = strlen(tbuf);
+    while(tl && strchr(" .,!?", tbuf[tl - 1])) tbuf[--tl] = 0;
+    const char * hit = tl ? strcasestr(base, tbuf) : NULL;
+    if(!hit) { snprintf(out, len, "%s", base); return; }
+    char buf[600];
+    snprintf(buf, sizeof(buf), "%.*s %s", (int)(hit - base), base, hit + tl);
+    /* trim brackets, dashes (ASCII, en, em) and spaces round what is left */
+    char * p = buf;
+    size_t bl = strlen(p);
+    for(;;) {
+        if(bl && strchr(" ([{)]}-_.,", p[bl - 1])) { p[--bl] = 0; continue; }
+        if(bl >= 3 && (unsigned char)p[bl - 3] == 0xE2 && (unsigned char)p[bl - 2] == 0x80 && ((unsigned char)p[bl - 1] == 0x93 || (unsigned char)p[bl - 1] == 0x94)) { bl -= 3; p[bl] = 0; continue; }
+        if(bl && strchr(" ([{)]}-_.,", p[0])) { p++; bl--; continue; }
+        if(bl >= 3 && (unsigned char)p[0] == 0xE2 && (unsigned char)p[1] == 0x80 && ((unsigned char)p[2] == 0x93 || (unsigned char)p[2] == 0x94)) { p += 3; bl -= 3; continue; }
+        break;
+    }
+    snprintf(out, len, "%s", p);
+}
+
+/* "dsd64:2" -> "DSD64", "96000:24:2" -> "96/24", "44100:16:2" -> "44.1/16", "" -> "" */
+static void format_label(const char * format, char * out, size_t len)
+{
+    out[0] = 0;
+    if(!format || !format[0]) return;
+    if(strncasecmp(format, "dsd", 3) == 0) { snprintf(out, len, "DSD%s", format + 3); out[strcspn(out, ":")] = 0; return; }
+    long rate = atol(format);
+    const char * colon = strchr(format, ':');
+    int bits = colon ? atoi(colon + 1) : 0;
+    if(rate <= 0) return;
+    if(rate % 1000 == 0) snprintf(out, len, "%ld", rate / 1000);
+    else snprintf(out, len, "%.1f", rate / 1000.0);
+    if(bits > 0) { size_t o = strlen(out); snprintf(out + o, len - o, "/%d", bits); }
 }
 
 static void group_albums(build_t * b)
@@ -212,6 +367,14 @@ static void group_albums(build_t * b)
     free(folder_mixed);
     qsort(keyed, (size_t)n, sizeof(keyed_t), keyed_cmp);
 
+    /* 2b. releases (Ian, 11 Oct): the same album ripped twice into two
+     *     folders - a remaster, a DSD edition - is two albums, each its own
+     *     folder, while a few of its tracks lying in another folder (a hits
+     *     compilation) still join it. A folder is a release when it and the
+     *     album's biggest folder each hold most of the other's titles. */
+    split_releases(b, keyed, n);
+    qsort(keyed, (size_t)n, sizeof(keyed_t), keyed_cmp);
+
     /* 3. one album per key run; albums numbered in the order their first
      *    track lies in the library (folder order), not key order */
     int * first_of_run = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
@@ -259,6 +422,43 @@ static void group_albums(build_t * b)
             h = fnv_str(fnv_str(h, t->uri), num);
         }
         a->fingerprint = h;
+        a->release = xstrdup("");
+    }
+    /* release labels: albums sharing artist + title (the key up to the
+     * folder) each get what tells them apart - what the folder name adds
+     * to the title; when no folder says anything, the year where those
+     * differ, else each one's format */
+    for(int r = 0; r < runs; r++) {
+        const char * k = keyed[first_of_run[r]].key;
+        if(k[0] != 'a' || lib->albums[r].release[0]) continue;
+        const char * p = k;
+        int us = 0;
+        while(*p && us < 3) { if(*p == '\x1f') us++; if(us < 3) p++; }
+        if(!*p) continue;                                            /* not split: no label */
+        size_t bl = (size_t)(p - k);
+        /* the group: every run with the same base key */
+        int members[64], nm = 0;
+        for(int q = r; q < runs && nm < 64; q++) {
+            const char * kq = keyed[first_of_run[q]].key;
+            if(strncmp(kq, k, bl) == 0 && kq[bl] == '\x1f') members[nm++] = q;
+        }
+        char labels[64][120];
+        bool any_folder = false, years_differ = false;
+        for(int m = 0; m < nm; m++) {
+            lib_album_t * a = &lib->albums[members[m]];
+            release_label(b->release[a->first_track], a->title, labels[m], sizeof(labels[m]));
+            if(labels[m][0]) any_folder = true;
+            if(m > 0 && a->year != lib->albums[members[0]].year) years_differ = true;
+        }
+        for(int m = 0; m < nm; m++) {
+            lib_album_t * a = &lib->albums[members[m]];
+            char label[120];
+            if(any_folder) snprintf(label, sizeof(label), "%.119s", labels[m]);
+            else if(years_differ && a->year) snprintf(label, sizeof(label), "%d", a->year);
+            else format_label(a->first_track >= 0 && a->first_track < n ? lib->tracks[a->first_track].format : "", label, sizeof(label));
+            free(a->release);
+            a->release = xstrdup(label);
+        }
     }
     for(int i = 0; i < n; i++) free(keyed[i].key);
     free(keyed);
@@ -302,13 +502,16 @@ typedef struct {
     int album_subfolders;      /* ... typed FOLDER_ALBUM                      */
     int children_album;        /* the one album of all album subfolders, -2 = several, -1 = none */
     int artist_subfolders;     /* ... typed FOLDER_ARTIST                     */
-    int album;                 /* album of the direct tracks, -2 = several    */
+    int album;                 /* the album most of the direct tracks are of, -1 none; */
+    int album_tracks;          /* ...and how many of them (11 Oct: a bonus track */
+                               /* tagged otherwise no longer unmakes an album folder) */
     const char * artist;       /* artist of the direct tracks, "" = several   */
     int distinct_artists;      /* capped at COLLECTION_MIN_ARTISTS            */
     folder_type_t type;
 } fnode_t;
 
 static int fnode_key_cmp(const void * k, const void * e) { return strcmp((const char *)k, ((const fnode_t *)e)->uri); }
+static int long_cmp(const void * a, const void * b) { long x = *(const long *)a, y = *(const long *)b; return x < y ? -1 : x > y; }
 static int str_ptr_cmp(const void * a, const void * b) { return strcmp(*(char * const *)a, *(char * const *)b); }
 
 /* Folders typed from the tracks: every folder on the path of every track
@@ -362,13 +565,32 @@ static void build_folders(library_t * lib, char ** track_folder)
         fnode_t * p = bsearch(f, nodes, (size_t)n, sizeof(fnode_t), fnode_key_cmp);
         nodes[i].parent = p ? (int)(p - nodes) : -1;
     }
-    /* 3. direct tracks */
+    /* 3. direct tracks: counts, the album most of them are of (tracks of
+     *    one folder may not be contiguous, so (folder, album) pairs are
+     *    sorted and run through) */
+    {
+        long * pairs = malloc((size_t)(nt > 0 ? nt : 1) * sizeof(long));
+        if(!pairs) abort();
+        int np = 0;
+        for(int i = 0; i < nt; i++) {
+            fnode_t * nd = bsearch(track_folder[i], nodes, (size_t)n, sizeof(fnode_t), fnode_key_cmp);
+            if(!nd || lib->tracks[i].album < 0) continue;
+            pairs[np++] = (long)(nd - nodes) * (lib->nalbums + 1) + lib->tracks[i].album;
+        }
+        qsort(pairs, (size_t)np, sizeof(long), long_cmp);
+        for(int s = 0; s < np;) {
+            int e = s;
+            while(e < np && pairs[e] == pairs[s]) e++;
+            fnode_t * nd = &nodes[pairs[s] / (lib->nalbums + 1)];
+            if(e - s > nd->album_tracks) { nd->album_tracks = e - s; nd->album = (int)(pairs[s] % (lib->nalbums + 1)); }
+            s = e;
+        }
+        free(pairs);
+    }
     for(int i = 0; i < nt; i++) {
         fnode_t * nd = bsearch(track_folder[i], nodes, (size_t)n, sizeof(fnode_t), fnode_key_cmp);
         if(!nd) continue;
         nd->tracks++;
-        int a = lib->tracks[i].album;
-        if(nd->album == -1) nd->album = a; else if(nd->album != a) nd->album = -2;
         const char * ar = lib->tracks[i].artist;
         if(!nd->artist) { nd->artist = ar; nd->distinct_artists = 1; }
         else if(nd->distinct_artists < COLLECTION_MIN_ARTISTS && strcasecmp(nd->artist, ar) != 0) {
@@ -381,8 +603,8 @@ static void build_folders(library_t * lib, char ** track_folder)
     /* 4. type, children first */
     for(int k = n - 1; k >= 0; k--) {
         fnode_t * nd = &nodes[k];
-        if(nd->tracks > 0 && nd->music_subfolders == 0 && nd->album >= 0)
-            nd->type = FOLDER_ALBUM;
+        if(nd->tracks > 0 && nd->music_subfolders == 0 && nd->album >= 0 && nd->album_tracks * 3 >= nd->tracks * 2)
+            nd->type = FOLDER_ALBUM;                    /* most of its tracks (2/3) are one album: a bonus track doesn't unmake it */
         else if(nd->tracks == 0 && nd->music_subfolders >= 2 && nd->album_subfolders == nd->music_subfolders && nd->children_album >= 0) {
             /* CD1/CD2 folders of one album: the folder above them is the album */
             nd->type = FOLDER_ALBUM;
@@ -440,9 +662,10 @@ bool library_build(library_t * lib, const char * root)
         group_albums(&b);
         build_artists(lib);
         build_folders(lib, b.folder);
+        if(b.releases) fprintf(stderr, "simpleton: library: %d albums are releases of the same album in different folders\n", b.releases);
     }
-    for(int i = 0; i < lib->ntracks; i++) { free(b.album_tag[i]); free(b.album_artist[i]); free(b.folder[i]); }
-    free(b.album_tag); free(b.album_artist); free(b.folder); free(b.year);
+    for(int i = 0; i < lib->ntracks; i++) { free(b.album_tag[i]); free(b.album_artist[i]); free(b.folder[i]); free(b.release[i]); }
+    free(b.album_tag); free(b.album_artist); free(b.folder); free(b.release); free(b.year);
     if(!ok) library_free(lib);
     return ok;
 }
@@ -450,7 +673,7 @@ bool library_build(library_t * lib, const char * root)
 void library_free(library_t * lib)
 {
     for(int i = 0; i < lib->ntracks; i++) { free(lib->tracks[i].uri); free(lib->tracks[i].title); free(lib->tracks[i].artist); free(lib->tracks[i].format); }
-    for(int i = 0; i < lib->nalbums; i++) { free(lib->albums[i].title); free(lib->albums[i].artist); free(lib->albums[i].folder); free(lib->albums[i].first_uri); }
+    for(int i = 0; i < lib->nalbums; i++) { free(lib->albums[i].title); free(lib->albums[i].artist); free(lib->albums[i].folder); free(lib->albums[i].first_uri); free(lib->albums[i].release); }
     for(int i = 0; i < lib->nartists; i++) free(lib->artists[i].name);
     for(int i = 0; i < lib->nfolders; i++) free(lib->folders[i].uri);
     free(lib->tracks); free(lib->albums); free(lib->artists); free(lib->folders); free(lib->root);
@@ -547,8 +770,10 @@ bool library_save(const library_t * lib, const char * path)
         put_field(f, a->title); put_field(f, a->artist); put_field(f, a->folder); put_field(f, a->first_uri);
         char pal[200];
         palette_format(&a->palette, pal, sizeof(pal));
-        fprintf(f, "%d\t%ld\t%d\t%d\t%d\t%d\t%016llx\t%06x\t%d\t%u\t%d\t%s\n", a->year, a->newest, a->first_track, a->track_count,
+        fprintf(f, "%d\t%ld\t%d\t%d\t%d\t%d\t%016llx\t%06x\t%d\t%u\t%d\t%s\t", a->year, a->newest, a->first_track, a->track_count,
                 a->untagged, a->various, (unsigned long long)a->fingerprint, a->colour, a->has_art, a->thumb_sizes, a->in_collection, pal);
+        for(const char * c = a->release ? a->release : ""; *c; c++) fputc((*c == '\t' || *c == '\n' || *c == '\r') ? ' ' : *c, f);   /* after the palette's 21 fields (11 Oct) */
+        fputc('\n', f);
     }
     fprintf(f, "tracks\t%d\n", lib->ntracks);
     for(int i = 0; i < lib->ntracks; i++) {
@@ -624,6 +849,7 @@ bool library_load(library_t * lib, const char * path)
             a->has_art = atoi(fl[13]) != 0; a->thumb_sizes = (uint8_t)atoi(fl[14]);
             a->in_collection = n >= 16 && atoi(fl[15]) != 0;
             if(n >= 29) palette_parse((const char * const *)fl + 16, n - 16, &a->palette);   /* 0.17: an older line leaves ndom 0; 0.17a adds shares */
+            a->release = xstrdup(n >= 16 + PAL_FIELDS + 1 ? fl[16 + PAL_FIELDS] : "");     /* 11 Oct; an older line has none */
             lib->nalbums = ia;
         }
         else if(strcmp(fl[0], "T") == 0 && n >= 10 && it < nt) {

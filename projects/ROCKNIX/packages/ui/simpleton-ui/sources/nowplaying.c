@@ -88,6 +88,7 @@ static bool badge_single;             /* the badge may show "1 / 1" while it fla
 static char art_shown_file[1024];     /* the file the art on screen was decoded for */
 static char expected_file[1024];      /* the current song as far as we or the host know */
 static bool host_stale_ok;            /* hosted: art of an earlier track of the same album may stay up */
+static bool art_is_placeholder;       /* the art on screen is the themed placeholder, not a cover (11 Oct) */
 static int  row = ROW_TRANSPORT, tr_cur = TR_PLAY, bt_cur = BT_FAV;
 
 static mpd_status_t st;
@@ -97,7 +98,8 @@ static uint32_t base_tick;            /* ...and when that was (lv_tick ms)      
 
 /* Fetch status on the next clock tick, which we make happen now. */
 static void request_status(void);
-static char cur_file[1024];           /* file the art on screen belongs to */
+static char cur_file[1024];           /* the current song as the last status said */
+static char req_file[1024];           /* the file the last art request was for (a preview's, or the song's) */
 static lv_image_dsc_t art_dsc[2];     /* alternate so LVGL sees a new src */
 static int art_slot;
 static int art_index, art_count = 1;
@@ -105,6 +107,7 @@ static bool badge_shown;
 
 static void set_side_colour(uint32_t colour);
 static void apply_host_art(void);
+static void restore_playing_art(void);
 static int  pan_x, pan_max;           /* wide page: current offset, how far it goes */
 static int  pan_i, pan_n;             /* which stop of how many (0 = left edge) */
 static bool enter_at_end;             /* paged backwards: show the new page's right end */
@@ -260,8 +263,21 @@ static void update_format_line(void)
     char src[48];
     describe_source(st.audio, src, sizeof(src));
     const char * codec = codec_name(st.file);
-    char text[200];
+    char text[400];
     if(dac_line[0]) snprintf(text, sizeof(text), "%s %s   " LV_SYMBOL_RIGHT "   %s", codec, src, dac_line);
+    else if(st.error[0]) {
+        /* MPD could not open its output (11 Oct: "Failed to open "DAC"
+         * (alsa); Failed to open ALSA device "hw:CARD=AUDIO,DEV=0": No such
+         * device") - the device part, so the screen says which DAC MPD is
+         * trying, instead of "DAC idle" */
+        const char * dev = strstr(st.error, "hw:");
+        char what[160];
+        if(dev) { snprintf(what, sizeof(what), "%s", dev); what[strcspn(what, "\"")] = 0; }
+        else snprintf(what, sizeof(what), "%.150s", st.error);
+        char msg[200];
+        ui_strf(msg, sizeof(msg), S_DAC_ERROR, "error", what, NULL);
+        snprintf(text, sizeof(text), "%s %s   " LV_SYMBOL_RIGHT "   %s", codec, src, msg);
+    }
     else if(strcmp(st.state, "play") == 0) snprintf(text, sizeof(text), "%s %s", codec, src);
     else            snprintf(text, sizeof(text), "%s %s   " LV_SYMBOL_RIGHT "   %s", codec, src, T(S_DAC_IDLE));
     lv_label_set_text(format_lbl, text);
@@ -565,11 +581,12 @@ static void art_timer_cb(lv_timer_t * t)
         bool keep_pan = !page_pending && pan_max > 0 && r.index == art_index && r.w - UI_BASE == pan_max;
         art_index = r.index;
         art_count = r.count > 0 ? r.count : 1;
+        art_is_placeholder = strcmp(r.source, "placeholder") == 0;
         set_side_colour(side_colour_from(r.pixels, r.w, r.h));
         set_art(&r, keep_pan);
     }
-    else      { art_index = 0; art_count = 1; show_placeholder(); }
-    snprintf(art_shown_file, sizeof(art_shown_file), "%s", cur_file);     /* the result is for the last request */
+    else      { art_index = 0; art_count = 1; art_is_placeholder = true; show_placeholder(); }
+    snprintf(art_shown_file, sizeof(art_shown_file), "%s", req_file);     /* the result is for the last request */
     if(embedded) apply_host_art();
     badge_refresh();
 }
@@ -592,7 +609,12 @@ static void refresh_status(void)
         /* keep the previous cover up until the new one is decoded: within
          * one album that's the same picture, so there is no flash */
         enter_at_end = page_pending = false;
-        if(s.file[0]) art_request(s.file, s.artist, s.album, s.title);
+        if(s.file[0]) {
+            if(strcmp(art_shown_file, s.file) != 0 || strcmp(req_file, s.file) != 0) {   /* unless a preview of this very track is up (11 Oct) */
+                snprintf(req_file, sizeof(req_file), "%s", s.file);
+                art_request(s.file, s.artist, s.album, s.title);
+            }
+        }
         else { art_index = 0; art_count = 1; show_placeholder(); badge_refresh(); }
         last_dac_read_ms = 0;               /* re-read the DAC right away */
     }
@@ -818,6 +840,7 @@ void nowplaying_create(void)
 void nowplaying_show(void)
 {
     active = true;
+    restore_playing_art();
     row = ROW_TRANSPORT;
     tr_cur = TR_PLAY;
     apply_focus();
@@ -844,7 +867,9 @@ void nowplaying_mpd_changed(void)
  * an earlier track's of the same album while the new one is decoded). */
 static bool hosted_art_current(void)
 {
-    if(!embedded || host_hides_art || !lv_image_get_src(art_img)) return false;
+    /* the themed placeholder is never ours to show over a host: the page
+     * has its own picture for an album without a cover (11 Oct) */
+    if(!embedded || host_hides_art || art_is_placeholder || !lv_image_get_src(art_img)) return false;
     if(strcmp(art_shown_file, expected_file) == 0) return true;
     return host_stale_ok;
 }
@@ -928,6 +953,40 @@ void nowplaying_poke(void)
 {
     if(!embedded) return;
     show_controls();
+}
+
+/* Hosted: show the album's own cover before any of it plays (11 Oct) - the
+ * first track's art, the whole set, so its pages turn and the picture is
+ * placed by the same rules as when a track starts. The playing track's
+ * art comes back when the page is left (see nowplaying_show / unembed). */
+void nowplaying_preview(const char * uri, const char * artist, const char * album, const char * title)
+{
+    if(!embedded || !uri || !uri[0]) return;
+    if(strcmp(art_shown_file, uri) == 0 && lv_image_get_src(art_img)) { apply_host_art(); return; }
+    snprintf(expected_file, sizeof(expected_file), "%s", uri);
+    snprintf(req_file, sizeof(req_file), "%s", uri);
+    enter_at_end = page_pending = false;
+    art_request(uri, artist, album, title);
+}
+
+/* Hosted: flash the "n / m" badge ("1 / 1" too), as the page's cover browse does. */
+void nowplaying_show_badge(void)
+{
+    if(!embedded || host_hides_art) return;
+    badge_single = true;
+    badge_flash();
+}
+
+/* The art on screen (or on its way) is a page's preview of another album:
+ * ask for the playing track's own again. Done when the screen itself
+ * shows, the only place it matters. */
+static void restore_playing_art(void)
+{
+    if(!cur_file[0] || strcmp(req_file, cur_file) == 0) return;
+    snprintf(expected_file, sizeof(expected_file), "%s", cur_file);
+    snprintf(req_file, sizeof(req_file), "%s", cur_file);
+    enter_at_end = page_pending = false;
+    art_request(cur_file, st.artist, st.album, st.title);
 }
 
 void nowplaying_hide_controls(void) { if(embedded) hide_controls(); }

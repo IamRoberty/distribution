@@ -1,0 +1,11 @@
+[Unit]
+Description=Simpleton: CPU clock ceiling and thermal trip points
+Before=mpd.service simpleton-ui.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/simpleton-thermal
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

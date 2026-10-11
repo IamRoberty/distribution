@@ -195,7 +195,7 @@ static bool browser_folder_hook(const char * uri)
     const tile_style_t * tile;
     int album;
     if(!grid_lookup_folder(uri, &lib, &album, &card, &tile)) return false;
-    if(!albumpage_open(lib, album, card, tile)) return false;
+    if(!albumpage_open_folder(lib, uri, album, card, tile)) return false;   /* the folder's own tracks, in file order (Ian, 11 Oct) */
     page_return = SCR_BROWSER;
     show_albumpage(true);
     return true;
@@ -353,7 +353,7 @@ static void restart_ui(void)
     if(cur == SCR_NOWPLAYING) args[n++] = "--nowplaying";
     else if(cur == SCR_BROWSER) args[n++] = "--browser";
     else if(cur == SCR_ALBUMS) args[n++] = "--albums";
-    else if(cur == SCR_ALBUMPAGE && albumpage_folder()) { args[n++] = "--album"; args[n++] = (char *)albumpage_folder(); }
+    else if(cur == SCR_ALBUMPAGE && albumpage_folder()) { args[n++] = albumpage_by_folder() ? "--folderpage" : "--album"; args[n++] = (char *)albumpage_folder(); }
     if(restart_page[0]) { args[n++] = "--settings"; args[n++] = restart_page; }
     args[n] = NULL;
     for(int fd = 3; fd < 256; fd++) close(fd);
@@ -440,7 +440,7 @@ static void crash_handler_install(void)
 int main(int argc, char ** argv)
 {
     crash_handler_install();
-    const char * resume_folder = NULL, * resume_settings = NULL, * resume_album = NULL;
+    const char * resume_folder = NULL, * resume_settings = NULL, * resume_album = NULL, * resume_folderpage = NULL;
     bool resume_nowplaying = false, resume_browser = false, resume_albums = false;
     argv0 = argv[0];
     for(int i = 1; i < argc; i++) {
@@ -449,6 +449,7 @@ int main(int argc, char ** argv)
         else if(strcmp(argv[i], "--browser") == 0) resume_browser = true;
         else if(strcmp(argv[i], "--albums") == 0) resume_albums = true;
         else if(strcmp(argv[i], "--album") == 0 && i + 1 < argc) resume_album = argv[++i];
+        else if(strcmp(argv[i], "--folderpage") == 0 && i + 1 < argc) resume_folderpage = argv[++i];
         else if(strcmp(argv[i], "--settings") == 0 && i + 1 < argc) resume_settings = argv[++i];
         /* the built-in English table as a language file: the master copy of
          * share/lang/en.txt and the template for a new language */
@@ -510,6 +511,7 @@ int main(int argc, char ** argv)
     if(resume_browser) show_browser();
     if(resume_albums) show_albums(false);
     if(resume_album) { show_albums(false); if(!grid_open_folder(resume_album)) fprintf(stderr, "simpleton-ui: --album %s: not in the grid\n", resume_album); }
+    if(resume_folderpage) { show_browser(); if(!browser_folder_hook(resume_folderpage)) fprintf(stderr, "simpleton-ui: --folderpage %s: not an album folder now\n", resume_folderpage); }
     if(resume_nowplaying) enter_nowplaying();
     if(resume_settings) enter_settings(resume_settings, false);
     fprintf(stderr, "simpleton-ui: play-through folders: %s\n", playthrough_enabled() ? "on" : "off");

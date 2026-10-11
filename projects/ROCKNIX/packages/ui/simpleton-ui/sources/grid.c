@@ -653,6 +653,13 @@ static void name_fill(nlabel_t * main, nlabel_t * tail, int box_w, int px, const
     bool has_br = split_bracket(a->title, mainpart, sizeof(mainpart), br, sizeof(br));
     if(ar[0]) snprintf(text, sizeof(text), "%s \xE2\x80\x93 %s", ar, has_br ? mainpart : a->title);
     else snprintf(text, sizeof(text), "%s", has_br ? mainpart : a->title);
+    /* a release of an album that exists twice: its label joins the tail
+     * (11 Oct) - "2019 Remaster", or "(Deluxe) \xc2\xb7 2019 Remaster" */
+    if(a->release && a->release[0]) {
+        if(has_br) { size_t o = strlen(br); snprintf(br + o, sizeof(br) - o, " \xC2\xB7 %s", a->release); }
+        else snprintf(br, sizeof(br), "%s", a->release);
+        has_br = true;
+    }
     const lv_font_t * fm = ui_font_px(px);
     const lv_font_t * ft = ui_font_px(px * 3 / 4 < 10 ? 10 : px * 3 / 4);
     int gap = px / 3;

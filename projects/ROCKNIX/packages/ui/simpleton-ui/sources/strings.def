@@ -51,6 +51,7 @@ STR(DAC_DOP,             "dac.dop",             "{dac}: DSD over PCM {rate} kHz"
 STR(DAC_PCM,             "dac.pcm",             "{dac}: PCM {rate} kHz")
 STR(DAC_RUNNING,         "dac.running",         "{dac}: running")
 STR(DAC_IDLE,            "dac.idle",            "DAC idle")
+STR(DAC_ERROR,           "dac.error",           "Can't open the DAC: {error}")
 STR(DAC_UNNAMED,         "dac.unnamed",         "DAC")
 
 /* the Home page (0.13): the places to go. The theme writes these on its

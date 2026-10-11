@@ -1,3 +1,5 @@
-# SimpletonOS: a USB sound card was plugged in - point MPD at it if needed.
-# Hands off to a systemd unit rather than running the script inside udev.
-ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card[0-9]*", SUBSYSTEMS=="usb", RUN+="/usr/bin/systemctl --no-block start simpleton-dac-hotplug.service"
+# SimpletonOS: a USB sound card was plugged in - point MPD at it.
+# Hands off to a systemd unit rather than running the script inside udev;
+# the unit is instanced with the card's kernel name (card2), so the card
+# that just appeared is the one MPD is pointed at (11 Oct 2026).
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card[0-9]*", SUBSYSTEMS=="usb", RUN+="/usr/bin/systemctl --no-block start simpleton-dac-hotplug@%k.service"

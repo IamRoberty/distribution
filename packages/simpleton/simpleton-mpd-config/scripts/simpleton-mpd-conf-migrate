@@ -11,6 +11,17 @@
 #   db_file "X"            ->  database { plugin "simple" path "X"
 #                                         cache_directory "/storage/.mpd/cache" }
 #   (no follow_outside_symlinks)  ->  follow_outside_symlinks "no"
+#   (no decoder blocks)    ->  decoder { plugin "sacdiso" / "dsdiff"
+#                                        playable_area "stereo" dstdec_threads "2" }
+#                              (11 Oct 2026: the stereo-only decision of 1 Oct had
+#                              never reached a unit's mpd.conf; the multichannel
+#                              tracks and the four-thread DST decoder both took the
+#                              unit down - see the mpd.conf template)
+#   (no restore_paused)    ->  restore_paused "yes" (a boot never resumes playing)
+#
+# A missing decoder block is logged: the blocks vanished once from a unit's
+# mpd.conf (11 Oct) and nothing here, in simpleton-dac-detect or in
+# simpleton-card rewrites the file, so the log line is the breadcrumb.
 #
 # When it converts the database line it also removes the old database
 # file: the old library listed every card under Cards/, which no longer
@@ -49,6 +60,50 @@ if ! grep -q '^[[:space:]]*follow_outside_symlinks' "$CONF"; then
     echo "simpleton-mpd-conf-migrate: follow_outside_symlinks \"no\" added"
 fi
 
+if ! grep -q '^[[:space:]]*plugin[[:space:]]*"sacdiso"' "$CONF"; then
+    awk '
+        /^[[:space:]]*audio_output[[:space:]]*\{/ && !done {
+            print "# SACD ISO and DFF: the stereo area only (settled 1 Oct 2026; 11 Oct: a"
+            print "# multichannel DST track sent to a two-channel DAC played noise and then"
+            print "# took the unit down). With \"stereo\" the multichannel tracks never enter"
+            print "# the database (a change needs an MPD restart and a database rebuilt from"
+            print "# nothing). dstdec_threads (Simpleton MPD patch 0005): the DST decoder"
+            print "# ran one thread per core; four cores at 1.8 GHz hit the RK3566 95 C"
+            print "# hardware thermal shutdown. Two keep up with room to spare."
+            print "decoder {"
+            print "    plugin         \"sacdiso\""
+            print "    playable_area  \"stereo\""
+            print "    dstdec_threads \"2\""
+            print "}"
+            print "decoder {"
+            print "    plugin         \"dsdiff\""
+            print "    playable_area  \"stereo\""
+            print "    dstdec_threads \"2\""
+            print "}"
+            print ""
+            done = 1
+        }
+        { print }
+        END { if (!done) exit 1 }' "$CONF" > "$CONF.new" && mv "$CONF.new" "$CONF" || rm -f "$CONF.new"
+    if grep -q '^[[:space:]]*plugin[[:space:]]*"sacdiso"' "$CONF"; then
+        changed=1
+        echo "simpleton-mpd-conf-migrate: decoder blocks (sacdiso, dsdiff: stereo area, 2 DST threads) were missing - added"
+        logger -t simpleton-mpd-conf-migrate "decoder blocks were missing from mpd.conf - added" 2>/dev/null
+    else
+        echo "simpleton-mpd-conf-migrate: no audio_output block to put the decoder blocks before - left alone"
+    fi
+fi
+
+if ! grep -q '^[[:space:]]*restore_paused' "$CONF"; then
+    if grep -q '^[[:space:]]*state_file[[:space:]]' "$CONF"; then
+        awk '{ print } /^[[:space:]]*state_file[[:space:]]/ && !done { print "restore_paused     \"yes\""; done = 1 }' "$CONF" > "$CONF.new" && mv "$CONF.new" "$CONF"
+    else
+        printf '\nstate_file         "/storage/.mpd/state"\nrestore_paused     "yes"\n' >> "$CONF"
+    fi
+    changed=1
+    echo "simpleton-mpd-conf-migrate: restore_paused \"yes\" added (a boot never resumes playing by itself)"
+fi
+
 mkdir -p "$CACHE_DIR"
-[ $changed -eq 1 ] && logger -t simpleton-mpd-conf-migrate "mpd.conf updated for per-card databases" 2>/dev/null
+[ $changed -eq 1 ] && logger -t simpleton-mpd-conf-migrate "mpd.conf brought up to date" 2>/dev/null
 exit 0

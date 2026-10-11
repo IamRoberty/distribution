@@ -1,0 +1,66 @@
+Simpleton: MPD aborted at every stop - the SACD/DSDIFF plugins' finish().
+
+Both plugins' finish() call container_update(nullptr) to let go of the open
+container.  container_update() begins with AllocatedPath(path_fs), whose
+constructor copies path_fs.c_str() into a std::string; a null pointer there
+throws std::logic_error ("basic_string: construction from null is not
+valid").  finish() is noexcept, so the exception became std::terminate and
+MPD died with SIGABRT on every shutdown - systemd's "status=6/ABRT" on each
+stop and restart since the plugins went in (seen 27 Sep, 1 Oct, 11 Oct 2026;
+the 27 Sep "hot-swap crash" was this, during a restart by simpleton-dac-detect).
+
+A null path now releases the reader and the media and returns false, which
+is what finish() wanted.  No other caller passes a null path.
+
+--- a/src/decoder/plugins/SacdIsoDecoderPlugin.cxx
++++ b/src/decoder/plugins/SacdIsoDecoderPlugin.cxx
+@@ -80,6 +80,23 @@
+ 
+ static bool
+ container_update(Path path_fs) {
++	/* Simpleton: finish() calls this with nullptr to let the container go.
++	   AllocatedPath(Path) copies path_fs.c_str() into a std::string, and a
++	   null pointer there throws std::logic_error - inside a noexcept
++	   function, so MPD aborted (status=6/ABRT) at every stop. Release
++	   the container here instead. */
++	if (path_fs.IsNull()) {
++		if (sacd_reader) {
++			sacd_reader->close();
++			sacd_reader.reset();
++		}
++		if (sacd_media) {
++			sacd_media->close();
++			sacd_media.reset();
++		}
++		sacd_path.SetNull();
++		return false;
++	}
+ 	auto curr_path = AllocatedPath(path_fs);
+ 	if (!FileExists(curr_path)) {
+ 		curr_path = path_fs.GetDirectoryName();
+--- a/src/decoder/plugins/DffDecoderPlugin.cxx
++++ b/src/decoder/plugins/DffDecoderPlugin.cxx
+@@ -77,6 +77,23 @@
+ 
+ static bool
+ container_update(Path path_fs) {
++	/* Simpleton: finish() calls this with nullptr to let the container go.
++	   AllocatedPath(Path) copies path_fs.c_str() into a std::string, and a
++	   null pointer there throws std::logic_error - inside a noexcept
++	   function, so MPD aborted (status=6/ABRT) at every stop. Release
++	   the container here instead. */
++	if (path_fs.IsNull()) {
++		if (sacd_reader) {
++			sacd_reader->close();
++			sacd_reader.reset();
++		}
++		if (sacd_media) {
++			sacd_media->close();
++			sacd_media.reset();
++		}
++		dsdiff_path.SetNull();
++		return false;
++	}
+ 	auto curr_path = AllocatedPath(path_fs);
+ 	if (!FileExists(curr_path)) {
+ 		curr_path = path_fs.GetDirectoryName();

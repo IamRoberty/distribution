@@ -37,6 +37,7 @@ dac.dop = {dac}: DSD over PCM {rate} kHz
 dac.pcm = {dac}: PCM {rate} kHz
 dac.running = {dac}: running
 dac.idle = DAC idle
+dac.error = Can't open the DAC: {error}
 dac.unnamed = DAC
 
 home.title = Home
@@ -90,14 +91,19 @@ style.list = List
 
 sort.name = Name
 sort.recent = Recently changed
+
 style.grid = Grid
+
 sort.title = Title
 sort.artist_title = Artist, title
 sort.artist_year = Artist, year
 sort.year = Year
 sort.newest = Newest on card
+
 library.various = Various Artists
+
 grid.empty = No albums yet
+
 page.side = Side
 page.disc = Disc
 

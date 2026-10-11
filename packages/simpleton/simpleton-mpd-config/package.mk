@@ -21,6 +21,23 @@ PKG_LONGDESC="Simpleton: MPD promoted to a core, always-on service with Simpleto
 # cache_directory, simpleton-mpd-conf-migrate converts older units' files,
 # and mpd.service calls simpleton-card remount-all (simpleton-media-mount)
 # after each start. The MPD side is patch 0004 in projects/ROCKNIX/patches/mpd.
+#
+# 11 Oct 2026: the unit reset itself playing DST-compressed SACD tracks -
+# the plugin's DST decoder ran one thread per core and four A55s at 1.8 GHz
+# took the RK3566 past its 95 C hardware thermal shutdown (no log, no
+# panic; proven with a clock cap). Three pieces, all here:
+#   - simpleton-thermal (+ its service, enabled below): a 1104 MHz clock
+#     ceiling and passive trip points at 75/82 C from every boot;
+#   - mpd.conf: dstdec_threads "2" (MPD patch 0005) and restore_paused "yes"
+#     (a boot never resumes the track that caused a reset); the migrate
+#     script adds both - and the stereo-only decoder blocks - to a unit's
+#     existing mpd.conf when they are missing;
+#   - the DAC hotplug moved to an instanced unit started by udev.d/96-...
+#     (simpleton-dac-hotplug@.service; the old non-instanced file is gone),
+#     and simpleton-dac-detect waits for the card and checks the restart.
+#   MPD patch 0006 stops MPD aborting (status=6/ABRT) at every stop.
+# scripts/install copies system.d/* and udev.d/* into the image by itself;
+# only the scripts and the config are copied here, and enabling is below.
 PKG_TOOLCHAIN="manual"
 
 makeinstall_target() {
@@ -39,6 +56,8 @@ makeinstall_target() {
   chmod 0755 ${INSTALL}/usr/bin/simpleton-dac-detect
   cp ${PKG_DIR}/scripts/simpleton-mpd-conf-migrate ${INSTALL}/usr/bin
   chmod 0755 ${INSTALL}/usr/bin/simpleton-mpd-conf-migrate
+  cp ${PKG_DIR}/scripts/simpleton-thermal ${INSTALL}/usr/bin
+  chmod 0755 ${INSTALL}/usr/bin/simpleton-thermal
 
   mkdir -p ${INSTALL}/usr/config/mpd
   cp ${PKG_DIR}/config/mpd.conf ${INSTALL}/usr/config/mpd/mpd.conf
@@ -46,4 +65,5 @@ makeinstall_target() {
 
 post_install() {
   enable_service "mpd.service"
+  enable_service "simpleton-thermal.service"
 }

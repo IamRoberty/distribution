@@ -1,0 +1,104 @@
+Simpleton: a "dstdec_threads" option for the sacdiso and dsdiff decoder plugins.
+
+The DST decoder (libdstdec, dst_engine_t) starts one worker thread per CPU
+core (std::thread::hardware_concurrency()).  On the RGB20SX (RK3566, four
+A55 cores, no heatsink) a DST-compressed SACD track lights all four cores at
+1.8 GHz in bursts, the SoC reaches the TSADC's hardware thermal shutdown
+(rockchip,hw-tshut-temp = 95 C) within seconds and the board resets with no
+trace in any log (seen 11 Oct 2026, twice on one stereo track, once with the
+DAC off; proven by capping the clock at 1104 MHz: the same track then peaks
+at 78 C).  The plugin already declared param_dstdec_threads but never read it.
+
+    decoder {
+        plugin "sacdiso"
+        playable_area "stereo"
+        dstdec_threads "2"
+    }
+
+0 (the default) keeps the old behaviour: one thread per core.
+The dst_decoder_t::init() signature gains the thread count (default 0) so
+the other callers are unchanged.
+
+--- a/src/decoder/plugins/DffDecoderPlugin.cxx
++++ b/src/decoder/plugins/DffDecoderPlugin.cxx
+@@ -152,6 +152,8 @@
+ 		}
+ 	}
+ 	param_use_stdio = block.GetBlockValue("use_stdio", true);
++	/* Simpleton: DST decoder threads; 0 = one per CPU core (the original behaviour) */
++	param_dstdec_threads = block.GetBlockValue("dstdec_threads", 0u);
+ 	return true;
+ }
+ 
+@@ -269,7 +271,7 @@
+ 				break;
+ 			case FRAME_DST:
+ 				if (!dst_decoder_initialized) {
+-					if (dst_decoder.init(dsd_channels, dsd_samplerate / 8 / dsd_framerate) == 0) {
++					if (dst_decoder.init(dsd_channels, dsd_samplerate / 8 / dsd_framerate, param_dstdec_threads) == 0) {
+ 						dst_decoder_initialized = true;
+ 					}
+ 					else {
+--- a/src/decoder/plugins/SacdIsoDecoderPlugin.cxx
++++ b/src/decoder/plugins/SacdIsoDecoderPlugin.cxx
+@@ -51,6 +51,7 @@
+ 
+ constexpr auto SACD_TRACKXXX_FMT{ "%cC_AUDIO__TRACK%03u.%3s" };
+ 
++unsigned    param_dstdec_threads;
+ bool        param_edited_master;
+ bool        param_single_track;
+ bool        param_lsbitfirst;
+@@ -200,6 +201,8 @@
+ 	param_tags_path = block.GetBlockValue("tags_path", "");
+ 	param_tags_with_iso = block.GetBlockValue("tags_with_iso", false);
+ 	param_use_stdio = block.GetBlockValue("use_stdio", true);
++	/* Simpleton: DST decoder threads; 0 = one per CPU core (the original behaviour) */
++	param_dstdec_threads = block.GetBlockValue("dstdec_threads", 0u);
+ 	return true;
+ }
+ 
+@@ -312,7 +315,7 @@
+ 				break;
+ 			case FRAME_DST:
+ 				if (!dst_decoder_initialized) {
+-					if (dst_decoder.init(dsd_channels, dsd_samplerate / 8 / dsd_framerate) == 0) {
++					if (dst_decoder.init(dsd_channels, dsd_samplerate / 8 / dsd_framerate, param_dstdec_threads) == 0) {
+ 						dst_decoder_initialized = true;
+ 					}
+ 					else {
+--- a/src/lib/sacdiso/libdstdec/binding/dst_decoder.cpp
++++ b/src/lib/sacdiso/libdstdec/binding/dst_decoder.cpp
+@@ -22,6 +22,9 @@
+ #include "dst_engine.h"
+ 
+ class dst_decoder_t::ctx_t : public dst_engine_t<dst::decoder_t, model_e::MT> {
++public:
++	ctx_t(size_t num_threads = 0u) : dst_engine_t(num_threads) {
++	}
+ };
+ 
+ dst_decoder_t::dst_decoder_t() : ctx(nullptr) {
+@@ -31,9 +34,9 @@
+ 	delete ctx;
+ }
+ 
+-int dst_decoder_t::init(unsigned int channels, unsigned int channel_frame_size) {
++int dst_decoder_t::init(unsigned int channels, unsigned int channel_frame_size, unsigned int threads) {
+ 	if (!ctx) {
+-		ctx = new ctx_t();
++		ctx = new ctx_t(threads);
+ 	}
+ 	if (!ctx) {
+ 		return -1;
+--- a/src/lib/sacdiso/libdstdec/binding/dst_decoder.h
++++ b/src/lib/sacdiso/libdstdec/binding/dst_decoder.h
+@@ -27,7 +27,7 @@
+ public:
+ 	dst_decoder_t();
+ 	~dst_decoder_t();
+-	int init(unsigned int channels, unsigned int channel_frame_size);
++	int init(unsigned int channels, unsigned int channel_frame_size, unsigned int threads = 0);
+ 	int run(std::vector<unsigned char>& dsx_data);
+ 	void flush();
+ };
