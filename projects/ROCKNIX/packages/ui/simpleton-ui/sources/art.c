@@ -629,7 +629,7 @@ static bool load_track(const char * uri, const char * artist, const char * album
     }
     if(!found) {
         /* no real art anywhere: draw the theme's placeholder for this track */
-        r->pixels = placeholder_render(artist, album, title, &r->w, &r->h);
+        r->pixels = placeholder_render(uri, artist, album, title, &r->w, &r->h);
         if(r->pixels) { found = true; r->src_w = r->w; r->src_h = r->h; snprintf(r->source, sizeof(r->source), "placeholder"); }
     }
     if(found) fprintf(stderr, "simpleton-ui: art: %s %dx%d -> %dx%d for %s (%d image%s)\n",

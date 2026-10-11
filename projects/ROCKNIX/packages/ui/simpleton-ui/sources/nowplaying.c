@@ -82,6 +82,12 @@ static lv_timer_t * clock_timer, * art_timer, * idle_timer, * badge_timer;
 
 static bool active;
 static bool controls_visible;
+static bool embedded;                 /* the stage lives in the album page's screen (0.17b) */
+static bool host_hides_art;           /* ...which keeps its own picture: ours stays hidden */
+static bool badge_single;             /* the badge may show "1 / 1" while it flashes (the page's cover browse) */
+static char art_shown_file[1024];     /* the file the art on screen was decoded for */
+static char expected_file[1024];      /* the current song as far as we or the host know */
+static bool host_stale_ok;            /* hosted: art of an earlier track of the same album may stay up */
 static int  row = ROW_TRANSPORT, tr_cur = TR_PLAY, bt_cur = BT_FAV;
 
 static mpd_status_t st;
@@ -98,6 +104,7 @@ static int art_index, art_count = 1;
 static bool badge_shown;
 
 static void set_side_colour(uint32_t colour);
+static void apply_host_art(void);
 static int  pan_x, pan_max;           /* wide page: current offset, how far it goes */
 static int  pan_i, pan_n;             /* which stop of how many (0 = left edge) */
 static bool enter_at_end;             /* paged backwards: show the new page's right end */
@@ -332,7 +339,8 @@ static void update_progress(void)
 static void show_placeholder(void)
 {
     lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(placeholder, LV_OBJ_FLAG_HIDDEN);
+    if(embedded) { lv_obj_add_flag(placeholder, LV_OBJ_FLAG_HIDDEN); lv_obj_set_style_bg_opa(stage, LV_OPA_TRANSP, 0); }   /* the host has its own picture */
+    else lv_obj_remove_flag(placeholder, LV_OBJ_FLAG_HIDDEN);
     pan_x = pan_max = pan_i = pan_n = 0;
     const char * seed = st.album[0] ? st.album : (st.artist[0] ? st.artist : st.title);
     char letter[8] = "";
@@ -454,9 +462,10 @@ static void badge_set(bool on)
 
 static void badge_refresh(void)
 {
-    if(art_count > 1) lv_label_set_text_fmt(badge_lbl, "%d / %d", art_index + 1, art_count);
+    lv_label_set_text_fmt(badge_lbl, "%d / %d", art_index + 1, art_count);
     bool flashing = !lv_timer_get_paused(badge_timer);
-    badge_set(art_count > 1 && (controls_visible || flashing));
+    bool worth = art_count > 1 || (badge_single && flashing);
+    badge_set(worth && !host_hides_art && (controls_visible || flashing));
 }
 
 static void badge_flash(void)
@@ -469,6 +478,7 @@ static void badge_flash(void)
 static void badge_timer_cb(lv_timer_t * t)
 {
     lv_timer_pause(t);
+    badge_single = false;
     badge_refresh();
 }
 
@@ -503,8 +513,10 @@ static void set_art(const art_result_t * r, bool keep_pan)
      * be put back on top-left alignment before its x means "left edge" */
     if(pan_max) { lv_obj_set_align(art_img, LV_ALIGN_TOP_LEFT); lv_obj_set_pos(art_img, -pan_x, (UI_BASE - r->h) / 2); }
     else        lv_obj_center(art_img);
-    lv_obj_remove_flag(art_img, LV_OBJ_FLAG_HIDDEN);
+    if(host_hides_art) lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_flag(art_img, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(placeholder, LV_OBJ_FLAG_HIDDEN);
+    /* hosted: apply_host_art() follows (art_timer_cb) and decides what shows */
 
     /* the previous slot is no longer referenced by the image object */
     free(old_pixels);
@@ -557,6 +569,8 @@ static void art_timer_cb(lv_timer_t * t)
         set_art(&r, keep_pan);
     }
     else      { art_index = 0; art_count = 1; show_placeholder(); }
+    snprintf(art_shown_file, sizeof(art_shown_file), "%s", cur_file);     /* the result is for the last request */
+    if(embedded) apply_host_art();
     badge_refresh();
 }
 
@@ -573,6 +587,7 @@ static void refresh_status(void)
 
     if(track_changed) {
         snprintf(cur_file, sizeof(cur_file), "%s", s.file);
+        snprintf(expected_file, sizeof(expected_file), "%s", s.file);
         update_text();
         /* keep the previous cover up until the new one is decoded: within
          * one album that's the same picture, so there is no flash */
@@ -821,6 +836,111 @@ void nowplaying_show(void)
 void nowplaying_mpd_changed(void)
 {
     request_status();                       /* while hidden: fetched on show */
+}
+
+/* ---- hosted in the album page (0.17b) ---- */
+
+/* Hosted: the art on screen is for the track playing (or the host allows
+ * an earlier track's of the same album while the new one is decoded). */
+static bool hosted_art_current(void)
+{
+    if(!embedded || host_hides_art || !lv_image_get_src(art_img)) return false;
+    if(strcmp(art_shown_file, expected_file) == 0) return true;
+    return host_stale_ok;
+}
+
+static void apply_host_art(void)
+{
+    bool has = lv_image_get_src(art_img) != NULL;
+    bool up = embedded ? hosted_art_current() : has && !host_hides_art;
+    if(embedded && !up) { lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(placeholder, LV_OBJ_FLAG_HIDDEN); }
+    else if(host_hides_art) { lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN); lv_obj_add_flag(placeholder, LV_OBJ_FLAG_HIDDEN); }
+    else if(has) lv_obj_remove_flag(art_img, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_flag(placeholder, LV_OBJ_FLAG_HIDDEN);
+    /* behind art that isn't square: the host's colour, not the host's own
+     * picture - only while our art is actually up */
+    lv_obj_set_style_bg_opa(stage, embedded && up ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    badge_refresh();
+}
+
+bool nowplaying_art_ready(void)
+{
+    return hosted_art_current() && !lv_obj_has_flag(art_img, LV_OBJ_FLAG_HIDDEN);
+}
+
+void nowplaying_expect_file(const char * uri)
+{
+    snprintf(expected_file, sizeof(expected_file), "%s", uri ? uri : "");
+    if(embedded) apply_host_art();
+}
+
+const char * nowplaying_art_file(void) { return lv_image_get_src(art_img) ? art_shown_file : ""; }
+
+void nowplaying_embed(lv_obj_t * parent, int x, int y, bool with_art, uint32_t bg)
+{
+    embedded = true;
+    host_hides_art = !with_art;
+    lv_obj_set_style_bg_color(stage, lv_color_hex(bg), 0);
+    lv_obj_set_parent(stage, parent);
+    lv_obj_set_align(stage, LV_ALIGN_TOP_LEFT);
+    lv_obj_set_pos(stage, x, y);
+    active = true;
+    row = ROW_TRANSPORT;
+    tr_cur = TR_PLAY;
+    apply_focus();
+    lv_anim_delete(overlay, NULL);
+    lv_obj_set_style_opa(overlay, LV_OPA_TRANSP, 0);    /* quiet until a track starts or the user comes in */
+    controls_visible = false;
+    status_dirty = true;
+    lv_timer_resume(clock_timer);
+    lv_timer_ready(clock_timer);
+    lv_timer_pause(idle_timer);
+    apply_host_art();
+}
+
+void nowplaying_embed_art(bool with_art, uint32_t bg, bool stale_ok)
+{
+    if(!embedded) return;
+    host_hides_art = !with_art;
+    host_stale_ok = stale_ok;
+    lv_obj_set_style_bg_color(stage, lv_color_hex(bg), 0);
+    apply_host_art();
+}
+
+void nowplaying_unembed(void)
+{
+    if(!embedded) return;
+    embedded = false;
+    host_hides_art = false;
+    host_stale_ok = false;
+    active = false;
+    lv_timer_pause(clock_timer);
+    lv_timer_pause(idle_timer);
+    lv_anim_delete(overlay, NULL);
+    lv_obj_set_style_opa(overlay, LV_OPA_COVER, 0);
+    controls_visible = true;
+    lv_obj_set_parent(stage, scr);
+    lv_obj_center(stage);
+    apply_host_art();
+}
+
+void nowplaying_poke(void)
+{
+    if(!embedded) return;
+    show_controls();
+}
+
+void nowplaying_hide_controls(void) { if(embedded) hide_controls(); }
+bool nowplaying_controls_visible(void) { return embedded && controls_visible; }
+bool nowplaying_embedded(void) { return embedded; }
+
+void nowplaying_browse(void)
+{
+    if(!embedded || host_hides_art) return;
+    if(art_count <= 1 && pan_n > 0 && pan_i >= pan_n) pan_to(0);     /* one wide image: round to its left edge */
+    else if(art_count > 1 || pan_n > 0) browse_art(1);
+    badge_single = true;
+    badge_flash();
 }
 
 void nowplaying_hide(void)

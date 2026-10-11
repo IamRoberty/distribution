@@ -41,11 +41,27 @@
 
 #include "lvgl.h"
 #include "input.h"
+#include "library.h"
+#include "tilestyle.h"
 #include <stdbool.h>
 
-/* `on_open` gets the album's folder URI and its first track's URI;
- * `on_exit` is Back out of the view. */
-void grid_create(void (*on_open)(const char * folder_uri, const char * first_uri), void (*on_exit)(void));
+/* `on_open` gets the album's library, its index in it, the card's cache
+ * name, and the style its no-art tile was dealt (NULL for an album with
+ * art) - the album page copies what it needs; the library may be reloaded
+ * after. `on_exit` is Back out of the view. */
+void grid_create(void (*on_open)(const library_t * lib, int album, const char * card, const tile_style_t * tile), void (*on_exit)(void));
+
+/* Open the album whose folder this is, as Select would (the restart line
+ * after an HDMI hotplug on the album page). False when it isn't in the
+ * grid. */
+bool grid_open_folder(const char * folder);
+
+/* The album a folder holds, from the library index (Note 05 section 7:
+ * a folder of one album opens as the album page from the browser too).
+ * Loads the index if the grid hasn't yet. False when the folder isn't an
+ * album folder of any card. `tile` gets the style its no-art tile was dealt
+ * (NULL: with art, or not dealt yet). */
+bool grid_lookup_folder(const char * uri, const library_t ** lib, int * album, const char ** card, const tile_style_t ** tile);
 /* `fresh`: opened from Home (the first-visit panel or the pill may show);
  * false when coming back from an album (neither: the cursor is on it). */
 void grid_show(bool fresh);

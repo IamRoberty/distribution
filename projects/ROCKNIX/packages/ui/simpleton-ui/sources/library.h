@@ -30,6 +30,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "palette.h"
 #include <stdio.h>
 
 typedef struct {
@@ -40,7 +41,12 @@ typedef struct {
     float    duration;
     long     mtime, added;     /* epoch seconds                               */
     int      album;            /* index into library_t.albums                 */
+    char *   format;           /* MPD's audio format "44100:16:2" / "dsd64:2", "" unknown (0.17g) */
 } lib_track_t;
+
+/* A rank for "the better copy" of a track from its format: DSD above PCM,
+ * then bits, then rate; 0 when unknown. */
+long library_format_rank(const char * format);
 
 typedef struct {
     char *   title;            /* album tag, or the folder name when untagged */
@@ -60,6 +66,7 @@ typedef struct {
     uint32_t colour;           /* 0xRRGGBB preview of the cover, 0 = none     */
     bool     has_art;
     uint8_t  thumb_sizes;      /* bit i set = thumbnail lib_thumb_px[i] exists */
+    art_palette_t palette;     /* the cover's colours for the album page (0.17); ndom 0 = none yet */
 } lib_album_t;
 
 typedef struct {

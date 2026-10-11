@@ -55,4 +55,9 @@ const char * strings_language(void);
  * the master copy of en.txt and the template for a new language. */
 void strings_dump(FILE * f);
 
+/* Upper-case UTF-8 text in place for caps faces (11 Oct): ASCII, the
+ * accented Latin letters, Greek, Cyrillic, Armenian. The byte length never
+ * changes; letters without a same-length capital are left as they are. */
+void str_upper_utf8(char * s);
+
 #endif

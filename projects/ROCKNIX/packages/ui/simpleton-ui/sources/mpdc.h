@@ -99,6 +99,7 @@ typedef struct {
     int   track, disc;
     float duration;
     long  mtime, added;
+    char  format[32];      /* MPD's Format: "44100:16:2", "96000:24:2", "dsd64:2"; "" unknown (0.17g) */
 } mpd_song_info_t;
 
 /* Stream every song under `uri` ("" = whole library) through `cb`, in MPD's

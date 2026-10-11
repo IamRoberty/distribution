@@ -8,6 +8,7 @@
 #define _GNU_SOURCE
 #include "placeholder.h"
 #include "config.h"
+#include "strings.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -15,6 +16,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -30,7 +33,18 @@
 #define MAX_ZONES  8
 #define MAX_LINES  4
 #define MAX_WAYS   32
-#define MAX_FONTS  8
+#define MAX_FONTS  24
+#define MAX_DESIGNS 4
+#define MAX_AREAS  12
+
+/* A text area (11 Oct, Ian's record): stacked rectangles of different
+ * widths that together make one shape - e.g. a narrow strip above a wide
+ * one on the upper half of a round label. The item's text is fitted into
+ * the whole shape at the largest size that fits: a short word big, a
+ * longer name over two or three lines, or one line in the wide part. */
+#define AREA_LINES     3
+#define AREA_CAP_FLOOR 0.018f    /* of the box: 19 px at 1080, 13 at 720 */
+#define AREA_STEP      0.96f     /* size ladder */
 
 #define SHRINK_MIN 0.55f     /* a long line shrinks to 55 % before it is trimmed */
 
@@ -41,6 +55,8 @@ typedef struct { uint8_t * px; int w, h; } gray_t;
 typedef struct { char name[32]; gray_t mask; } zone_t;
 
 typedef struct { float cx, baseline, cap, room; } line_t;     /* output px */
+
+typedef struct { int item; float x0, y0, x1, y1; } area_t;    /* output px; item 0 artist, 1 album, 2 title */
 
 typedef struct {
     char           file[64];
@@ -55,16 +71,30 @@ typedef struct {
     char     name[48];
 } colourway_t;
 
+/* A design: its base picture, zone masks and text lines (0.17h: several
+ * may be loaded - the theme's cassette and, say, a record - and a design
+ * is asked for by name). */
+typedef struct {
+    char   name[32];
+    gray_t base;
+    gray_t light;              /* optional light.png: white adds light after the colours (0.17i), px NULL = none */
+    zone_t zones[MAX_ZONES];
+    int    zone_count;
+    line_t lines[MAX_LINES];
+    int    line_count;
+    area_t areas[MAX_AREAS];
+    int    area_count;
+    bool   loaded, failed;
+} design_t;
+
 /* ------------------------------------------------------------- state */
 
 static char  share_dir[256];
 static int   box;
 
-static gray_t base;
-static zone_t zones[MAX_ZONES];
-static int    zone_count;
-static line_t lines[MAX_LINES];
-static int    line_count;
+static design_t designs[MAX_DESIGNS];
+static int      design_count;
+static design_t * main_design;         /* the theme's "design" line */
 
 static font_t fonts[MAX_FONTS];
 static int    font_count;
@@ -78,6 +108,18 @@ static int         last_way = -1;
 static char        theme_name[32];
 
 static bool ready;
+
+/* The album page's colours for one album (the cassette a track of it gets
+ * in now-playing matches its tile): read by the art worker thread. */
+static pthread_mutex_t prefer_lock = PTHREAD_MUTEX_INITIALIZER;
+static char     prefer_artist[256], prefer_album[256];
+static char **  prefer_uris;               /* the album's tracks: a track is known by its path first (tags may differ) */
+static int      prefer_nuris;
+static uint32_t prefer_rgb[MAX_ZONES];     /* by zone index of the main design */
+static bool     prefer_set[MAX_ZONES];
+static uint32_t prefer_ink;
+static char     prefer_font[64];           /* the album line's face, "" = the theme's */
+static bool     prefer_caps, have_prefer;
 
 /* -------------------------------------------------------------- files */
 
@@ -213,16 +255,22 @@ static bool parse_hex(const char * s, uint32_t * out)
     return true;
 }
 
-static int zone_index(const char * name)
+static int zone_index(const design_t * d, const char * name)
 {
-    for(int i = 0; i < zone_count; i++) if(strcmp(zones[i].name, name) == 0) return i;
+    for(int i = 0; i < d->zone_count; i++) if(strcmp(d->zones[i].name, name) == 0) return i;
     return -1;
 }
 
+/* Fonts and designs load on first use, from either thread (the art worker
+ * renders now-playing's cassette, the UI thread the album page's): one lock
+ * round the loading; a loaded entry never changes. */
+static pthread_mutex_t load_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static int font_index(const char * file)
 {
-    for(int i = 0; i < font_count; i++) if(strcmp(fonts[i].file, file) == 0) return i;
-    if(font_count == MAX_FONTS) return -1;
+    pthread_mutex_lock(&load_lock);
+    for(int i = 0; i < font_count; i++) if(strcmp(fonts[i].file, file) == 0) { pthread_mutex_unlock(&load_lock); return i; }
+    if(font_count == MAX_FONTS) { pthread_mutex_unlock(&load_lock); return -1; }
     font_t * f = &fonts[font_count];
     char path[512];
     snprintf(path, sizeof(path), "%s/fonts/%s", share_dir, file);
@@ -231,54 +279,90 @@ static int font_index(const char * file)
     if(!f->data || !stbtt_InitFont(&f->info, f->data, stbtt_GetFontOffsetForIndex(f->data, 0))) {
         fprintf(stderr, "simpleton-ui: placeholder: cannot load font %s\n", path);
         free(f->data); f->data = NULL;
+        pthread_mutex_unlock(&load_lock);
         return -1;
     }
     int x0, y0, x1, y1;
     f->cap_units = stbtt_GetCodepointBox(&f->info, 'H', &x0, &y0, &x1, &y1) ? y1 : 700;
     snprintf(f->file, sizeof(f->file), "%s", file);
-    return font_count++;
+    int i = font_count++;
+    pthread_mutex_unlock(&load_lock);
+    return i;
 }
 
 /* layout.txt: "size W H" then "text cx baseline cap room" per line. */
-static bool load_layout(const char * design)
+static bool load_layout(design_t * d)
 {
     char path[512];
-    snprintf(path, sizeof(path), "%s/placeholder/%s/layout.txt", share_dir, design);
+    snprintf(path, sizeof(path), "%s/placeholder/%s/layout.txt", share_dir, d->name);
     FILE * f = fopen(path, "r");
     if(!f) return false;
     float mw = 0, mh = 0;
     char line[256];
-    line_count = 0;
+    d->line_count = 0;
+    d->area_count = 0;
     while(fgets(line, sizeof(line), f)) {
-        float a, b, c, d;
+        float a, b, c, e;
+        char what[16];
         if(sscanf(line, "size %f %f", &a, &b) == 2) { mw = a; mh = b; }
-        else if(sscanf(line, "text %f %f %f %f", &a, &b, &c, &d) == 4 && line_count < MAX_LINES && mw > 0) {
-            float s = (float)box / mw;
-            lines[line_count++] = (line_t){ a * s, b * s, c * s, d * s };
+        else if(sscanf(line, "text %f %f %f %f", &a, &b, &c, &e) == 4 && d->line_count < MAX_LINES && mw > 0) {
+            float sc = (float)box / mw;
+            d->lines[d->line_count++] = (line_t){ a * sc, b * sc, c * sc, e * sc };
+        }
+        else if(sscanf(line, "area %15s %f %f %f %f", what, &a, &b, &c, &e) == 5 && d->area_count < MAX_AREAS && mw > 0
+                && c > a && e > b) {
+            int item = strcmp(what, "artist") == 0 ? 0 : strcmp(what, "album") == 0 ? 1 : strcmp(what, "title") == 0 ? 2 : -1;
+            if(item < 0) { fprintf(stderr, "simpleton-ui: placeholder: %s: unknown area \"%s\" (artist, album or title)\n", path, what); continue; }
+            float sc = (float)box / mw;
+            d->areas[d->area_count++] = (area_t){ item, a * sc, b * sc, c * sc, e * sc };
         }
     }
     fclose(f);
     (void)mh;
-    return mw > 0 && line_count > 0;
+    return mw > 0;                      /* a design with no text lines is fine (a record with nothing written on it) */
 }
 
-static bool load_design(const char * design)
+static bool load_design_into(design_t * d, const char * design)
 {
     char path[512];
+    snprintf(d->name, sizeof(d->name), "%s", design);
     snprintf(path, sizeof(path), "%s/placeholder/%s/base.png", share_dir, design);
-    if(!load_gray(path, &base) || !resample_gray(&base, box, box)) return false;
+    if(!load_gray(path, &d->base) || !resample_gray(&d->base, box, box)) return false;
 
-    static const char * const zone_names[] = { "background", "shell", "label", "disc", "sleeve", "centre", NULL };
-    zone_count = 0;
-    for(int i = 0; zone_names[i] && zone_count < MAX_ZONES; i++) {
+    static const char * const zone_names[] = { "background", "shell", "label", "disc", "sleeve", "centre", "groove", "spindle", NULL };
+    d->zone_count = 0;
+    for(int i = 0; zone_names[i] && d->zone_count < MAX_ZONES; i++) {
         snprintf(path, sizeof(path), "%s/placeholder/%s/mask-%s.png", share_dir, design, zone_names[i]);
-        zone_t * z = &zones[zone_count];
+        zone_t * z = &d->zones[d->zone_count];
         if(!load_gray(path, &z->mask)) continue;
         if(!resample_gray(&z->mask, box, box)) return false;
         snprintf(z->name, sizeof(z->name), "%s", zone_names[i]);
-        zone_count++;
+        d->zone_count++;
     }
-    return zone_count > 0 && load_layout(design);
+    /* light.png is optional: a sheen on a dark disc can't come from the base,
+     * since the colours multiply onto it and nothing gets lighter than its zone */
+    snprintf(path, sizeof(path), "%s/placeholder/%s/light.png", share_dir, design);
+    if(load_gray(path, &d->light) && !resample_gray(&d->light, box, box)) return false;
+    return d->zone_count > 0 && load_layout(d);
+}
+
+/* A design by name, loaded on first ask (NULL when its files aren't there). */
+static design_t * design_get(const char * name)
+{
+    if(!name || !name[0]) return main_design;
+    pthread_mutex_lock(&load_lock);
+    design_t * d = NULL;
+    for(int i = 0; i < design_count && !d; i++) if(strcmp(designs[i].name, name) == 0) d = &designs[i];
+    if(!d && design_count < MAX_DESIGNS) {
+        d = &designs[design_count++];
+        memset(d, 0, sizeof(*d));
+        d->loaded = load_design_into(d, name);
+        d->failed = !d->loaded;
+        if(!d->loaded) fprintf(stderr, "simpleton-ui: placeholder: no usable design \"%s\" under %s/placeholder\n", name, share_dir);
+        else fprintf(stderr, "simpleton-ui: placeholder: design %s, %d zones, %d text lines\n", d->name, d->zone_count, d->line_count);
+    }
+    pthread_mutex_unlock(&load_lock);
+    return d && d->loaded ? d : NULL;
 }
 
 /* <name>.theme:
@@ -308,7 +392,7 @@ static bool load_theme(const char * name)
             line_caps[n - 1] = strcmp(b, "caps") == 0;
         }
     }
-    if(!design[0] || !load_design(design)) { fclose(f); return false; }
+    if(!design[0] || !(main_design = design_get(design))) { fclose(f); return false; }
 
     rewind(f);
     while(fgets(line, sizeof(line), f) && way_count < MAX_WAYS) {
@@ -329,7 +413,7 @@ static bool load_theme(const char * name)
             if(!parse_hex(eq + 1, &rgb)) { ok = false; break; }
             if(strcmp(tok, "text") == 0) w->ink = rgb;
             else {
-                int z = zone_index(tok);
+                int z = zone_index(main_design, tok);
                 if(z >= 0) w->zone_rgb[z] = rgb;
             }
         }
@@ -440,12 +524,20 @@ static void draw_text(uint32_t * out, const font_t * f, const char * text, float
 
 static void upper_ascii(char * s)
 {
-    for(; *s; s++) if((unsigned char)*s < 0x80) *s = (char)toupper((unsigned char)*s);
+    str_upper_utf8(s);          /* the name stays; accented, Greek, Cyrillic too (11 Oct) */
 }
 
 /* Centre `text` on the line: shrink to SHRINK_MIN if too wide, then trim
  * with an ellipsis. */
+static void render_line_min(uint32_t * out, const line_t * ln, int fi, bool caps, const char * text, uint32_t ink, float shrink_min);
+
 static void render_line(uint32_t * out, const line_t * ln, int fi, bool caps, const char * text, uint32_t ink)
+{
+    render_line_min(out, ln, fi, caps, text, ink, SHRINK_MIN);
+}
+
+/* ... shrinking no further than `shrink_min` (1 = trim at the given size) */
+static void render_line_min(uint32_t * out, const line_t * ln, int fi, bool caps, const char * text, uint32_t ink, float shrink_min)
 {
     if(fi < 0 || !text || !text[0]) return;
     const font_t * f = &fonts[fi];
@@ -457,7 +549,7 @@ static void render_line(uint32_t * out, const line_t * ln, int fi, bool caps, co
     float w = text_width(f, buf, scale);
     if(w > ln->room) {
         float s2 = scale * ln->room / w;
-        scale = s2 > scale * SHRINK_MIN ? s2 : scale * SHRINK_MIN;
+        scale = s2 > scale * shrink_min ? s2 : scale * shrink_min;
         w = text_width(f, buf, scale);
     }
     if(w > ln->room + 0.5f) {
@@ -481,18 +573,18 @@ static void render_line(uint32_t * out, const line_t * ln, int fi, bool caps, co
 /* --------------------------------------------------------------- tint */
 
 /* out = base * (sum_k mask_k * colour_k / max(sum_k mask_k, 1) + (1 - min(sum, 1))) */
-static void tint(uint32_t * out, const colourway_t * way)
+static void tint(uint32_t * out, const design_t * d, const uint32_t * zone_rgb)
 {
     size_t n = (size_t)box * box;
     for(size_t i = 0; i < n; i++) {
         unsigned sum = 0, r = 0, g = 0, b = 0;
-        for(int z = 0; z < zone_count; z++) {
-            unsigned m = zones[z].mask.px[i];
+        for(int z = 0; z < d->zone_count; z++) {
+            unsigned m = d->zones[z].mask.px[i];
             if(!m) continue;
             sum += m;
-            r += m * ((way->zone_rgb[z] >> 16) & 0xFF);
-            g += m * ((way->zone_rgb[z] >> 8) & 0xFF);
-            b += m * (way->zone_rgb[z] & 0xFF);
+            r += m * ((zone_rgb[z] >> 16) & 0xFF);
+            g += m * ((zone_rgb[z] >> 8) & 0xFF);
+            b += m * (zone_rgb[z] & 0xFF);
         }
         unsigned tot = sum > 255 ? sum : 255;             /* /255 keeps colour true where sum == 255 */
         unsigned gap = sum >= 255 ? 0 : 255 - sum;        /* uncovered part stays untinted */
@@ -500,8 +592,15 @@ static void tint(uint32_t * out, const colourway_t * way)
         if(mr > 255) mr = 255;
         if(mg > 255) mg = 255;
         if(mb > 255) mb = 255;
-        unsigned v = base.px[i];
-        out[i] = 0xFF000000u | ((v * mr / 255) << 16) | ((v * mg / 255) << 8) | (v * mb / 255);
+        unsigned v = d->base.px[i];
+        unsigned cr = v * mr / 255, cg = v * mg / 255, cb = v * mb / 255;
+        if(d->light.px) {                                   /* screen with white x light: out + (255 - out) * l */
+            unsigned l = d->light.px[i];
+            cr += (255 - cr) * l / 255;
+            cg += (255 - cg) * l / 255;
+            cb += (255 - cb) * l / 255;
+        }
+        out[i] = 0xFF000000u | (cr << 16) | (cg << 8) | cb;
     }
 }
 
@@ -516,8 +615,8 @@ bool placeholder_init(int box_size)
     fallback_font = font_index("NotoSans-Medium.ttf");   /* label letters the theme's fonts lack */
     if(ready) {
         srand((unsigned)time(NULL) ^ (unsigned)getpid());
-        fprintf(stderr, "simpleton-ui: placeholder: theme %s, %d colourways, %d zones, %d text lines, box %d\n",
-                theme_name, way_count, zone_count, line_count, box);
+        fprintf(stderr, "simpleton-ui: placeholder: theme %s, design %s, %d colourways, %d zones, %d text lines, box %d\n",
+                theme_name, main_design->name, way_count, main_design->zone_count, main_design->line_count, box);
     }
     else fprintf(stderr, "simpleton-ui: placeholder: assets not usable under %s, using plain placeholder\n", share_dir);
     return ready;
@@ -529,10 +628,252 @@ bool placeholder_colourway(int i, uint32_t * label_rgb, uint32_t * ink_rgb)
 {
     if(!ready || i < 0 || i >= way_count) return false;
     const colourway_t * w = &ways[i];
-    int z = zone_index("label");
+    int z = zone_index(main_design, "label");
     if(label_rgb) *label_rgb = z >= 0 ? w->zone_rgb[z] : w->zone_rgb[0];
     if(ink_rgb) *ink_rgb = w->ink;
     return true;
+}
+
+bool placeholder_has_design(const char * name)
+{
+    if(!ready) return false;
+    return design_get(name) != NULL;
+}
+
+const char * placeholder_main_design(void) { return ready ? main_design->name : ""; }
+
+int placeholder_design_lines(const char * name)
+{
+    if(!ready) return 0;
+    const design_t * d = design_get(name);
+    return d ? d->line_count : 0;
+}
+
+/* Zone colours for `d` from name/colour pairs; zones not named take `fallback`. */
+static void tints_to_zones(const design_t * d, const placeholder_tint_t * tints, int ntints, uint32_t fallback, uint32_t * zone_rgb)
+{
+    for(int z = 0; z < d->zone_count; z++) {
+        zone_rgb[z] = fallback;
+        for(int i = 0; i < ntints; i++) if(tints[i].zone && strcmp(tints[i].zone, d->zones[z].name) == 0) { zone_rgb[z] = tints[i].rgb; break; }
+    }
+}
+
+/* The width a line may have between cap top `t` and baseline `b` in an
+ * item's shape: the narrowest of its rectangles the line crosses, centred
+ * on that one; 0 when part of the line would be outside the shape. */
+static float area_width(const design_t * d, int item, float t, float b, float * cx)
+{
+    float w = 0, lo = 1e9f, hi = -1e9f;
+    for(int i = 0; i < d->area_count; i++) {
+        const area_t * a = &d->areas[i];
+        if(a->item != item) continue;
+        if(a->y0 < lo) lo = a->y0;
+        if(a->y1 > hi) hi = a->y1;
+        if(a->y1 <= t || a->y0 >= b) continue;
+        float aw = a->x1 - a->x0;
+        if(w == 0 || aw < w) { w = aw; *cx = (a->x0 + a->x1) / 2; }
+    }
+    return t >= lo - 0.5f && b <= hi + 0.5f ? w : 0;
+}
+
+/* One fitting of an item's text into its shape: the words, and for the
+ * size being tried each line's baseline, room and centre. */
+typedef struct {
+    const design_t * d;
+    int   item;
+    float lo, H, pitch_k, space;
+    int   nw;
+    const float * ww;                      /* word widths at scale 1 */
+    float cx[AREA_LINES], base[AREA_LINES], room[AREA_LINES];
+    int   brk[AREA_LINES + 1];             /* line i = words brk[i] .. brk[i+1]-1 */
+    int   nl;
+} area_fit_t;
+
+/* `n` lines at `cap`, centred in the shape; false when the block is taller
+ * than the shape or a line would leave it */
+static bool area_geometry(area_fit_t * a, float cap, int n)
+{
+    float pitch = cap * a->pitch_k, bh = cap + (n - 1) * pitch;
+    if(bh > a->H + 0.5f) return false;
+    float top = a->lo + (a->H - bh) / 2;
+    for(int i = 0; i < n; i++) {
+        a->base[i] = top + i * pitch + cap;
+        a->room[i] = area_width(a->d, a->item, a->base[i] - cap, a->base[i], &a->cx[i]);
+        if(a->room[i] <= 0) return false;
+    }
+    return true;
+}
+
+/* Words filled greedily into up to `n` lines at `scale` (greedy is enough:
+ * a fuller line never leaves the next ones more to carry); returns how many
+ * words found a place, a->nl the lines used. */
+static int area_fill(area_fit_t * a, float scale, int n)
+{
+    int w = 0;
+    a->nl = 0;
+    for(int i = 0; i < n; i++) {
+        a->brk[i] = w;
+        float used = 0;
+        while(w < a->nw) {
+            float add = (used > 0 ? a->space : 0) + a->ww[w];
+            if((used + add) * scale > a->room[i] + 0.5f) break;
+            used += add;
+            w++;
+        }
+        if(w == a->brk[i]) break;
+        a->nl = i + 1;
+    }
+    a->brk[a->nl] = w;
+    return w;
+}
+
+/* Fit `text` into the item's shape and draw it (see MAX_AREAS). Sizes go
+ * down a ladder from the shape's full height; at each size one, two then
+ * three lines are tried. At the floor: as many lines as the shape takes,
+ * the last one trimmed with an ellipsis. */
+static void render_area(uint32_t * out, const design_t * d, int item, int fi, bool caps, const char * text, uint32_t ink)
+{
+    if(fi < 0 || !text || !text[0]) return;
+    const font_t * f = &fonts[fi];
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%s", text);
+    if(caps) upper_ascii(buf);
+
+    area_fit_t a = { .d = d, .item = item, .lo = 1e9f, .pitch_k = caps ? 1.22f : 1.42f };
+    float hi = -1e9f;
+    for(int i = 0; i < d->area_count; i++) if(d->areas[i].item == item) {
+        if(d->areas[i].y0 < a.lo) a.lo = d->areas[i].y0;
+        if(d->areas[i].y1 > hi) hi = d->areas[i].y1;
+    }
+    a.H = hi - a.lo;
+    if(a.H <= 0) return;
+
+    enum { MAXW = 48 };
+    const char * ws[MAXW];
+    int wl[MAXW];
+    float ww[MAXW];
+    for(char * p = buf; *p && a.nw < MAXW;) {
+        while(*p == ' ') p++;
+        if(!*p) break;
+        char * q = p;
+        while(*q && *q != ' ') q++;
+        char save = *q;
+        *q = 0;
+        ws[a.nw] = p; wl[a.nw] = (int)(q - p); ww[a.nw] = text_width(f, p, 1.0f);
+        *q = save;
+        a.nw++;
+        p = q;
+    }
+    if(a.nw == 0) return;
+    a.ww = ww;
+    a.space = text_width(f, " ", 1.0f);
+    float floor_cap = AREA_CAP_FLOOR * (float)box;
+
+    float cap = a.H;
+    bool found = false;
+    for(;;) {
+        bool at_floor = cap <= floor_cap;
+        if(at_floor) cap = floor_cap;
+        for(int n = 1; n <= AREA_LINES && !found; n++)
+            if(area_geometry(&a, cap, n) && area_fill(&a, cap / f->cap_units, n) == a.nw) found = true;
+        if(found || at_floor) break;
+        cap *= AREA_STEP;
+    }
+    if(!found) {
+        int n = AREA_LINES;
+        while(n > 0 && !area_geometry(&a, cap, n)) n--;
+        if(n > 0) area_fill(&a, cap / f->cap_units, n);
+        if(n == 0 || a.nl == 0) {                  /* one word wider than the shape: a single trimmed line */
+            line_t ln = { 0 };
+            ln.cap = floor_cap;
+            ln.baseline = a.lo + (a.H + floor_cap) / 2;
+            ln.room = area_width(d, item, ln.baseline - floor_cap, ln.baseline, &ln.cx);
+            if(ln.room > 0) render_line(out, &ln, fi, false, buf, ink);
+            return;
+        }
+    }
+
+    float scale = cap / f->cap_units;
+    for(int i = 0; i < a.nl; i++) {
+        char line[512];
+        size_t o = 0;
+        int end = i == a.nl - 1 ? a.nw : a.brk[i + 1];    /* the last line takes any words left over */
+        for(int k = a.brk[i]; k < end && o + (size_t)wl[k] + 2 < sizeof(line); k++) {
+            if(o) line[o++] = ' ';
+            memcpy(line + o, ws[k], (size_t)wl[k]);
+            o += (size_t)wl[k];
+        }
+        line[o] = 0;
+        float lw = text_width(f, line, scale);
+        if(lw > a.room[i] + 0.5f) {                      /* leftovers at the floor: trimmed at the same size */
+            line_t ln = { a.cx[i], a.base[i], cap, a.room[i] };
+            render_line_min(out, &ln, fi, false, line, ink, 1.0f);
+            continue;
+        }
+        draw_text(out, f, line, scale, a.cx[i] - lw / 2, a.base[i], ink);
+    }
+}
+
+static void render_lines(uint32_t * out, const design_t * d, const char * const * texts, uint32_t ink, int album_font, bool album_caps)
+{
+    for(int l = 0; l < d->line_count; l++) {
+        int fi = line_font[l];
+        bool caps = line_caps[l];
+        if(l == 1 && album_font >= 0) { fi = album_font; caps = album_caps; }   /* line 2 is the album's */
+        render_line(out, &d->lines[l], fi, caps, texts[l], ink);
+    }
+    for(int item = 0; item < 3 && d->area_count > 0; item++) {
+        int fi = line_font[item];
+        bool caps = line_caps[item];
+        if(item == 1 && album_font >= 0) { fi = album_font; caps = album_caps; }
+        render_area(out, d, item, fi, caps, texts[item], ink);
+    }
+}
+
+uint8_t * placeholder_render_design(const char * design, const placeholder_tint_t * tints, int ntints, uint32_t fallback,
+                                    uint32_t ink, const char * album_font, bool album_caps,
+                                    const char * artist, const char * album, const char * title, int * w, int * h)
+{
+    if(!ready) return NULL;
+    const design_t * d = design_get(design);
+    if(!d) return NULL;
+    uint32_t * out = malloc((size_t)box * box * 4);
+    if(!out) return NULL;
+    uint32_t zone_rgb[MAX_ZONES];
+    tints_to_zones(d, tints, ntints, fallback, zone_rgb);
+    tint(out, d, zone_rgb);
+    const char * texts[MAX_LINES] = { artist ? artist : "", album ? album : "", title ? title : "", "" };
+    int af = album_font && album_font[0] ? font_index(album_font) : -1;
+    render_lines(out, d, texts, ink, af, album_caps);
+    *w = *h = box;
+    return (uint8_t *)out;
+}
+
+void placeholder_prefer(const char * const * uris, int nuris, const char * artist, const char * album,
+                        const placeholder_tint_t * tints, int ntints, uint32_t fallback,
+                        uint32_t ink, const char * album_font, bool album_caps)
+{
+    if(!ready) return;
+    pthread_mutex_lock(&prefer_lock);
+    for(int i = 0; i < prefer_nuris; i++) free(prefer_uris[i]);
+    free(prefer_uris);
+    prefer_uris = NULL;
+    prefer_nuris = 0;
+    have_prefer = artist && album;
+    if(have_prefer) {
+        snprintf(prefer_artist, sizeof(prefer_artist), "%s", artist);
+        snprintf(prefer_album, sizeof(prefer_album), "%s", album);
+        if(uris && nuris > 0 && (prefer_uris = calloc((size_t)nuris, sizeof(char *))) != NULL) {
+            for(int i = 0; i < nuris; i++) prefer_uris[i] = uris[i] ? strdup(uris[i]) : NULL;
+            prefer_nuris = nuris;
+        }
+        tints_to_zones(main_design, tints, ntints, fallback, prefer_rgb);
+        for(int z = 0; z < main_design->zone_count; z++) prefer_set[z] = true;
+        prefer_ink = ink;
+        snprintf(prefer_font, sizeof(prefer_font), "%s", album_font ? album_font : "");
+        prefer_caps = album_caps;
+    }
+    pthread_mutex_unlock(&prefer_lock);
 }
 
 const char * placeholder_line_font(int line, bool * caps)
@@ -542,11 +883,36 @@ const char * placeholder_line_font(int line, bool * caps)
     return fonts[line_font[line - 1]].file;
 }
 
-uint8_t * placeholder_render(const char * artist, const char * album, const char * title, int * w, int * h)
+uint8_t * placeholder_render(const char * uri, const char * artist, const char * album, const char * title, int * w, int * h)
 {
     if(!ready) return NULL;
     uint32_t * out = malloc((size_t)box * box * 4);
     if(!out) return NULL;
+    const char * texts[MAX_LINES] = { artist, album, title, "" };
+
+    /* the album page's colours for this album, when it set them (0.17h):
+     * a track of it by path, else by its tags */
+    pthread_mutex_lock(&prefer_lock);
+    bool preferred = false;
+    if(have_prefer) {
+        if(uri && uri[0]) for(int i = 0; i < prefer_nuris && !preferred; i++) preferred = prefer_uris[i] && strcmp(prefer_uris[i], uri) == 0;
+        if(!preferred && artist && album && artist[0] && album[0])
+            preferred = strcasecmp(artist, prefer_artist) == 0 && strcasecmp(album, prefer_album) == 0;
+    }
+    if(preferred) {
+        uint32_t zone_rgb[MAX_ZONES];
+        memcpy(zone_rgb, prefer_rgb, sizeof(zone_rgb));
+        uint32_t ink = prefer_ink;
+        char font[64];
+        snprintf(font, sizeof(font), "%s", prefer_font);
+        bool caps = prefer_caps;
+        pthread_mutex_unlock(&prefer_lock);
+        tint(out, main_design, zone_rgb);
+        render_lines(out, main_design, texts, ink, font[0] ? font_index(font) : -1, caps);
+        *w = *h = box;
+        return (uint8_t *)out;
+    }
+    pthread_mutex_unlock(&prefer_lock);
 
     int i;
     if(last_way < 0 || way_count < 2) i = rand() % way_count;
@@ -554,9 +920,8 @@ uint8_t * placeholder_render(const char * artist, const char * album, const char
     last_way = i;
     const colourway_t * way = &ways[i];
 
-    tint(out, way);
-    const char * texts[MAX_LINES] = { artist, album, title, "" };
-    for(int l = 0; l < line_count; l++) render_line(out, &lines[l], line_font[l], line_caps[l], texts[l], way->ink);
+    tint(out, main_design, way->zone_rgb);
+    render_lines(out, main_design, texts, way->ink, -1, false);
 
     *w = *h = box;
     return (uint8_t *)out;

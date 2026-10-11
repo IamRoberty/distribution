@@ -276,13 +276,38 @@ static bool make_thumbs(const char * card, const char * mount, lib_album_t * a, 
         char p[1300];
         cache_thumb_path(card, a, i, p, sizeof(p));
         if(write_jpeg(p, out, dw, dh)) a->thumb_sizes |= (uint8_t)(1u << i);
-        if(i == 0) a->colour = cache_dominant_colour(out, dw, dh);
+        if(i == 0) { a->colour = cache_dominant_colour(out, dw, dh); palette_extract(out, dw, dh, &a->palette); }
         if(out != cur) { if(cur != px) free(cur); cur = out; cw = dw; ch = dh; }
     }
     if(cur != px) free(cur);
     free(px);
     if(verbose) fprintf(stderr, "simpleton-cache:   %s %dx%d, colour %06x: %s / %s\n", source, w, h, a->colour, a->artist, a->title);
     return true;
+}
+
+/* The palette from the smallest thumbnail already on disk (0.17: an index
+ * made before palettes existed gets them without fetching the art again). */
+static bool palette_from_thumb(const char * card, lib_album_t * a)
+{
+    char p[1300];
+    cache_thumb_path(card, a, 0, p, sizeof(p));
+    FILE * f = fopen(p, "rb");
+    if(!f) return false;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if(len <= 0 || len > (4 << 20)) { fclose(f); return false; }
+    uint8_t * data = malloc((size_t)len);
+    bool ok = data && fread(data, 1, (size_t)len, f) == (size_t)len;
+    fclose(f);
+    if(!ok) { free(data); return false; }
+    int w = 0, h = 0;
+    uint8_t * px = art_decode_fit(data, (size_t)len, lib_thumb_px[0], &w, &h);
+    free(data);
+    if(!px) return false;
+    ok = palette_extract(px, w, h, &a->palette);
+    free(px);
+    return ok;
 }
 
 /* Remove thumbnails that belong to no album in `lib`. */
@@ -399,7 +424,7 @@ bool cache_build(const char * card, bool verbose)
     library_t old;
     bool have_old = library_load(&old, idx);
 
-    int kept = 0, made = 0, noart = 0;
+    int kept = 0, made = 0, noart = 0, made_pal = 0;
     for(int i = 0; i < lib.nalbums; i++) {
         lib_album_t * a = &lib.albums[i];
         const lib_album_t * o = NULL;
@@ -417,6 +442,8 @@ bool cache_build(const char * card, bool verbose)
             a->has_art = o->has_art;
             a->colour = o->colour;
             a->thumb_sizes = o->thumb_sizes;
+            a->palette = o->palette;
+            if(!palette_complete(&a->palette) && palette_from_thumb(card, a)) made_pal++;
             kept++;
             continue;
         }
@@ -434,8 +461,8 @@ bool cache_build(const char * card, bool verbose)
     bool ok = library_save(&lib, idx);
     if(!ok) fprintf(stderr, "simpleton-cache: %s: could not write %s\n", card, idx);
     prune_thumbs(card, &lib);
-    fprintf(stderr, "simpleton-cache: %s: %d albums unchanged, %d thumbnailed, %d without art; index %s\n",
-            card, kept, made, noart, ok ? "written" : "NOT written");
+    fprintf(stderr, "simpleton-cache: %s: %d albums unchanged (%d given palettes), %d thumbnailed, %d without art; index %s\n",
+            card, kept, made_pal, made, noart, ok ? "written" : "NOT written");
 
     /* 4. the copy on the card */
     char setting[16] = "";

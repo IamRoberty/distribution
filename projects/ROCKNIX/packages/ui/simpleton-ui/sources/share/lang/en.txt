@@ -98,6 +98,8 @@ sort.year = Year
 sort.newest = Newest on card
 library.various = Various Artists
 grid.empty = No albums yet
+page.side = Side
+page.disc = Disc
 
 settings.jump_strip = Alphabet picker
 

@@ -44,6 +44,8 @@
 #include "display.h"
 #include "fonts.h"
 #include "grid.h"
+#include "albumpage.h"
+#include "hdmisilence.h"
 #include "home.h"
 #include "input.h"
 #include "layout.h"
@@ -94,15 +96,19 @@ static void keypad_read_cb(lv_indev_t * indev, lv_indev_data_t * data)
 
 /* ---- screens ---- */
 
-typedef enum { SCR_HOME, SCR_BROWSER, SCR_NOWPLAYING, SCR_SETTINGS, SCR_NOTICE, SCR_ALBUMS } screen_t;
+typedef enum { SCR_HOME, SCR_BROWSER, SCR_NOWPLAYING, SCR_SETTINGS, SCR_NOTICE, SCR_ALBUMS, SCR_ALBUMPAGE } screen_t;
 
 static lv_obj_t * browser_scr;
 static screen_t cur = SCR_HOME;
 static screen_t back_to = SCR_HOME;          /* where now-playing / Settings / a notice return to */
 static screen_t browser_return = SCR_HOME;   /* where Back out of the browser goes: Home, or the
                                               * grid when an album was opened from it (0.16) */
+static screen_t page_return = SCR_ALBUMS;    /* where Back out of the album page goes: the grid, or
+                                              * the browser when an album folder was opened there (0.17b) */
 static char * argv0;
 static char restart_page[32];                /* set by a setting that needs a fresh start */
+
+static void enter_nowplaying(void);
 
 static void leave_current(void)
 {
@@ -112,6 +118,7 @@ static void leave_current(void)
         case SCR_SETTINGS:   settings_hide(); break;
         case SCR_NOTICE:     notice_hide(); break;
         case SCR_ALBUMS:     grid_hide(); break;
+        case SCR_ALBUMPAGE:  albumpage_hide(); break;
         default: break;
     }
 }
@@ -130,6 +137,13 @@ static void show_home(void)
     home_show();
 }
 
+static void show_albumpage(bool fresh)
+{
+    leave_current();
+    cur = SCR_ALBUMPAGE;
+    albumpage_show(fresh);
+}
+
 static void show_browser(void)
 {
     leave_current();
@@ -145,14 +159,46 @@ static void browser_exited(void)
     else show_home();
 }
 
-/* The grid chose an album: its folder in the browser until the album page
- * exists (step 6b); Back returns to the grid. */
-static void open_album(const char * folder, const char * first_uri)
+/* The grid chose an album: the album page (0.17); Back returns to the
+ * grid. An album the page can't take (no tracks) opens as its folder in
+ * the browser instead. */
+static void open_album(const library_t * lib, int album, const char * card, const tile_style_t * tile)
 {
-    (void)first_uri;
-    if(!browser_open_folder(folder)) return;        /* unreadable just now: stay in the grid */
+    page_return = SCR_ALBUMS;
+    if(albumpage_open(lib, album, card, tile)) { show_albumpage(true); return; }
+    const char * folder = (lib && album >= 0 && album < lib->nalbums) ? lib->albums[album].folder : NULL;
+    if(!folder || !browser_open_folder(folder)) return;        /* unreadable just now: stay in the grid */
     browser_return = SCR_ALBUMS;
     show_browser();
+}
+
+/* Back out of the album page: the grid, on the same album, or the browser
+ * when the album was opened as a folder there. */
+static void albumpage_exited(void)
+{
+    if(page_return == SCR_BROWSER) show_browser();
+    else show_albums(false);
+}
+
+/* The handheld page started a track: now-playing, as after the browser. */
+static void albumpage_played(void)
+{
+    enter_nowplaying();
+}
+
+/* The browser is about to enter a folder: one that holds a single album
+ * opens as the album page instead (Note 05 section 7). */
+static bool browser_folder_hook(const char * uri)
+{
+    const library_t * lib;
+    const char * card;
+    const tile_style_t * tile;
+    int album;
+    if(!grid_lookup_folder(uri, &lib, &album, &card, &tile)) return false;
+    if(!albumpage_open(lib, album, card, tile)) return false;
+    page_return = SCR_BROWSER;
+    show_albumpage(true);
+    return true;
 }
 
 static void enter_nowplaying(void)
@@ -191,6 +237,7 @@ static void go_back(void)
         case SCR_BROWSER:    show_browser(); break;
         case SCR_NOWPLAYING: enter_nowplaying(); break;
         case SCR_ALBUMS:     show_albums(false); break;
+        case SCR_ALBUMPAGE:  show_albumpage(false); break;
         default:             show_home(); break;
     }
 }
@@ -270,6 +317,9 @@ static void dispatch(ui_action_t a)
         case SCR_ALBUMS:
             grid_handle_action(a);
             return;
+        case SCR_ALBUMPAGE:
+            albumpage_handle_action(a);
+            return;
         case SCR_BROWSER:
             break;
     }
@@ -296,13 +346,14 @@ static void dispatch(ui_action_t a)
 static void restart_ui(void)
 {
     const char * folder = browser_current_uri();
-    char * args[8];
+    char * args[10];
     int n = 0;
     args[n++] = argv0;
     if(folder && folder[0]) { args[n++] = "--folder"; args[n++] = (char *)folder; }
     if(cur == SCR_NOWPLAYING) args[n++] = "--nowplaying";
     else if(cur == SCR_BROWSER) args[n++] = "--browser";
     else if(cur == SCR_ALBUMS) args[n++] = "--albums";
+    else if(cur == SCR_ALBUMPAGE && albumpage_folder()) { args[n++] = "--album"; args[n++] = (char *)albumpage_folder(); }
     if(restart_page[0]) { args[n++] = "--settings"; args[n++] = restart_page; }
     args[n] = NULL;
     for(int fd = 3; fd < 256; fd++) close(fd);
@@ -330,6 +381,7 @@ static void mpd_changed(unsigned what)
     if(what & (MPD_CHANGED_DATABASE | MPD_CHANGED_UPDATE))
         browser_library_changed(what & MPD_CHANGED_DATABASE);
     if(what & MPD_CHANGED_DATABASE) grid_library_changed();
+    if(what & MPD_CHANGED_PLAYER) albumpage_mpd_changed();
     if(what & (MPD_CHANGED_PLAYER | MPD_CHANGED_MIXER | MPD_CHANGED_OPTIONS |
                MPD_CHANGED_PLAYLIST | MPD_CHANGED_OUTPUT))
         nowplaying_mpd_changed();
@@ -388,7 +440,7 @@ static void crash_handler_install(void)
 int main(int argc, char ** argv)
 {
     crash_handler_install();
-    const char * resume_folder = NULL, * resume_settings = NULL;
+    const char * resume_folder = NULL, * resume_settings = NULL, * resume_album = NULL;
     bool resume_nowplaying = false, resume_browser = false, resume_albums = false;
     argv0 = argv[0];
     for(int i = 1; i < argc; i++) {
@@ -396,6 +448,7 @@ int main(int argc, char ** argv)
         else if(strcmp(argv[i], "--nowplaying") == 0) resume_nowplaying = true;
         else if(strcmp(argv[i], "--browser") == 0) resume_browser = true;
         else if(strcmp(argv[i], "--albums") == 0) resume_albums = true;
+        else if(strcmp(argv[i], "--album") == 0 && i + 1 < argc) resume_album = argv[++i];
         else if(strcmp(argv[i], "--settings") == 0 && i + 1 < argc) resume_settings = argv[++i];
         /* the built-in English table as a language file: the master copy of
          * share/lang/en.txt and the template for a new language */
@@ -410,6 +463,7 @@ int main(int argc, char ** argv)
     lv_display_t * disp = display_init(&di);
     if(disp == NULL) { fprintf(stderr, "simpleton-ui: display init failed\n"); return 1; }
     layout_init(di.w, di.h, di.external);
+    if(di.external) hdmi_silence_start();     /* zeros on the TV's audio link: no hum (0.17j) */
     {
         ui_grid_t g;
         ui_list_t l;
@@ -443,6 +497,8 @@ int main(int argc, char ** argv)
     browser_scr = lv_screen_active();
     browser_create(browser_scr, grp, on_play, browser_exited, resume_folder);
     grid_create(open_album, show_home);
+    albumpage_create(albumpage_exited, albumpage_played);
+    browser_set_folder_hook(browser_folder_hook);
     nowplaying_create();
     settings_create(restart_for_setting, view_options_changed);
     notice_create();
@@ -453,6 +509,7 @@ int main(int argc, char ** argv)
     home_show();
     if(resume_browser) show_browser();
     if(resume_albums) show_albums(false);
+    if(resume_album) { show_albums(false); if(!grid_open_folder(resume_album)) fprintf(stderr, "simpleton-ui: --album %s: not in the grid\n", resume_album); }
     if(resume_nowplaying) enter_nowplaying();
     if(resume_settings) enter_settings(resume_settings, false);
     fprintf(stderr, "simpleton-ui: play-through folders: %s\n", playthrough_enabled() ? "on" : "off");

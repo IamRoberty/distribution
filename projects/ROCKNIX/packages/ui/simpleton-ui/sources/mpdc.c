@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
@@ -89,9 +90,30 @@ static bool read_ok(conn_t * c)
     }
 }
 
+/* MPD closes a command connection that has been quiet for its
+ * connection_timeout (60 s by default); the idle connection is exempt. A
+ * closed-by-peer socket shows as readable with nothing to read, so one
+ * free poll() before a command tells us to reconnect instead of sending
+ * into a dead socket and reading EOF - which is how the album page lost
+ * its playing mark on the first track change after a few quiet minutes
+ * (10 Oct 2026). */
+static bool conn_alive(conn_t * c)
+{
+    if(c->sock < 0) return false;
+    struct pollfd pf = { .fd = c->sock, .events = POLLIN };
+    if(poll(&pf, 1, 0) <= 0) return true;                  /* nothing pending: fine */
+    char b;
+    ssize_t n = recv(c->sock, &b, 1, MSG_PEEK | MSG_DONTWAIT);
+    if(n > 0) return true;                                 /* a reply we haven't read yet: leave it */
+    fprintf(stderr, "simpleton-ui: mpd[%s]: connection was closed (quiet too long), reconnecting\n", c->name);
+    disconnect(c);
+    return false;
+}
+
 static bool connect_conn(conn_t * c)
 {
-    if(c->sock >= 0) return true;
+    if(c->sock >= 0 && conn_alive(c)) return true;
+    if(c->sock >= 0) return false;
 
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if(fd < 0) return false;
@@ -310,6 +332,7 @@ bool mpd_listallinfo(const char * uri, bool (*cb)(const mpd_song_info_t * song, 
         else if(strcasecmp(key, "Time") == 0)          { if(song.duration <= 0) song.duration = (float)atoi(val); }
         else if(strcasecmp(key, "Last-Modified") == 0) song.mtime = iso_time(val);
         else if(strcasecmp(key, "Added") == 0)         song.added = iso_time(val);
+        else if(strcasecmp(key, "Format") == 0)        snprintf(song.format, sizeof(song.format), "%s", val);
     }
     if(in_song && go_on) cb(&song, ctx);
     return ok;

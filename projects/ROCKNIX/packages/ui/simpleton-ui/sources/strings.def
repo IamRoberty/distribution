@@ -115,6 +115,10 @@ STR(SORT_YEAR,           "sort.year",           "Year")
 STR(SORT_NEWEST,         "sort.newest",         "Newest on card")
 STR(VARIOUS_ARTISTS,     "library.various",     "Various Artists")
 STR(GRID_EMPTY,          "grid.empty",          "No albums yet")
+
+/* the album page (0.17): the words over a split track list, "Side A" / "Disc 1" */
+STR(PAGE_SIDE,           "page.side",           "Side")
+STR(PAGE_DISC,           "page.disc",           "Disc")
 STR(SET_JUMP_STRIP,      "settings.jump_strip", "Alphabet picker")
 
 /* this language's own name, in its own script (the Language setting) */

@@ -34,6 +34,12 @@ void browser_toggle_picker(void);
  * (Back then leaves to the grid); Folders from Home goes back to the root. */
 void browser_shown(void);
 bool browser_open_folder(const char * uri);   /* false: the folder could not be read; nothing changed */
+
+/* A hook asked before a folder is entered (0.17b, Note 05 section 7): it
+ * returns true when it took the folder itself - main.c opens a folder that
+ * holds one album as the album page - and the browser then stays where it
+ * is, so Back from the page lands on the folder's row. */
+void browser_set_folder_hook(bool (*hook)(const char * uri));
 void browser_open_root(void);
 bool browser_opened_at_folder(void);
 

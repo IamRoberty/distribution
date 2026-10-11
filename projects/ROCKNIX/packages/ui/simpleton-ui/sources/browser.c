@@ -78,6 +78,7 @@ static mpd_entry_t * mpd_order;    /* cur.items as MPD listed them, so a sort ca
 static bool waiting_for_mpd;
 static bool lib_scanning;            /* a library rescan is running (from MPD's notices) */
 static void (*play_cb)(void);
+static bool (*folder_hook)(const char * uri);   /* an album folder opens as the album page (0.17b) */
 
 static void view_key(const char * what, char * out, size_t len)
 {
@@ -488,7 +489,11 @@ static void row_click_cb(lv_event_t * e)
     if(i < 0 || i >= cur.count) return;
     const mpd_entry_t * entry = &cur.items[i];
 
-    if(entry->kind == MPD_ENTRY_DIR) { push_and_enter(entry->uri); return; }
+    if(entry->kind == MPD_ENTRY_DIR) {
+        if(folder_hook && folder_hook(entry->uri)) return;
+        push_and_enter(entry->uri);
+        return;
+    }
 
     /* Containers are expanded at load; this probe is the fallback for a
      * file MPD can expand but the expansion didn't recognise by name. */
@@ -686,6 +691,7 @@ void browser_open_root(void)
 bool browser_opened_at_folder(void) { return exit_depth != 0; }
 
 const char * browser_current_uri(void) { return cur_uri(); }
+void browser_set_folder_hook(bool (*hook)(const char * uri)) { folder_hook = hook; }
 bool browser_at_root(void) { return depth == 0; }
 
 /* Focus the row whose uri is `uri`, if it's in the listing on screen. */

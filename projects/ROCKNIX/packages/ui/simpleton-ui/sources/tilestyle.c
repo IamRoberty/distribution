@@ -40,6 +40,15 @@ static uint32_t cream;                 /* tilecream: the shared cream ink, 0 = n
 static bool     has_cream;
 static int      w_pal, w_cream, w_dark; /* tileinks: how often each kind of ink is drawn */
 static float    text_min;              /* tiletextmin: the smallest title size, as a fraction of the tile */
+static uint32_t accent;                /* the theme's accent line, 0 = none */
+/* the album page (0.17) */
+#define LAYOUT_MAX 32
+static page_layout_t layouts[LAYOUT_MAX];
+static int           nlayouts;
+static tile_font_t   liners[FONT_MAX];
+static int           nliners;
+static int           liner_share;
+static int           ldeck[2][LAYOUT_MAX], ldeck_n[2], ldeck_pos[2];   /* layout decks: TV, handheld */
 
 /* ----------------------------------------------------------- colour */
 
@@ -62,6 +71,9 @@ double tilestyle_contrast(uint32_t a, uint32_t b)
 }
 
 /* "redmean": a cheap perceptual distance, 0..~765 */
+static double distance(uint32_t a, uint32_t b);
+double tilestyle_distance(uint32_t a, uint32_t b) { return distance(a, b); }
+
 static double distance(uint32_t a, uint32_t b)
 {
     int r1 = (a >> 16) & 255, g1 = (a >> 8) & 255, b1 = a & 255;
@@ -82,6 +94,13 @@ static void to_hsl(uint32_t rgb, double * h, double * s, double * l)
     else if(mx == g) *h = (b - r) / d + 2;
     else *h = (r - g) / d + 4;
     *h *= 60;
+}
+
+double tilestyle_saturation(uint32_t c)
+{
+    double h, s, l;
+    to_hsl(c, &h, &s, &l);
+    return s;
 }
 
 static double hue2(double p, double q, double t)
@@ -148,10 +167,88 @@ static void pal_add(uint32_t c)
     if(npal < PAL_MAX) pal[npal++] = c;
 }
 
+/* A font line's options after the file name and caps|mixed; shared by
+ * coverfont and linerfont. Returns false without a file name. */
+static bool parse_font_line(char * rest, tile_font_t * f)
+{
+    memset(f, 0, sizeof(*f));
+    f->leading = 100;
+    f->share = SHARE_DEFAULT;
+    f->max_letters = 0;
+    char * save;
+    int k = 0;
+    bool ok = false;
+    for(char * tok = strtok_r(rest, " \t\n", &save); tok; tok = strtok_r(NULL, " \t\n", &save), k++) {
+        int v; double dv;
+        if(k == 0) { snprintf(f->file, sizeof(f->file), "%s", tok); ok = true; }
+        else if(k == 1) f->caps = strcmp(tok, "caps") == 0;
+        else if(sscanf(tok, "leading=%d", &v) == 1) f->leading = v < 30 ? 30 : v > 200 ? 200 : v;
+        else if(sscanf(tok, "share=%d", &v) == 1) f->share = v < 0 ? 0 : v > 100 ? 100 : v;
+        else if(sscanf(tok, "max=%d", &v) == 1) f->max_letters = v < 1 ? 1 : v;
+        else if(sscanf(tok, "min=%lf", &dv) == 1) f->min_size = (float)(dv < 0 ? 0 : dv > 0.5 ? 0.5 : dv);
+        else if(sscanf(tok, "contrast=%lf", &dv) == 1) f->contrast = dv < 1 ? 1 : dv;
+        else if(strcmp(tok, "long") == 0) f->for_long = true;
+        else if(strcmp(tok, "big") == 0) f->big = true;
+    }
+    return ok;
+}
+
+/* "any" (or nothing) leaves a font field empty: dealt per visit. */
+static void font_field(char * out, size_t len, const char * v)
+{
+    if(strcmp(v, "any") == 0) out[0] = 0;
+    else snprintf(out, len, "%s", v);
+}
+
+static void parse_layout(char * rest)
+{
+    if(nlayouts >= LAYOUT_MAX) return;
+    page_layout_t * l = &layouts[nlayouts];
+    memset(l, 0, sizeof(*l));
+    l->size = 'M';
+    l->header = PAGE_HEADER_ARTIST_BIG;
+    bool screen_set = false;
+    char * save;
+    int k = 0;
+    for(char * tok = strtok_r(rest, " \t\n", &save); tok; tok = strtok_r(NULL, " \t\n", &save), k++) {
+        if(k == 0) { snprintf(l->name, sizeof(l->name), "%s", tok); continue; }
+        char * eq = strchr(tok, '=');
+        if(!eq) continue;
+        *eq = 0;
+        const char * v = eq + 1;
+        if(strcmp(tok, "screen") == 0) {
+            if(strcmp(v, "tv") == 0) { l->screen = PAGE_SCREEN_TV; screen_set = true; }
+            else if(strcmp(v, "handheld") == 0) { l->screen = PAGE_SCREEN_HANDHELD; screen_set = true; }
+        }
+        else if(strcmp(tok, "art") == 0)
+            l->art = strcmp(v, "right") == 0 ? PAGE_ART_RIGHT : (strcmp(v, "centre") == 0 || strcmp(v, "center") == 0) ? PAGE_ART_CENTRE : PAGE_ART_LEFT;
+        else if(strcmp(tok, "sides") == 0)
+            l->sides = strcmp(v, "letters") == 0 ? PAGE_SIDES_LETTERS : strcmp(v, "numbers") == 0 ? PAGE_SIDES_NUMBERS : PAGE_SIDES_NONE;
+        else if(strcmp(tok, "header") == 0)
+            l->header = strcmp(v, "album-big") == 0 ? PAGE_HEADER_ALBUM_BIG : strcmp(v, "centred") == 0 || strcmp(v, "centered") == 0 ? PAGE_HEADER_CENTRED
+                      : strcmp(v, "none") == 0 ? PAGE_HEADER_NONE : PAGE_HEADER_ARTIST_BIG;
+        else if(strcmp(tok, "artist") == 0) font_field(l->artist, sizeof(l->artist), v);
+        else if(strcmp(tok, "album") == 0) font_field(l->album, sizeof(l->album), v);
+        else if(strcmp(tok, "liner") == 0) font_field(l->liner, sizeof(l->liner), v);
+        else if(strcmp(tok, "size") == 0) l->size = v[0] == 'S' || v[0] == 's' ? 'S' : v[0] == 'L' || v[0] == 'l' ? 'L' : 'M';
+        else if(strcmp(tok, "leading") == 0) { int n = atoi(v); l->leading = n < 30 ? 0 : n > 200 ? 200 : n; }
+        else if(strcmp(tok, "numbers") == 0)
+            l->numbers = strcmp(v, "01") == 0 ? PAGE_NUMBERS_PADDED : strcmp(v, "1.") == 0 ? PAGE_NUMBERS_DOT : strcmp(v, "1") == 0 ? PAGE_NUMBERS_PLAIN : PAGE_NUMBERS_NONE;
+        else if(strcmp(tok, "align") == 0)
+            l->align = strcmp(v, "centre") == 0 || strcmp(v, "center") == 0 ? PAGE_ALIGN_CENTRE : strcmp(v, "right") == 0 ? PAGE_ALIGN_RIGHT : PAGE_ALIGN_LEFT;
+        else if(strcmp(tok, "colours") == 0 || strcmp(tok, "colors") == 0)
+            l->colours = strcmp(v, "paper") == 0 ? PAGE_COLOURS_PAPER : strcmp(v, "tile") == 0 ? PAGE_COLOURS_TILE : PAGE_COLOURS_ART;
+    }
+    if(l->name[0] && screen_set) nlayouts++;
+}
+
 void tilestyle_load(const char * theme_path)
 {
     mode = TILE_COLOURS_THEME;
     npal = ntheme = nfonts = nset_col = nsets = total_share = 0;
+    nlayouts = nliners = liner_share = 0;
+    ldeck_n[0] = ldeck_n[1] = ldeck_pos[0] = ldeck_pos[1] = 0;
+    accent = 0;
     min_contrast = CONTRAST_DEFAULT;
     has_cream = false;
     w_pal = 100; w_cream = 0; w_dark = 0;
@@ -202,26 +299,15 @@ void tilestyle_load(const char * theme_path)
         }
         else if(strncmp(line, "coverfont", 9) == 0 && nfonts < FONT_MAX) {
             tile_font_t * f = &fonts[nfonts];
-            memset(f, 0, sizeof(*f));
-            f->leading = 100;
-            f->share = SHARE_DEFAULT;
-            f->max_letters = 0;
-            char * save;
-            int k = 0;
-            bool ok = false;
-            for(char * tok = strtok_r(line + 9, " \t\n", &save); tok; tok = strtok_r(NULL, " \t\n", &save), k++) {
-                int v; double dv;
-                if(k == 0) { snprintf(f->file, sizeof(f->file), "%s", tok); ok = true; }
-                else if(k == 1) f->caps = strcmp(tok, "caps") == 0;
-                else if(sscanf(tok, "leading=%d", &v) == 1) f->leading = v < 30 ? 30 : v > 200 ? 200 : v;
-                else if(sscanf(tok, "share=%d", &v) == 1) f->share = v < 0 ? 0 : v > 100 ? 100 : v;
-                else if(sscanf(tok, "max=%d", &v) == 1) f->max_letters = v < 1 ? 1 : v;
-                else if(sscanf(tok, "min=%lf", &dv) == 1) f->min_size = (float)(dv < 0 ? 0 : dv > 0.5 ? 0.5 : dv);
-                else if(sscanf(tok, "contrast=%lf", &dv) == 1) f->contrast = dv < 1 ? 1 : dv;
-                else if(strcmp(tok, "long") == 0) f->for_long = true;
-                else if(strcmp(tok, "big") == 0) f->big = true;
-            }
-            if(ok && f->share > 0) { total_share += f->share; nfonts++; }
+            if(parse_font_line(line + 9, f) && f->share > 0) { total_share += f->share; nfonts++; }
+        }
+        else if(strncmp(line, "linerfont", 9) == 0 && nliners < FONT_MAX) {
+            tile_font_t * f = &liners[nliners];
+            if(parse_font_line(line + 9, f) && f->share > 0) { liner_share += f->share; nliners++; }
+        }
+        else if(strncmp(line, "pagelayout", 10) == 0) parse_layout(line + 10);
+        else if(sscanf(line, "accent %63s", a) == 1) {
+            if(!parse_hex(a, &accent)) accent = 0;
         }
         else if(strncmp(line, "colourway", 9) == 0 || strncmp(line, "tileway", 7) == 0) {
             bool tileway = line[0] == 't';
@@ -245,8 +331,40 @@ void tilestyle_load(const char * theme_path)
     }
     if(f) fclose(f);
     fprintf(stderr, "simpleton-ui: tiles: colours %s, %d colourways, %d sets (%d colours), %d palette colours, "
-            "contrast %.1f, inks palette %d cream %d dark %d, %d cover fonts\n",
-            tilestyle_mode_name(), ntheme, nsets, nset_col, npal, min_contrast, w_pal, has_cream ? w_cream : 0, w_dark, nfonts);
+            "contrast %.1f, inks palette %d cream %d dark %d, %d cover fonts; page: %d layouts, %d liner fonts\n",
+            tilestyle_mode_name(), ntheme, nsets, nset_col, npal, min_contrast, w_pal, has_cream ? w_cream : 0, w_dark, nfonts,
+            nlayouts, nliners);
+}
+
+double   tilestyle_min_contrast(void) { return min_contrast; }
+uint32_t tilestyle_cream(void)        { return has_cream ? cream : 0; }
+uint32_t tilestyle_accent(void)       { return accent; }
+
+uint32_t tilestyle_dark_ink(void)
+{
+    uint32_t best = 0x202020;
+    double bl = 1;
+    for(int i = 0; i < npal; i++) { double l = luminance(pal[i]); if(l < bl) { bl = l; best = pal[i]; } }
+    return best;
+}
+
+int tilestyle_font_index(const char * file)
+{
+    if(!file || !file[0]) return -1;
+    for(int i = 0; i < nfonts; i++) if(strcmp(fonts[i].file, file) == 0) return i;
+    return -1;
+}
+
+int                   tilestyle_layout_count(void) { return nlayouts; }
+const page_layout_t * tilestyle_layout(int i)      { return i >= 0 && i < nlayouts ? &layouts[i] : NULL; }
+int                   tilestyle_liner_count(void)  { return nliners; }
+const tile_font_t *   tilestyle_liner(int i)       { return i >= 0 && i < nliners ? &liners[i] : NULL; }
+
+int tilestyle_liner_index(const char * file)
+{
+    if(!file || !file[0]) return -1;
+    for(int i = 0; i < nliners; i++) if(strcmp(liners[i].file, file) == 0) return i;
+    return -1;
 }
 
 tile_colours_t tilestyle_mode(void) { return mode; }
@@ -523,4 +641,140 @@ void tilestyle_deal(unsigned seed, int n, int cols, const bool * noart, const in
     }
     free(cd.cards);
     free(fd.cards);
+}
+
+/* ----------------------------------------------------------- the album page */
+
+void tilestyle_companion(unsigned seed, const tile_style_t * tile, tile_style_t * out)
+{
+    *out = *tile;
+    int set = -1;
+    for(int j = 0; j < nset_col; j++) if(set_col[j] == tile->bg) { set = set_of[j]; break; }
+    rng_t r = { seed * 2654435761u + 0x27D4EB2Fu };
+    static mixbg_t cand[PAL_MAX];
+    int n = 0;
+    for(int j = 0; j < nset_col; j++) {
+        if(set_of[j] != set || is_dark(set_col[j]) || distance(set_col[j], tile->bg) < TOO_CLOSE) continue;
+        cand[n].bg = set_col[j];
+        collect_inks(&cand[n], set);
+        if(cand[n].ncol == 0 && cand[n].ndark == 0 && !cand[n].cream_ok) continue;
+        n++;
+    }
+    if(n > 0) {
+        mixbg_t * m = &cand[rnd(&r) % (uint32_t)n];
+        out->bg = m->bg;
+        out->ink = pick_ink(m, &r);
+        return;
+    }
+    /* inverted: the ink as the page when it can host the tile's colour */
+    if(!is_dark(tile->ink) || reads(tile->ink, tile->bg)) { out->bg = tile->ink; out->ink = tile->bg; }
+}
+
+int tilestyle_set_colours(uint32_t bg, uint32_t * out, int max)
+{
+    int set = -1;
+    for(int j = 0; j < nset_col; j++) if(set_col[j] == bg) { set = set_of[j]; break; }
+    if(set < 0) return 0;
+    int n = 0;
+    for(int j = 0; j < nset_col && n < max; j++) if(set_of[j] == set && set_col[j] != bg) out[n++] = set_col[j];
+    return n;
+}
+
+void tilestyle_picture_colours(unsigned seed, const tile_style_t * tile, uint32_t * label, uint32_t * shell, uint32_t * dark)
+{
+    uint32_t set[PAL_MAX];
+    int n = tilestyle_set_colours(tile->bg, set, PAL_MAX);
+    rng_t r = { seed * 2654435761u + 0x165667B1u };
+
+    /* the label: a set colour the ink reads on, the most colourful of them
+     * (a label apart from the background is worth a little saturation) */
+    *label = tile->bg;
+    double best = -1;
+    for(int i = 0; i < n; i++) {
+        uint32_t c = set[i];
+        if(!reads(c, tile->ink)) continue;
+        double score = tilestyle_saturation(c) + (distance(c, tile->bg) >= TOO_CLOSE ? 0.5 : 0);
+        if(score > best) { best = score; *label = c; }
+    }
+
+    /* the shell: another colour of the set, apart from the background and
+     * the label, dealt; the ink itself when the set has nothing else (a
+     * black or cream shell round a coloured label) */
+    uint32_t cand[PAL_MAX];
+    int nc = 0;
+    for(int i = 0; i < n; i++) {
+        uint32_t c = set[i];
+        if(c == *label || distance(c, tile->bg) < TOO_CLOSE || distance(c, *label) < NEAR_SAME) continue;
+        cand[nc++] = c;
+    }
+    if(nc > 0) *shell = cand[rnd(&r) % (uint32_t)nc];
+    else if(distance(tile->ink, *label) >= NEAR_SAME) *shell = tile->ink;
+    else *shell = own_ink(tile->bg);
+
+    /* the darkest of the set (a record's disc), the theme's off-black when
+     * the set's darkest is the background itself or too near it */
+    *dark = 0;
+    double lum = 2;
+    for(int i = 0; i < n; i++) if(luminance(set[i]) < lum && distance(set[i], tile->bg) >= TOO_CLOSE) { lum = luminance(set[i]); *dark = set[i]; }
+    if(!*dark || lum > 0.1) *dark = tilestyle_dark_ink();
+}
+
+const page_layout_t * tilestyle_layout_pick(unsigned seed, page_screen_t screen)
+{
+    int s = screen == PAGE_SCREEN_TV ? 0 : 1;
+    if(ldeck_pos[s] >= ldeck_n[s]) {             /* a fresh deck: every layout once before any repeats */
+        rng_t r = { seed * 2654435761u + 0x7F4A7C15u };
+        int n = 0;
+        for(int i = 0; i < nlayouts; i++) if(layouts[i].screen == screen) ldeck[s][n++] = i;
+        ldeck_n[s] = n;
+        ldeck_pos[s] = 0;
+        shuffle(ldeck[s], n, &r);
+    }
+    if(ldeck_n[s] == 0) return NULL;
+    return &layouts[ldeck[s][ldeck_pos[s]++]];
+}
+
+int tilestyle_liner_pick(unsigned seed)
+{
+    if(nliners == 0 || liner_share <= 0) return -1;
+    rng_t r = { seed * 2654435761u + 0x3C6EF372u };
+    int x = (int)(rnd(&r) % (uint32_t)liner_share);
+    for(int i = 0; i < nliners; i++) { x -= liners[i].share; if(x < 0) return i; }
+    return nliners - 1;
+}
+
+void tilestyle_page_accents(unsigned seed, uint32_t bg, uint32_t ink, uint32_t * play, uint32_t * sel)
+{
+    typedef struct { uint32_t c; double s; } cand_t;
+    cand_t cand[PAL_MAX + 1];
+    int n = 0;
+    double floor = min_contrast;                               /* the theme's own floor: vibe over contrast */
+    for(int i = 0; i <= npal; i++) {
+        uint32_t c = i < npal ? pal[i] : accent;
+        if(c == 0 && i == npal) break;
+        if(tilestyle_contrast(bg, c) < floor || distance(bg, c) < TOO_CLOSE || distance(ink, c) < TOO_CLOSE) continue;
+        double h, s, l;
+        to_hsl(c, &h, &s, &l);
+        if(l < 0.12 || l > 0.93) continue;                      /* near-blacks and creams aren't accents */
+        bool dup = false;
+        for(int k = 0; k < n; k++) if(distance(cand[k].c, c) < NEAR_SAME) { dup = true; break; }
+        if(dup) continue;
+        cand[n].c = c; cand[n].s = s; n++;
+    }
+    for(int i = 1; i < n; i++) {                                 /* most saturated first */
+        cand_t v = cand[i]; int j = i - 1;
+        while(j >= 0 && cand[j].s < v.s) { cand[j + 1] = cand[j]; j--; }
+        cand[j + 1] = v;
+    }
+    if(n == 0) { *play = *sel = ink; return; }
+    rng_t r = { seed * 2654435761u + 0x1B873593u };
+    int top = n < 3 ? n : 3;
+    int p = (int)(rnd(&r) % (uint32_t)top);
+    *play = cand[p].c;
+    *sel = ink;
+    for(int i = 0; i < n; i++) {
+        if(i == p || distance(cand[i].c, *play) < TOO_CLOSE) continue;
+        *sel = cand[i].c;
+        break;
+    }
 }

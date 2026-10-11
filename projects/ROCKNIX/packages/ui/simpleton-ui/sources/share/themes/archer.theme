@@ -85,6 +85,43 @@ coverfont Creepster-Regular.ttf mixed leading=80 share=1
 coverfont GravitasOne.ttf mixed leading=80 big
 coverfont Bevan-Regular.ttf mixed leading=70
 
+# The album page (0.17, 10 Oct 2026; album-page-6b.md, albumpage.h).
+#
+# Liner fonts: the faces a track list may be set in (Ian's type notes of
+# 9 Oct: Jost, Arvo, Caprasimo, Shrikhand, Anton SC, Dekko, Updock for the
+# liner). Dealt by share when a layout says liner=any.
+#   linerfont <file> caps|mixed [leading=N] [share=N]
+linerfont Jost-Medium.ttf mixed leading=100 share=30
+linerfont Arvo-Regular.ttf mixed leading=100 share=20
+linerfont Caprasimo-Regular.ttf mixed leading=100 share=10
+linerfont Shrikhand-Regular.ttf mixed leading=95 share=5
+linerfont AntonSC-Regular.ttf mixed leading=85 share=10
+linerfont Dekko-Regular.ttf mixed leading=95 share=5
+linerfont Updock-Regular.ttf mixed leading=95 share=5
+linerfont Jost-Light.ttf mixed leading=100 share=10
+
+# Page layouts, one drawn per visit for the screen (every one once before
+# any repeats). Everything a layout decides is on its line:
+#   pagelayout <name> screen=tv|handheld
+#       art=left|right|centre           TV: where the cover square goes; centre splits the list
+#       sides=none|letters|numbers      the words over a split list: Side A / Side B, Side 1 / Side 2 (Disc 1 / Disc 2 for a 2-disc album)
+#       header=artist-big|album-big|centred|none   handheld: which name is big
+#       artist=<coverfont>|any  album=<coverfont>|any   the names' faces (their caps and leading from the coverfont line); any = dealt
+#       liner=<linerfont>|any           the list face
+#       size=S|M|L  leading=N           the list type and its line spacing (default the liner font's)
+#       numbers=none|01|1.|1            track numbers, hanging before the titles
+#       align=left|centre|right
+#       colours=art|paper|tile          from the cover's main colour, its paper (its own white or black), or a tile colourway
+pagelayout sleeve-left   screen=tv art=left   liner=Jost-Medium.ttf size=M numbers=01 align=left colours=art
+pagelayout sleeve-right  screen=tv art=right  liner=Arvo-Regular.ttf size=M numbers=none align=left colours=art
+pagelayout sleeve-dots   screen=tv art=left   liner=any size=M numbers=1. align=left colours=art
+pagelayout gatefold      screen=tv art=centre sides=letters artist=Jost-Bold.ttf liner=AntonSC-Regular.ttf size=M leading=85 numbers=none align=centre colours=art
+pagelayout gatefold-1-2  screen=tv art=centre sides=numbers artist=Caprasimo-Regular.ttf liner=Jost-Medium.ttf size=S numbers=1 align=left colours=art
+pagelayout big-artist    screen=handheld header=artist-big artist=Jost-Bold.ttf album=Jost-Medium.ttf liner=Jost-Medium.ttf size=M numbers=01 align=left colours=art
+pagelayout big-album     screen=handheld header=album-big artist=Jost-Medium.ttf album=Bevan-Regular.ttf liner=Arvo-Regular.ttf size=M numbers=none align=left colours=art
+pagelayout centred       screen=handheld header=centred album=Shrikhand-Regular.ttf artist=Jost-Medium.ttf liner=Caprasimo-Regular.ttf size=M numbers=none align=centre colours=art
+pagelayout dealt         screen=handheld header=artist-big artist=any album=any liner=any size=M numbers=1. align=left colours=art
+
 # The Home page: a shelf of cassette spines (Ian, 4-7 Oct 2026; home.h).
 # Tiles are 180x1080 PNGs in themes/archer/ with the label left blank; the
 # name is written on at run time, so it follows the language setting.

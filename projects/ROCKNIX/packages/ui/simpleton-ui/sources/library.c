@@ -73,6 +73,22 @@ int library_name_cmp(const char * a, const char * b)
     return strcasecmp(a, b);
 }
 
+long library_format_rank(const char * format)
+{
+    if(!format || !format[0]) return 0;
+    const char * dsd = strstr(format, "dsd");
+    if(dsd) {
+        /* "dsd64:2" or the older "2822400:dsd:2" */
+        long n = atol(dsd + 3);
+        long rate = n > 0 ? n * 44100 : atol(format);
+        return 2000000000L + rate;
+    }
+    long rate = atol(format);
+    const char * colon = strchr(format, ':');
+    long bits = colon ? atol(colon + 1) : 0;         /* "f" (float) reads as 0: ranked by rate alone */
+    return bits * 1000000L + rate;
+}
+
 const char * library_sort_name(lib_sort_t s)
 {
     static const char * const names[LIB_SORT_COUNT] = { "title", "artist-title", "artist-year", "year", "newest" };
@@ -118,6 +134,7 @@ static bool take_song(const mpd_song_info_t * s, void * ctx)
     t->mtime = s->mtime;
     t->added = s->added;
     t->album = -1;
+    t->format = xstrdup(s->format);
 
     char f[1024];
     folder_of(s->uri, f, sizeof(f));
@@ -432,7 +449,7 @@ bool library_build(library_t * lib, const char * root)
 
 void library_free(library_t * lib)
 {
-    for(int i = 0; i < lib->ntracks; i++) { free(lib->tracks[i].uri); free(lib->tracks[i].title); free(lib->tracks[i].artist); }
+    for(int i = 0; i < lib->ntracks; i++) { free(lib->tracks[i].uri); free(lib->tracks[i].title); free(lib->tracks[i].artist); free(lib->tracks[i].format); }
     for(int i = 0; i < lib->nalbums; i++) { free(lib->albums[i].title); free(lib->albums[i].artist); free(lib->albums[i].folder); free(lib->albums[i].first_uri); }
     for(int i = 0; i < lib->nartists; i++) free(lib->artists[i].name);
     for(int i = 0; i < lib->nfolders; i++) free(lib->folders[i].uri);
@@ -528,15 +545,19 @@ bool library_save(const library_t * lib, const char * path)
         const lib_album_t * a = &lib->albums[i];
         fputs("A\t", f);
         put_field(f, a->title); put_field(f, a->artist); put_field(f, a->folder); put_field(f, a->first_uri);
-        fprintf(f, "%d\t%ld\t%d\t%d\t%d\t%d\t%016llx\t%06x\t%d\t%u\t%d\n", a->year, a->newest, a->first_track, a->track_count,
-                a->untagged, a->various, (unsigned long long)a->fingerprint, a->colour, a->has_art, a->thumb_sizes, a->in_collection);
+        char pal[200];
+        palette_format(&a->palette, pal, sizeof(pal));
+        fprintf(f, "%d\t%ld\t%d\t%d\t%d\t%d\t%016llx\t%06x\t%d\t%u\t%d\t%s\n", a->year, a->newest, a->first_track, a->track_count,
+                a->untagged, a->various, (unsigned long long)a->fingerprint, a->colour, a->has_art, a->thumb_sizes, a->in_collection, pal);
     }
     fprintf(f, "tracks\t%d\n", lib->ntracks);
     for(int i = 0; i < lib->ntracks; i++) {
         const lib_track_t * t = &lib->tracks[i];
         fputs("T\t", f);
         put_field(f, t->uri); put_field(f, t->title); put_field(f, t->artist);
-        fprintf(f, "%d\t%d\t%.3f\t%ld\t%ld\t%d\n", t->track, t->disc, (double)t->duration, t->mtime, t->added, t->album);
+        fprintf(f, "%d\t%d\t%.3f\t%ld\t%ld\t%d\t", t->track, t->disc, (double)t->duration, t->mtime, t->added, t->album);
+        for(const char * c = t->format ? t->format : ""; *c; c++) fputc((*c == '\t' || *c == '\n' || *c == '\r') ? ' ' : *c, f);
+        fputc('\n', f);
     }
     fprintf(f, "artists\t%d\n", lib->nartists);
     for(int i = 0; i < lib->nartists; i++) {
@@ -582,11 +603,11 @@ bool library_load(library_t * lib, const char * path)
     size_t cap = 8192;
     char * line = malloc(cap);
     if(!line) { fclose(f); return false; }
-    char * fl[24];
+    char * fl[48];
     bool ok = false;
     int na = -1, nt = -1, nr = -1, nf = -1, ia = 0, it = 0, ir = 0, iff = 0;
     while(fgets(line, (int)cap, f)) {
-        int n = split(line, fl, 24);
+        int n = split(line, fl, 48);
         if(n < 1) continue;
         if(strcmp(fl[0], "simpleton-library") == 0) { if(n < 2 || atoi(fl[1]) != 2) break; }   /* an older file is rebuilt */
         else if(strcmp(fl[0], "root") == 0 && n >= 2) lib->root = xstrdup(fl[1]);
@@ -602,12 +623,14 @@ bool library_load(library_t * lib, const char * path)
             a->fingerprint = strtoull(fl[11], NULL, 16); a->colour = (uint32_t)strtoul(fl[12], NULL, 16);
             a->has_art = atoi(fl[13]) != 0; a->thumb_sizes = (uint8_t)atoi(fl[14]);
             a->in_collection = n >= 16 && atoi(fl[15]) != 0;
+            if(n >= 29) palette_parse((const char * const *)fl + 16, n - 16, &a->palette);   /* 0.17: an older line leaves ndom 0; 0.17a adds shares */
             lib->nalbums = ia;
         }
         else if(strcmp(fl[0], "T") == 0 && n >= 10 && it < nt) {
             lib_track_t * t = &lib->tracks[it++];
             t->uri = xstrdup(fl[1]); t->title = xstrdup(fl[2]); t->artist = xstrdup(fl[3]);
             t->track = atoi(fl[4]); t->disc = atoi(fl[5]); t->duration = (float)atof(fl[6]); t->mtime = atol(fl[7]); t->added = atol(fl[8]); t->album = atoi(fl[9]);
+            t->format = xstrdup(n >= 11 ? fl[10] : "");            /* 0.17g; an older line has none */
             if(t->album < 0 || t->album >= na) t->album = -1;
             lib->ntracks = it;
         }

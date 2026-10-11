@@ -98,6 +98,109 @@
 # word can't sit on a line at the floor goes below the floor just as far as
 # it needs (never under 16 px), and a face that can't take a title whole
 # passes it to the next.
+# 0.17 (10 Oct 2026): the album page (Note 05 section 5 as amended 7 and
+# 10 Oct, step 6b; album-page-6b.md). Select on the grid opens it: on a TV
+# the cover fills a stage-sized square left, right or centre with the track
+# list beside it or split across both sides like a record; on the handheld
+# the names in cover fonts above the list, in two states (cover: big names,
+# Select plays the album; the D-pad: small names, the list up and larger).
+# Colours come from the cover's own palette, which simpleton-cache now
+# stores per album in library.idx (palette.c; an older index gets them on
+# the next cache run from the thumbnails on disk). Layouts and liner fonts
+# are theme lines (pagelayout, linerfont; tilestyle.h). Playing and
+# selected tracks in two colours, a triangle before the playing one, a red
+# heart after a favourite (dormant until step 9). --album <folder> keeps
+# the page across the HDMI restart. The grid's text fitting moved into
+# textfit.c and the no-art tile's text into tiletext.c (pixel-identical)
+# so the page could share them.
+# 0.17a (10 Oct 2026): after Ian's first look at the page on the unit.
+# Page colours carry the cover's dominant colour over (every dominant
+# scored by its share of the cover, its colourfulness and whether the
+# cover's own extremes read on it: a dark or grey cover gets a dark or grey
+# page, a big block of bright colour becomes the page); same-colour boxes
+# of the median cut are merged so a block's share is real, and the shares
+# are stored (library.idx, 21 palette fields; a 13-field 0.17 line or a
+# line with none is re-extracted from the 192 px thumbnail, by the page at
+# open and by the cache tool). A no-art album's page carries its grid tile
+# over: the tile itself as the handheld page and the TV square, a companion
+# colourway from the same set beside it, the tile's face for the title. The
+# no-art square's artist line grows with the square past 476 px.
+# 0.17b (10 Oct 2026, evening): after Ian's second look. Text colours
+# turned round (the unselected tracks in one of the cover's colourful
+# colours, the selected one in the colour nearest black or white, the
+# playing one in another colourful colour); the background goes colourful
+# whenever colour has a real presence on the cover (a colourful dominant of
+# 12 % or more, or 25 % together), tuned on the 238 palettes of Ian's card.
+# TV: now-playing is hosted inside the page's cover square (nowplaying.c
+# embed API) - a track starting pops its controls up over the cover and
+# they fade; Left/Right towards the cover select it (a frame in the
+# selected colour), Select enters now-playing there, Back comes out. The
+# handheld goes to now-playing when a track starts, as the browser does;
+# its names <-> list change cross-fades, Up from the first track returns to
+# the names, Back leaves. A folder that holds one album opens as the album
+# page from the browser too (Note 05 section 7, first half).
+# 0.17c (10 Oct 2026, night): the handheld page is one page - the names as
+# a heading above the list (one big, the other small, as the cover state
+# had them), the list at full size under it, the first track selected;
+# the separate names state and its cross-fade are gone (Ian: it didn't
+# look natural).
+# 0.17d (10 Oct 2026, late): the TV page's cover, as Ian found it on the
+# unit. The frame is the playing colour; on the cover no track is
+# highlighted; Up/Down bring now-playing's controls up (they then have the
+# D-pad), Select turns the cover's pages (the frame goes, "n / m" flashes
+# even for one image), Left/Right go straight back to the list, and Back
+# always takes the controls down first. Now-playing's own cover replaces
+# the page's only once it is decoded, and paints the page's colour behind
+# a cover that isn't square (the page's picture no longer shows above and
+# below it). Grid: no cover comes forward while the alphabet pill is up.
+# 0.17e (10 Oct 2026): no flash of the previous track's cover when a new
+# track starts on the TV page - hosted now-playing keeps art that isn't the
+# expected track's hidden (the page's own picture stays) unless it is an
+# earlier track of the same album; the page tells now-playing the new file
+# the moment it starts it.
+# 0.17f (10 Oct 2026): the playing mark on the page stopped following MPD
+# after a few quiet minutes - MPD closes a command connection quiet for
+# longer than its connection_timeout (60 s), and the next status request
+# read EOF; mpdc.c now notices a closed-by-peer socket (a free poll before
+# each command) and reconnects, for every command of the UI and the art
+# worker. A second copy of a track (the album ripped twice into two folders
+# joins one album) is folded: one of each track shows and plays.
+# 0.17g (10 Oct 2026): of two copies of a track the better one plays - the
+# index now carries MPD's audio format per track ("96000:24:2", "dsd64:2";
+# the T line's 11th field, filled on the next cache run) and the page keeps
+# the copy with the higher rank: DSD over PCM, then bits, then rate; equal
+# or unknown, the first in library order.
+# 0.17h (10 Oct 2026): the cassette comes into the page (Ian, 20:49). A
+# no-art album's TV square shows one of three each visit - the no-art tile
+# as the grid showed it, the cassette, or a record (when a "record" design
+# is under share/placeholder) - in the tile's colours: the background the
+# tile's, the label a colour of its set the tile's ink reads on, the shell
+# another, a record's disc the set's darkest; the album line in the tile's
+# face. The playing track's title is written on the label's lower line
+# while one of the album plays; now-playing no longer puts its own tape
+# over the square (an album without art keeps its picture; the controls
+# still come over it). Now-playing's cassette for a track of the album -
+# handheld, or the TV's own now-playing screen - is in the same colours
+# (placeholder.c: designs by name, explicit tints, a per-album preference
+# keyed by the tracks' paths or their tags). The picture is drawn off the
+# UI thread.
+# 0.17i (11 Oct 2026): Ian's record (share/placeholder/record) joins the
+# page's square: coloured vinyl in the shell colour most visits, black one
+# in five; an optional light.png per design adds light on top of the
+# colours, so the record's sheen shows on a dark disc. layout.txt can give
+# text areas - rectangles that together make one shape - and the name is
+# fitted into the shape at the largest size that fits (a short word big, a
+# longer one over two or three lines, or one line across the wide part).
+# Caps faces upper-case accented Latin, Greek and Cyrillic letters too
+# ("BJORK" with its umlaut, a Russian title in capitals), on the tiles,
+# the page and the labels (str_upper_utf8 in strings.c).
+# 0.17j (11 Oct 2026): digital silence on the HDMI audio link while the UI
+# is on an HDMI screen (hdmisilence.c): some TVs hum or buzz when a source
+# sends no audio at all; stock ROCKNIX kept the HDMI sound card busy, we
+# never opened it. A low-priority thread keeps the HDMI card (found by name
+# in /proc/asound/cards) open with zeros, 48 kHz 16-bit stereo. Music still
+# goes only to the USB DAC. /storage/.config/simpleton/hdmi_silence = off
+# turns it off. Links libasound (alsa-lib, already in the image for MPD).
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
 #   main.c        - theme/indev setup, screen switch, action dispatch
 #   display.c/h   - DRM/KMS output choice, modeset, page flips, hotplug
@@ -116,6 +219,13 @@
 #   nowplaying.c/h- now-playing screen
 #   art.c/h       - album art lookup + decode, worker thread
 #   placeholder.c/h - themed placeholder art (tint + label text, stb_truetype)
+#   grid.c/h      - the album grid (0.16); thumbs.c/h its thumbnail decoder
+#   tilestyle.c/h - the theme's tile colour sets, cover fonts, page layouts
+#   textfit.c/h   - fitting text into a box down a size ladder (0.17)
+#   tiletext.c/h  - the no-art tile's text (grid tiles, the page's cover square)
+#   palette.c/h   - a cover's colours (cache tool: extraction; UI: page roles)
+#   albumpage.c/h - the album page (0.17)
+#   hdmisilence.c/h - zeros on the HDMI audio link while on HDMI (0.17j)
 #   stb_truetype.h- vendored, public domain (github.com/nothings/stb)
 #   theme.h       - shared style tokens
 #   share/        - placeholder layers, OFL fonts, theme files, lang/<code>.txt
@@ -133,15 +243,17 @@
 #   - libjpeg-turbo and libpng are ROCKNIX's own packages (shared libs, so
 #     listing them in PKG_DEPENDS_TARGET is what puts the .so in the image).
 #     libpng pulls zlib; -lz is linked explicitly since we link it by hand.
+#   - alsa-lib likewise (libasound.so is in the image for MPD); only the UI
+#     links it, for the HDMI silence thread.
 #   - freetype likewise (shared, already in the image for other packages);
 #     liblvgl.a's FreeType code resolves against it at this link, and lvgl.h
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.16l"
+PKG_VERSION="0.17j"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
-PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk"
+PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk alsa-lib"
 PKG_SECTION="graphics"
 PKG_SHORTDESC="SimpletonOS on-device UI"
 PKG_LONGDESC="LVGL + DRM/KMS user interface for SimpletonOS: MPD-backed folder browser and now-playing screen with album art, joypad navigation and transport control."
@@ -164,6 +276,7 @@ make_target() {
     -I$(get_install_dir libjpeg-turbo)/usr/include \
     -I$(get_install_dir libpng)/usr/include \
     -I$(get_install_dir freetype)/usr/include/freetype2 \
+    -I$(get_install_dir alsa-lib)/usr/include \
     -o ${PKG_BUILD}/simpleton-ui \
     ${PKG_BUILD}/main.c ${PKG_BUILD}/input.c ${PKG_BUILD}/mpdc.c ${PKG_BUILD}/browser.c \
     ${PKG_BUILD}/nowplaying.c ${PKG_BUILD}/art.c ${PKG_BUILD}/placeholder.c \
@@ -171,7 +284,8 @@ make_target() {
     ${PKG_BUILD}/playthrough.c ${PKG_BUILD}/strings.c ${PKG_BUILD}/layout.c \
     ${PKG_BUILD}/library.c ${PKG_BUILD}/config.c ${PKG_BUILD}/shelf.c ${PKG_BUILD}/home.c \
     ${PKG_BUILD}/settings.c ${PKG_BUILD}/notice.c ${PKG_BUILD}/picker.c \
-    ${PKG_BUILD}/grid.c ${PKG_BUILD}/thumbs.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/tilestyle.c \
+    ${PKG_BUILD}/grid.c ${PKG_BUILD}/thumbs.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/tilestyle.c ${PKG_BUILD}/palette.c \
+    ${PKG_BUILD}/textfit.c ${PKG_BUILD}/tiletext.c ${PKG_BUILD}/albumpage.c ${PKG_BUILD}/hdmisilence.c \
     ${TARGET_LDFLAGS} -rdynamic \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \
@@ -179,14 +293,15 @@ make_target() {
     -L$(get_install_dir libpng)/usr/lib \
     -L$(get_install_dir zlib)/usr/lib \
     -L$(get_install_dir freetype)/usr/lib \
-    -llvgl -lfreetype -ldrm -ljpeg -lpng16 -lz -lpthread -lm
+    -L$(get_install_dir alsa-lib)/usr/lib \
+    -llvgl -lfreetype -ldrm -ljpeg -lpng16 -lz -lasound -lpthread -lm
 
   # The cache tool: the same sources without LVGL or the display.
   ${CC} ${TARGET_CFLAGS} -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
     -I$(get_install_dir libjpeg-turbo)/usr/include \
     -I$(get_install_dir libpng)/usr/include \
     -o ${PKG_BUILD}/simpleton-cache \
-    ${PKG_BUILD}/simpleton-cache.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/library.c \
+    ${PKG_BUILD}/simpleton-cache.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/library.c ${PKG_BUILD}/palette.c \
     ${PKG_BUILD}/art.c ${PKG_BUILD}/placeholder.c ${PKG_BUILD}/mpdc.c ${PKG_BUILD}/strings.c \
     ${PKG_BUILD}/config.c \
     ${TARGET_LDFLAGS} \

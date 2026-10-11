@@ -1,0 +1,12 @@
+# Ian's record, 11 Oct 2026. Master size, then text areas (master pixels):
+#   area <artist|album|title> x0 y0 x1 y1
+# Rectangles with the same name make one shape (a narrow strip over a wide
+# one follows the round label). The text is fitted into the whole shape at
+# the largest size that fits: a short name big, a longer one on two or three
+# lines, or one line across the wide part. Fonts: artist = the theme's
+# "font 1", album = the album tile's face, title = "font 3".
+size 1080 1080
+area artist 425 345 655 402
+area artist 357 402 722 447
+area album  372 637 708 698
+area album  453 698 627 757

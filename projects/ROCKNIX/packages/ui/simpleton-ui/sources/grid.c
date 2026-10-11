@@ -30,6 +30,8 @@
 #include "theme.h"
 #include "thumbs.h"
 #include "tilestyle.h"
+#include "textfit.h"
+#include "tiletext.h"
 #include "src/misc/cache/instance/lv_image_cache.h"   /* lv_image_cache_drop, not in lvgl.h */
 
 #include <stdint.h>
@@ -49,7 +51,6 @@
 #define PAGE_SLIDE_MS 160
 #define STRIP_SCREENS 3                       /* the pill past this many screenfuls... */
 #define STRIP_MIN_LABELS 3                    /* ...with at least this many letters   */
-#define BIG_TILE_PX   260                     /* no-art tiles this big show the artist too */
 
 /* ---- the library ---- */
 
@@ -94,7 +95,7 @@ static int        rows_total;
 static bool       shown;
 static unsigned   visit_seed;         /* no-art colourways: random per visit        */
 
-static void (*open_cb)(const char *, const char *);
+static void (*open_cb)(const library_t *, int, const char *, const tile_style_t *);
 static void (*exit_cb)(void);
 
 /* ---- tiles ---- */
@@ -359,375 +360,22 @@ static void tile_refresh_bitmap(tile_t * t)
     if(b) { if(t->shown_px != b->px || lv_image_get_src(t->img) != &b->dsc) tile_apply_bitmap(t, b); }
 }
 
-/* The no-art text (0.16b, Ian 8 Oct): centred; whole words only, shrinking
- * the type down a ladder of sizes rather than breaking a word across lines;
- * a bracketed tail "(Deluxe Edition)" / "[Disc 2]" set smaller underneath;
- * a little variety in the typeface, steady per album. Only when even the
- * smallest step of the ladder will not take it does it wrap and trail off
- * with dots. */
-
-#define LADDER_STEPS 12
-#define TEXT_MIN_PX  16                       /* never below this, whatever the theme says */
-
-static int text_w(const lv_font_t * f, const char * s)
-{
-    lv_point_t sz;
-    lv_text_get_size(&sz, s, f, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-    return sz.x;
-}
-
-static const lv_font_t * face_px(const char * file, int px)
-{
-    return file ? ui_font_face_px(file, px, true) : ui_font_px(px);
-}
-
-/* Greedy word wrap into `out` (lines joined by '\n'); *whole is false when
- * a single word is wider than maxw. Returns the line count. */
-static int wrap_words(const lv_font_t * f, const char * s, int maxw, char * out, size_t outlen, bool * whole)
-{
-    int lines = 0, linew = 0;
-    size_t used = 0;
-    int space_w = text_w(f, " ");
-    *whole = true;
-    out[0] = 0;
-    const char * p = s;
-    while(*p) {
-        while(*p == ' ') p++;
-        if(!*p) break;
-        char word[160];
-        size_t n = 0;
-        while(p[n] && p[n] != ' ' && n < sizeof(word) - 1) n++;
-        memcpy(word, p, n);
-        word[n] = 0;
-        p += n;
-        int ww = text_w(f, word);
-        if(ww > maxw) *whole = false;
-        if(lines == 0) { lines = 1; linew = ww; }
-        else if(linew + space_w + ww <= maxw) { if(used + 1 < outlen) out[used++] = ' '; linew += space_w + ww; }
-        else { if(used + 1 < outlen) out[used++] = '\n'; lines++; linew = ww; }
-        size_t wl = strlen(word);
-        if(used + wl < outlen) { memcpy(out + used, word, wl); used += wl; }
-        out[used] = 0;
-    }
-    return lines;
-}
-
-typedef struct {
-    const lv_font_t * font;
-    int  px, lines, h;
-    int  space;                 /* line space (negative = tighter than the face's own) */
-    bool whole;                 /* every word on one line, nothing trimmed */
-    char text[400];
-} fit_t;
-
-/* Sizes come from one fixed scale (~12% a step) so every tile size, face
- * and grid size shares the same few font objects: with seventeen faces,
- * free sizes would soon run the font cache out (0.16i). */
-static const int type_scale[] = { 10, 11, 12, 14, 16, 18, 20, 22, 25, 28, 32, 36, 40, 45, 50, 56, 63, 72, 80, 90, 100, 112, 126, 140, 160, 180 };
-#define TYPE_STEPS ((int)(sizeof(type_scale) / sizeof(type_scale[0])))
-
-static void ladder_fill(int * lad, int start)
-{
-    int k = 0;
-    while(k + 1 < TYPE_STEPS && type_scale[k + 1] <= start) k++;
-    for(int i = 0; i < LADDER_STEPS; i++) lad[i] = type_scale[k - i < 0 ? 0 : k - i];
-}
-
-/* Leading (Ian, 9 Oct): a face's lines set at `pct` of its own line
- * height; the extra (usually negative) space between lines. */
-static int leading_space(const lv_font_t * f, int pct)
-{
-    int lh = lv_font_get_line_height(f);
-    return lh * (pct - 100) / 100;
-}
-
-static int lines_height(const lv_font_t * f, int lines, int space)
-{
-    return lines * lv_font_get_line_height(f) + (lines > 1 ? (lines - 1) * space : 0);
-}
-
-/* The largest rung from `from` on (to `last`) where `text` sits in maxw x maxh
- * in whole words and at most max_lines lines. Returns the rung, or -1. */
-static int fit_rung(const char * file, int leading, const int * lad, int from, int last, const char * text,
-                    int maxw, int maxh, int max_lines, fit_t * out)
-{
-    for(int k = from; k <= last; k++) {
-        const lv_font_t * f = face_px(file, lad[k]);
-        bool whole;
-        int lines = wrap_words(f, text, maxw, out->text, sizeof(out->text), &whole);
-        int space = leading_space(f, leading);
-        int h = lines_height(f, lines, space);
-        if(k > from && lad[k] == lad[k - 1]) break;            /* the ladder has bottomed out */
-        if(whole && lines <= max_lines && h <= maxh) {
-            out->font = f; out->px = lad[k]; out->lines = lines; out->h = h; out->space = space; out->whole = true;
-            return k;
-        }
-    }
-    return -1;
-}
-
-/* A line of the no-art text, inside the tile's centring box (a flex column
- * that fills the tile, whatever its size: the text stays centred when the
- * tile grows under the cursor). `top` is the space above the line. */
-static lv_obj_t * tile_label(lv_obj_t * box, const fit_t * ft, int w, int top)
-{
-    lv_obj_t * l = lv_label_create(box);
-    lv_obj_set_style_text_font(l, ft->font, 0);
-    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_line_space(l, ft->space, 0);
-    lv_label_set_long_mode(l, ft->whole ? LV_LABEL_LONG_MODE_CLIP : LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_size(l, w, ft->h);
-    lv_obj_set_style_margin_top(l, top, 0);
-    lv_label_set_text(l, ft->text);
-    return l;
-}
-
-/* Split "Title (Deluxe Edition)" at its first bracket; returns false when
- * there is nothing before it or nothing in it. */
-static bool split_bracket(const char * title, char * main, size_t mlen, char * br, size_t blen)
-{
-    const char * q = NULL;
-    for(const char * p = title; *p; p++) if(*p == '(' || *p == '[') { q = p; break; }
-    if(!q || q == title) return false;
-    size_t n = (size_t)(q - title);
-    while(n > 0 && title[n - 1] == ' ') n--;
-    if(n == 0 || n >= mlen) return false;
-    memcpy(main, title, n);
-    main[n] = 0;
-    snprintf(br, blen, "%s", q);
-    return br[0] != 0;
-}
-
-static void caps_inplace(char * s)
-{
-    for(; *s; s++) if(*s >= 'a' && *s <= 'z') *s -= 32;
-}
+/* The no-art text: tiletext.c (0.16b rules, moved out in 0.17 for the album
+ * page). The dealt style gives the colours and cover font. */
 
 static tile_style_t * styles;         /* per entry: colours + cover font, dealt per visit */
 static int            styles_n;
 
-/* Letters in a title (for the cover-font rules): everything but spaces and
- * punctuation, counted as code points. */
-static int count_letters(const char * s)
-{
-    int n = 0;
-    for(const unsigned char * p = (const unsigned char *)s; *p; p++) {
-        if((*p & 0xC0) == 0x80) continue;                        /* UTF-8 continuation */
-        if(*p < 0x80 && !((*p >= '0' && *p <= '9') || (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z'))) continue;
-        n++;
-    }
-    return n;
-}
-
-/* The smallest size a title may be set at (Ian, 10 Oct: "set a size limit
- * for how small a font can get; use the ... before something gets too
- * small to read"): the theme's fraction of the tile, never under
- * TEXT_MIN_PX. */
-static int text_min_px(int side)
-{
-    int m = (int)(tilestyle_text_min() * (float)side);
-    return m < TEXT_MIN_PX ? TEXT_MIN_PX : m;
-}
-
-/* The last rung of the ladder that is still at or above min_px. */
-static int ladder_floor(const int * lad, int min_px)
-{
-    int last = 0;
-    for(int i = 0; i < LADDER_STEPS; i++) if(lad[i] >= min_px) last = i;
-    return last;
-}
-
-/* Fit the main part of the title in `file` into w x room, in whole words,
- * at the biggest rung down to the floor. Returns the rung, or -1.
- * `big`: the ladder starts a step bigger (short titles fill the tile). */
-static int fit_main(const char * file, int leading, bool big, int side, int w, int room, int max_lines,
-                    const char * main, int min_px, int * lad, fit_t * fm)
-{
-    int start = big ? side / 4 : side / 6;
-    if(start < 16) start = 16;
-    if(start > 180) start = 180;
-    ladder_fill(lad, start);
-    int floor_k = ladder_floor(lad, text_min_px(side));
-    int k = fit_rung(file, leading, lad, 0, floor_k, main, w, room, max_lines, fm);
-    if(k >= 0) return k;
-    if(getenv("SIMPLETON_DEBUG_FIT")) fprintf(stderr, "fit: %s '%s' side %d w %d floor %d (rung %d = %d px) min %d start %d\n", file, main, side, w, text_min_px(side), floor_k, lad[floor_k], min_px, lad[0]);
-    /* Below the floor only when a single word is too wide for a line at
-     * the floor, and only down to min_px: a word is never broken (Ian,
-     * 10 Oct: "Transformer", "Preservation", "Dreamboat" were being cut in
-     * two). A title that merely has too many words is trimmed with dots at
-     * the floor instead. */
-    char tmp[400];
-    bool whole;
-    wrap_words(face_px(file, lad[floor_k]), main, w, tmp, sizeof(tmp), &whole);
-    if(whole) return -1;
-    int bottom = ladder_floor(lad, min_px < TEXT_MIN_PX ? TEXT_MIN_PX : min_px);
-    if(bottom <= floor_k) return -1;
-    return fit_rung(file, leading, lad, floor_k + 1, bottom, main, w, room, max_lines, fm);
-}
-
-/* The bracketed tail under a placed main part: whole, three rungs smaller
- * than the main, down the whole ladder (Ian, 10 Oct: "words in a
- * parenthesis you can make as small as you want" - the floor is for the
- * title); else one line at the bottom rung trimmed with dots; else nothing.
- * The extra information packed into some titles "we don't need to know"
- * never shrinks the title. Returns whether there is a tail to show. */
-static bool fit_tail(const char * file, int leading, int side, int w, int room, int gap, const char * br,
-                     const int * lad, int k_main, fit_t * fb)
-{
-    (void)side;
-    int floor_k = LADDER_STEPS - 1;
-    int kb = k_main + 3 > floor_k ? floor_k : k_main + 3;
-    int tail_room = room - gap / 2;
-    if(tail_room <= 0) return false;
-    if(fit_rung(file, leading, lad, kb, floor_k, br, w, tail_room, 2, fb) >= 0) return true;
-    const lv_font_t * f = face_px(file, lad[floor_k]);
-    int lh = lv_font_get_line_height(f);
-    if(lh > tail_room) return false;
-    fb->font = f; fb->px = lad[floor_k]; fb->whole = false; fb->space = 0;
-    snprintf(fb->text, sizeof(fb->text), "%s", br);
-    fb->lines = 1; fb->h = lh;
-    return true;
-}
-
-/* Nothing fits whole: the biggest rung at or above the floor where
- * max_lines lines fit the room (else the floor), wrapped by LVGL, trailing
- * off with dots. */
-static void fit_fallback(const char * file, int leading, int side, int room, int max_lines, const char * text, bool caps, fit_t * fm)
-{
-    int lad[LADDER_STEPS];
-    int start = side / 6;
-    if(start < 16) start = 16;
-    ladder_fill(lad, start);
-    int floor_k = ladder_floor(lad, text_min_px(side));
-    int k = floor_k;
-    for(int j = 2; j <= floor_k; j++) {
-        const lv_font_t * f = face_px(file, lad[j]);
-        if(lines_height(f, max_lines, leading_space(f, leading)) <= room) { k = j; break; }
-    }
-    fm->font = face_px(file, lad[k]); fm->px = lad[k]; fm->whole = false;
-    snprintf(fm->text, sizeof(fm->text), "%s", text);
-    if(caps) caps_inplace(fm->text);
-    fm->space = leading_space(fm->font, leading);
-    int lh = lv_font_get_line_height(fm->font);
-    int lines = (room - fm->space) / (lh + fm->space);
-    if(lines < 1) lines = 1;
-    if(lines > max_lines) lines = max_lines;
-    fm->lines = lines; fm->h = lines_height(fm->font, lines, fm->space);
-}
-
 static void tile_make_text(tile_t * t)
 {
     const lib_album_t * a = album_of(t->entry);
-    int side = g.tile;
-    int pad = side / 10;
-    int w = side - 2 * pad, avail = side - 2 * pad;
-    bool big = side >= BIG_TILE_PX;
-
-    /* the theme's trio, used when the theme lists no cover fonts (and as
-     * the last fallback): steady per album, a little variety across the
-     * screen */
-    unsigned hsh = 2166136261u;
-    for(const char * p = a->title; *p; p++) hsh = (hsh ^ (unsigned char)*p) * 16777619u;
-    bool caps_a = false;
-    const char * file_a = placeholder_line_font(1, &caps_a);
-    bool trio_caps = false;
-    const char * trio_file;
-    switch((hsh >> 8) % 3) {
-        case 0:  trio_file = placeholder_line_font(2, &trio_caps); break;                   /* the tape's album line */
-        case 1:  trio_file = placeholder_line_font(3, &trio_caps); break;                   /* mixed case            */
-        default: trio_file = "Caprasimo-Regular.ttf"; trio_caps = false; break;            /* a display face        */
-    }
-
-    char title[300], main[300], br[300], artist[300], raw_main[300], raw_br[300];
-    snprintf(title, sizeof(title), "%s", a->title);
-    snprintf(artist, sizeof(artist), "%s", artist_text(a));
-    bool has_br = split_bracket(title, raw_main, sizeof(raw_main), raw_br, sizeof(raw_br));
-    if(!has_br) { snprintf(raw_main, sizeof(raw_main), "%s", title); raw_br[0] = 0; }
-    if(caps_a) caps_inplace(artist);
-
-    int gap = pad / 2;
-    /* artist: up to two lines on its own, shrinking by whole words */
-    fit_t fa = { 0 };
-    int used_h = 0;
-    if(big && artist[0]) {
-        int lad[LADDER_STEPS];
-        ladder_fill(lad, side / 12 < 12 ? 12 : side / 12 > 34 ? 34 : side / 12);
-        if(fit_rung(file_a, 100, lad, 0, 4, artist, w, avail / 3, 2, &fa) < 0) {
-            fa.font = face_px(file_a, lad[4]); fa.px = lad[4]; fa.whole = false; fa.space = 0;
-            snprintf(fa.text, sizeof(fa.text), "%s", artist);
-            fa.lines = 1; fa.h = lv_font_get_line_height(fa.font);
-        }
-        used_h = fa.h + gap;
-    }
-
-    /* the title: the dealt cover font first, then the next faces that fit
-     * its rules, and the theme's trio last (0.16i, Ian's type notes) */
-    int room = avail - used_h;
-    int max_lines = big ? 5 : 4;
-    fit_t fm = { 0 }, fb = { 0 };
-    bool placed = false, done = false, show_br = false;
-    int lad[LADDER_STEPS];
-    int nfaces = tilestyle_font_count();
-    int dealt = (t->entry >= 0 && t->entry < styles_n) ? styles[t->entry].font : TILE_FONT_NONE;
-    uint32_t bg = 0, ink = 0;
-    if(t->entry >= 0 && t->entry < styles_n) { bg = styles[t->entry].bg; ink = styles[t->entry].ink; }
-    int letters = count_letters(raw_main);
-    const char * file_t = trio_file;
-    bool caps_t = trio_caps;
-    int leading = 100;
-    for(int k = 0; k < nfaces && !done && dealt != TILE_FONT_NONE; k++) {
-        int i = (dealt + k) % nfaces;
-        const tile_font_t * f = tilestyle_font(i);
-        if(!f || !tilestyle_font_fits(i, letters, bg, ink)) continue;
-        snprintf(main, sizeof(main), "%s", raw_main);
-        snprintf(br, sizeof(br), "%s", raw_br);
-        if(f->caps) { caps_inplace(main); caps_inplace(br); }
-        int km = fit_main(f->file, f->leading, f->big, side, w, room, max_lines, main, text_min_px(side) * 3 / 4, lad, &fm);
-        placed = km >= 0;
-        if(!placed) continue;                                 /* not whole within 3/4 of the floor: a narrower face may take it */
-        if(f->min_size > 0 && fm.px < (int)(f->min_size * side)) continue;               /* must be large */
-        if(has_br) show_br = fit_tail(f->file, f->leading, side, w, room - fm.h, gap, br, lad, km, &fb);
-        file_t = f->file; caps_t = f->caps; leading = f->leading;
-        done = true;
-    }
-    if(!done) {
-        /* no face could take it near the floor: the dealt face (else the
-         * trio's) goes as small as it must for whole words */
-        const tile_font_t * f = dealt != TILE_FONT_NONE ? tilestyle_font(dealt) : NULL;
-        const char * file = f ? f->file : trio_file;
-        bool caps = f ? f->caps : trio_caps;
-        int lead = f ? f->leading : 100;
-        snprintf(main, sizeof(main), "%s", raw_main);
-        snprintf(br, sizeof(br), "%s", raw_br);
-        if(caps) { caps_inplace(main); caps_inplace(br); }
-        int km = fit_main(file, lead, f ? f->big : false, side, w, room, max_lines, main, TEXT_MIN_PX, lad, &fm);
-        placed = km >= 0;
-        if(placed && has_br) show_br = fit_tail(file, lead, side, w, room - fm.h, gap, br, lad, km, &fb);
-        file_t = file; caps_t = caps; leading = lead;
-    }
-    if(!placed) {
-        /* the main part alone, trimmed: the tail is the first thing to go */
-        fit_fallback(file_t, leading, side, room, max_lines, raw_main, caps_t, &fm);
-        show_br = false;
-    }
-    has_br = show_br;
-    static int debug_tiles = -1;
-    if(debug_tiles < 0) debug_tiles = getenv("SIMPLETON_DEBUG_TILES") != NULL;
-    if(debug_tiles) fprintf(stderr, "simpleton-ui: tile \"%s\": %s %d px, %d line%s, dealt %d%s\n", a->title, file_t, fm.px,
-                            fm.lines, fm.lines == 1 ? "" : "s", dealt, done ? "" : " (fallback)");
-
-    lv_obj_t * box = lv_obj_create(t->obj);
-    lv_obj_remove_style_all(box);
-    lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_size(box, g.tile, g.tile);
-    lv_obj_set_style_transform_pivot_x(box, g.tile / 2, 0);
-    lv_obj_set_style_transform_pivot_y(box, g.tile / 2, 0);
-    t->t_box = box;
-    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    if(used_h) t->t_artist = tile_label(box, &fa, w, 0);
-    t->t_title = tile_label(box, &fm, w, used_h ? gap : 0);
-    if(has_br) t->t_extra = tile_label(box, &fb, w, gap / 2);
+    const tile_style_t * st = (t->entry >= 0 && t->entry < styles_n) ? &styles[t->entry] : NULL;
+    tiletext_t tt;
+    tiletext_make(t->obj, g.tile, a->title, artist_text(a), st, &tt);
+    t->t_box = tt.box;
+    t->t_artist = tt.artist;
+    t->t_title = tt.title;
+    t->t_extra = tt.extra;
 }
 
 /* The no-art colours (0.16f, Ian 9 Oct: more variety). Dealt per visit by
@@ -875,7 +523,7 @@ static void window_set(int a, int b)
         if(tiles[i].entry >= 0 && (tiles[i].entry < lo || tiles[i].entry > hi)) tile_delete(&tiles[i]);
     for(int e = lo; e <= hi; e++) if(!tile_of(e)) tile_create(e);
     tile_t * ts = tile_of(sel);
-    if(ts) focus_tile(ts, true, false);
+    if(ts) focus_tile(ts, picker_mode() != PICKER_STRIP, false);
 }
 
 static void window_normal(void)
@@ -1090,7 +738,9 @@ static void set_sel(int e, bool page)
         if(target != first_row) scroll_to_row(target, page ? PAGE_SLIDE_MS : ROW_SLIDE_MS);
     }
     tile_t * tn = tile_of(e);
-    if(tn) focus_tile(tn, true, old != e);
+    /* under the pill no cover is focused (Ian, 10 Oct): a focused cover
+     * says Left/Right would move it, when they move the letter */
+    if(tn) focus_tile(tn, !pill, old != e && !pill);
     want_update();
     show_name();
 }
@@ -1380,6 +1030,8 @@ static void on_close(bool back, void * ctx)
 static void open_strip(void)
 {
     if(nentries == 0) return;
+    tile_t * t = tile_of(sel);
+    if(t) focus_tile(t, false, false);                 /* the pill has the D-pad: no cover comes forward */
     int l = entries[sel].label;
     view_opts.jump = l >= 0 ? l : 0;
     visited_before_open = visited;
@@ -1417,7 +1069,7 @@ static void index_timer_cb(lv_timer_t * tm)
     }
 }
 
-void grid_create(void (*on_open)(const char *, const char *), void (*on_exit)(void))
+void grid_create(void (*on_open)(const library_t *, int, const char *, const tile_style_t *), void (*on_exit)(void))
 {
     open_cb = on_open;
     exit_cb = on_exit;
@@ -1502,6 +1154,45 @@ void grid_hide(void)
 
 bool grid_overlay_active(void) { return shown && picker_mode() != PICKER_NONE; }
 
+bool grid_lookup_folder(const char * uri, const library_t ** lib, int * album, const char ** card, const tile_style_t ** tile)
+{
+    if(!uri || !uri[0]) return false;
+    if(!lib_loaded || index_changed()) {
+        const lib_album_t * keep = nentries ? album_of(sel) : NULL;
+        char * folder = keep ? strdup(keep->folder) : NULL;
+        load_library(folder);
+        free(folder);
+        if(shown) rebuild();
+    }
+    for(int s = 0; s < nsources; s++) {
+        const lib_folder_t * f = library_folder(&sources[s].lib, uri);
+        if(!f || f->type != FOLDER_ALBUM || f->album < 0 || f->album >= sources[s].lib.nalbums) continue;
+        *lib = &sources[s].lib;
+        *album = f->album;
+        *card = sources[s].card;
+        *tile = NULL;
+        if(!sources[s].lib.albums[f->album].has_art)
+            for(int e = 0; e < nentries && e < styles_n; e++)
+                if(entries[e].src == s && entries[e].album == f->album) { *tile = &styles[e]; break; }
+        return true;
+    }
+    return false;
+}
+
+bool grid_open_folder(const char * folder)
+{
+    if(!folder || !folder[0] || !open_cb) return false;
+    for(int e = 0; e < nentries; e++) {
+        if(strcmp(album_of(e)->folder, folder) != 0) continue;
+        if(shown) set_sel(e, false);
+        else sel = e;
+        const tile_style_t * st = (!album_of(e)->has_art && e < styles_n) ? &styles[e] : NULL;
+        open_cb(&sources[entries[e].src].lib, entries[e].album, sources[entries[e].src].card, st);
+        return true;
+    }
+    return false;
+}
+
 void grid_toggle_picker(void)
 {
     if(!shown) return;
@@ -1576,11 +1267,12 @@ void grid_handle_action(ui_action_t a)
                 set_sel(target, true);
             }
             break;
-        case ACT_SELECT: {
-            const lib_album_t * al = album_of(sel);
-            if(open_cb) open_cb(al->folder, al->first_uri);
+        case ACT_SELECT:
+            if(open_cb) {
+                const tile_style_t * st = (!album_of(sel)->has_art && sel < styles_n) ? &styles[sel] : NULL;
+                open_cb(&sources[entries[sel].src].lib, entries[sel].album, sources[entries[sel].src].card, st);
+            }
             break;
-        }
         case ACT_BACK:
             if(view_opts.strip && grid_is_long()) open_strip();
             else if(exit_cb) exit_cb();

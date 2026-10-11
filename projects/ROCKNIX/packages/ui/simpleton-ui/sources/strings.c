@@ -5,6 +5,7 @@
 
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -197,5 +198,64 @@ void strings_dump(FILE * f)
             fputc('\n', f);
         }
         fprintf(f, "%s = %s\n", keys[i], english[i]);
+    }
+}
+
+/* ------------------------------------------------------------ upper case */
+
+/* The capital of a lower-case letter, 0 when it has none we change (11 Oct:
+ * caps faces used to upper-case ASCII only, so "Björk" came out "BJöRK" and
+ * a Russian title stayed lower case under a caps face). Only mappings that
+ * keep the UTF-8 length are listed, so the text can change in place: Latin-1,
+ * Latin Extended-A, Vietnamese and Romanian letters, Greek, Cyrillic,
+ * Armenian, Latin Extended Additional, full-width Latin. ß, ı, ĸ, ſ stay. */
+static uint32_t upper_of(uint32_t c)
+{
+    if(c >= 'a' && c <= 'z') return c - 32;
+    if(c < 0xE0) return 0;
+    if(c <= 0xFE) return c == 0xF7 ? 0 : c - 0x20;
+    if(c == 0xFF) return 0x178;
+    if(c <= 0x17F) {
+        if(c == 0x131) return 0;                                         /* dotless i: its capital is ASCII I */
+        if((c >= 0x100 && c <= 0x137) || (c >= 0x14A && c <= 0x177)) return (c & 1) ? c - 1 : 0;
+        if((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E)) return (c & 1) ? 0 : c - 1;
+        return 0;
+    }
+    if(c == 0x1A1 || c == 0x1A3 || c == 0x1B0) return c - 1;            /* Vietnamese ơ ư */
+    if((c >= 0x200 && c <= 0x21F) || (c >= 0x222 && c <= 0x233)) return (c & 1) ? c - 1 : 0;   /* ș ț */
+    if(c >= 0x3B1 && c <= 0x3CB) return c == 0x3C2 ? 0x3A3 : c - 0x20; /* Greek, final sigma */
+    if(c == 0x3AC) return 0x386;
+    if(c >= 0x3AD && c <= 0x3AF) return c - 0x25;
+    if(c == 0x3CC) return 0x38C;
+    if(c >= 0x3CD && c <= 0x3CE) return c - 0x3F;
+    if(c >= 0x430 && c <= 0x44F) return c - 0x20;                      /* Cyrillic */
+    if(c >= 0x450 && c <= 0x45F) return c - 0x50;
+    if((c >= 0x460 && c <= 0x481) || (c >= 0x48A && c <= 0x4BF) || (c >= 0x4D0 && c <= 0x52F)) return (c & 1) ? c - 1 : 0;
+    if(c >= 0x4C1 && c <= 0x4CE) return (c & 1) ? 0 : c - 1;
+    if(c == 0x4CF) return 0x4C0;
+    if(c >= 0x561 && c <= 0x586) return c - 0x30;                      /* Armenian */
+    if((c >= 0x1E00 && c <= 0x1E95) || (c >= 0x1EA0 && c <= 0x1EFF)) return (c & 1) ? c - 1 : 0;
+    if(c >= 0xFF41 && c <= 0xFF5A) return c - 0x20;                    /* full-width */
+    return 0;
+}
+
+static int utf8_len(uint32_t c) { return c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4; }
+
+void str_upper_utf8(char * s)
+{
+    unsigned char * p = (unsigned char *)s;
+    while(*p) {
+        int n = *p < 0x80 ? 1 : (*p & 0xE0) == 0xC0 ? 2 : (*p & 0xF0) == 0xE0 ? 3 : (*p & 0xF8) == 0xF0 ? 4 : 1;
+        uint32_t c = n == 1 ? *p : n == 2 ? (*p & 0x1Fu) : n == 3 ? (*p & 0x0Fu) : (*p & 0x07u);
+        int k = 1;
+        for(; k < n && (p[k] & 0xC0) == 0x80; k++) c = (c << 6) | (p[k] & 0x3Fu);
+        if(k < n || (n == 1 && c >= 0x80)) { p += k; continue; }   /* broken sequence or stray byte: leave it */
+        uint32_t u = upper_of(c);
+        if(u && utf8_len(u) == n) {
+            if(n == 1) p[0] = (unsigned char)u;
+            else if(n == 2) { p[0] = (unsigned char)(0xC0 | (u >> 6)); p[1] = (unsigned char)(0x80 | (u & 0x3F)); }
+            else if(n == 3) { p[0] = (unsigned char)(0xE0 | (u >> 12)); p[1] = (unsigned char)(0x80 | ((u >> 6) & 0x3F)); p[2] = (unsigned char)(0x80 | (u & 0x3F)); }
+        }
+        p += n;
     }
 }

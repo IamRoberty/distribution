@@ -16,6 +16,8 @@
 
 #include "lvgl.h"
 #include "input.h"
+#include <stdbool.h>
+#include <stdint.h>
 
 typedef enum { NP_HANDLED, NP_EXIT } np_result_t;
 
@@ -35,5 +37,43 @@ void nowplaying_mpd_changed(void);
 /* Handle any action while active. NP_EXIT = user backed out to the browser;
  * the caller switches screens. */
 np_result_t nowplaying_handle_action(ui_action_t a);
+
+/* ---- hosted inside the album page on a TV (0.17b, Ian 10 Oct) ----
+ *
+ * The page's cover square is the now-playing stage: the stage object moves
+ * into the page's screen at (x, y) and comes alive (status, controls,
+ * idle fade) without its own screen being shown. `with_art`: show the
+ * playing track's own art in the square (the cover of the album being
+ * viewed, decoded full size and pageable) - false keeps the page's own
+ * picture underneath and hides the stage's (another album is playing).
+ * The page forwards actions with nowplaying_handle_action() while the user
+ * is "in" now-playing; NP_EXIT hands them back. */
+void nowplaying_embed(lv_obj_t * parent, int x, int y, bool with_art, uint32_t bg);
+/* `bg`: the stage's own background behind art that isn't square (the
+ * page's colour), opaque only while the stage shows its art. `stale_ok`:
+ * the art up now belongs to an earlier track of the same album, so it may
+ * stay up while the new track's is decoded; otherwise art that isn't the
+ * expected track's is kept hidden, so the host's own picture shows instead
+ * of a flash of another album's cover (Ian, 10 Oct 19:51). */
+void nowplaying_embed_art(bool with_art, uint32_t bg, bool stale_ok);
+/* The host knows a track just started (before MPD's notice reaches us):
+ * art on screen for any other file counts as stale from now. */
+void nowplaying_expect_file(const char * uri);
+/* The file the art on screen belongs to ("" when none). */
+const char * nowplaying_art_file(void);
+void nowplaying_unembed(void);
+/* Pop the controls up (a track started, or the user asked) and let them
+ * fade as usual; hide them now; whether they are up. */
+void nowplaying_poke(void);
+void nowplaying_hide_controls(void);
+bool nowplaying_controls_visible(void);
+bool nowplaying_embedded(void);
+/* Hosted, showing its own art (decoded and up): the host may hide its own
+ * picture under it. */
+bool nowplaying_art_ready(void);
+/* The page's Select on the cover: the next stop across a wide image, else
+ * the next image, round and round; the "n / m" badge shows for a moment
+ * even for a single image, so the viewer knows the cover is selected. */
+void nowplaying_browse(void);
 
 #endif
