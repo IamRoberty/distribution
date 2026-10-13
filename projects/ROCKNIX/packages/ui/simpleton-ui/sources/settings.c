@@ -20,6 +20,7 @@
 #include "home.h"
 #include "library.h"
 #include "mpdc.h"
+#include "power.h"
 #include "strings.h"
 #include "theme.h"
 
@@ -33,7 +34,7 @@
 #endif
 
 typedef enum { ROW_PAGE, ROW_TOGGLE, ROW_CHOICE, ROW_ACTION, ROW_TEXT, ROW_HUB } row_kind_t;
-typedef enum { CH_NONE, CH_THEME, CH_LANGUAGE, CH_SIZE, CH_SORT, CH_STYLE } choice_kind_t;
+typedef enum { CH_NONE, CH_THEME, CH_LANGUAGE, CH_SIZE, CH_SORT, CH_STYLE, CH_POWER } choice_kind_t;
 
 #define MAX_ROWS     32
 #define MAX_CHOICES  32
@@ -134,6 +135,53 @@ static int choice_index(const char * code)
     return 0;
 }
 
+/* The Power page's lists (0.18): seconds or minutes as the file holds them,
+ * shown as "30 s" / "2 min" / "Never". */
+static void power_choices(const char * key)
+{
+    if(strcmp(key, "battery_show") == 0) {
+        static const int ids[3] = { S_SET_NEVER, S_SET_AFTER_BUTTON, S_SET_ALWAYS };
+        choice_count = 3;
+        for(int i = 0; i < 3; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%d", i); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(ids[i])); }
+        return;
+    }
+    static const int screen_off[] = { 30, 60, 120, 300, 0 };
+    static const int idle_sleep[] = { 300, 600, 1800, 0 };
+    static const int sleep_timer[] = { 0, 15, 30, 60, 90 };
+    static const int long_min[] = { 20, 30, 60 };
+    const int * v; int n; bool minutes;
+    if(strcmp(key, "screen_off") == 0)      { v = screen_off;  n = 5; minutes = false; }
+    else if(strcmp(key, "idle_sleep") == 0) { v = idle_sleep;  n = 4; minutes = false; }
+    else if(strcmp(key, "sleep_timer") == 0){ v = sleep_timer; n = 5; minutes = true;  }
+    else                                    { v = long_min;    n = 3; minutes = true;  }
+    choice_count = n;
+    for(int i = 0; i < n; i++) {
+        snprintf(choices[i].code, sizeof(choices[i].code), "%d", v[i]);
+        if(v[i] == 0) { snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(strcmp(key, "sleep_timer") == 0 ? S_SET_OFF : S_SET_NEVER)); continue; }
+        char num[16];
+        if(!minutes && v[i] >= 60 && v[i] % 60 == 0) { snprintf(num, sizeof(num), "%d", v[i] / 60); ui_strf(choices[i].name, sizeof(choices[i].name), S_SET_MINUTES, "n", num, NULL); }
+        else if(!minutes) { snprintf(num, sizeof(num), "%d", v[i]); ui_strf(choices[i].name, sizeof(choices[i].name), S_SET_SECONDS, "n", num, NULL); }
+        else { snprintf(num, sizeof(num), "%d", v[i]); ui_strf(choices[i].name, sizeof(choices[i].name), S_SET_MINUTES, "n", num, NULL); }
+    }
+}
+
+static bool is_power_key(const char * key)
+{
+    return strcmp(key, "screen_off") == 0 || strcmp(key, "screen_dim") == 0 || strcmp(key, "idle_sleep") == 0 ||
+           strcmp(key, "sleep_timer") == 0 || strcmp(key, "long_track_skip") == 0 || strcmp(key, "long_track_min") == 0 ||
+           strcmp(key, "leds") == 0 || strcmp(key, "keep_on_plugged") == 0 || strcmp(key, "battery_show") == 0;
+}
+
+static void add_choice(const char * label, const char * key, choice_kind_t ck, const char * current);
+
+static void add_power_choice(int label_id, const char * key, const char * def)
+{
+    char cur[32];
+    power_choices(key);
+    config_read(key, cur, sizeof(cur), def);
+    add_choice(T(label_id), key, CH_POWER, cur);
+}
+
 /* --------------------------------------------------------- settings */
 
 /* A view's option files: <what>-<view>-<screen kind> (the browser reads
@@ -221,6 +269,7 @@ static const char * group_title(const char * p)
     if(strcmp(p, "display") == 0)  return T(S_SET_DISPLAY);
     if(strcmp(p, "controls") == 0) return T(S_SET_CONTROLS);
     if(strcmp(p, "system") == 0)   return T(S_SET_SYSTEM);
+    if(strcmp(p, "power") == 0)    return T(S_SET_POWER);
     return NULL;
 }
 
@@ -232,6 +281,7 @@ static void build_rows(void)
         add_page_row(T(S_SET_LIBRARY), "library");
         add_page_row(T(S_SET_DISPLAY), "display");
         add_page_row(T(S_SET_CONTROLS), "controls");
+        add_page_row(T(S_SET_POWER), "power");
         add_page_row(T(S_SET_SYSTEM), "system");
         add_row(ROW_TEXT, T(S_SET_VIEWS));
         for(int v = 0; v < HOME_VIEW_COUNT; v++) {
@@ -258,6 +308,19 @@ static void build_rows(void)
     }
     else if(strcmp(page, "controls") == 0) {
         add_row(ROW_TEXT, T(S_SET_EMPTY));
+    }
+    else if(strcmp(page, "power") == 0) {
+        row_t * r = add_row(ROW_TEXT, T(S_SET_BATTERY));
+        power_battery_text(r->value, sizeof(r->value));
+        add_power_choice(S_SET_BATTERY_SHOW, "battery_show", "1");
+        add_power_choice(S_SET_SCREEN_OFF, "screen_off", "60");
+        add_toggle(T(S_SET_SCREEN_DIM), "screen_dim", true);
+        add_toggle(T(S_SET_KEEP_ON_PLUGGED), "keep_on_plugged", true);
+        add_power_choice(S_SET_IDLE_SLEEP, "idle_sleep", "600");
+        add_power_choice(S_SET_SLEEP_TIMER, "sleep_timer", "0");
+        add_toggle(T(S_SET_LONG_SKIP), "long_track_skip", true);
+        add_power_choice(S_SET_LONG_FROM, "long_track_min", "20");
+        add_toggle(T(S_SET_LEDS), "leds", true);
     }
     else if(strcmp(page, "system") == 0) {
         row_t * r = add_row(ROW_TEXT, T(S_SET_VERSION));
@@ -397,6 +460,7 @@ static void flip_toggle(row_t * r)
     snprintf(r->value, sizeof(r->value), "%s", T(on ? S_SET_ON : S_SET_OFF));
     refresh_value(r);
     if(is_view_key(r->key) && view_changed_cb) view_changed_cb(page);
+    if(is_power_key(r->key)) power_reload_settings();
 }
 
 static void step_choice(row_t * r, int dir)
@@ -409,6 +473,7 @@ static void step_choice(row_t * r, int dir)
     else if(r->choice == CH_SIZE) size_choices();
     else if(r->choice == CH_SORT) sort_choices();
     else if(r->choice == CH_STYLE) style_choices();
+    else if(r->choice == CH_POWER) power_choices(r->key);
     if(choice_count < 2) return;
     r->index = (r->index + dir + choice_count) % choice_count;
     const choice_t * c = &choices[r->index];
@@ -419,6 +484,7 @@ static void step_choice(row_t * r, int dir)
     /* a view's option: the view takes it now; the theme and the language
      * are read at start-up: come straight back here with the new one */
     if(is_view_key(r->key)) { if(view_changed_cb) view_changed_cb(page); }
+    else if(is_power_key(r->key)) power_reload_settings();      /* takes effect now, no restart */
     else if(restart_cb) restart_cb(page);
 }
 

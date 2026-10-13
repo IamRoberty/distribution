@@ -41,6 +41,10 @@ static bool     has_cream;
 static int      w_pal, w_cream, w_dark; /* tileinks: how often each kind of ink is drawn */
 static float    text_min;              /* tiletextmin: the smallest title size, as a fraction of the tile */
 static uint32_t accent;                /* the theme's accent line, 0 = none */
+static const battery_style_t battery_default = { 50, 22, 10, 50, "Jost-Bold.ttf",
+                                                 0x45ACC8, 0xE3D200, 0xB41823, 0x17B436, 0x29221E, 0xFAEFD0 };
+static battery_style_t battery = { 50, 22, 10, 50, "Jost-Bold.ttf",
+                                   0x45ACC8, 0xE3D200, 0xB41823, 0x17B436, 0x29221E, 0xFAEFD0 };   /* the theme's line over the defaults; valid before any load */
 /* the album page (0.17) */
 #define LAYOUT_MAX 32
 static page_layout_t layouts[LAYOUT_MAX];
@@ -249,6 +253,7 @@ void tilestyle_load(const char * theme_path)
     nlayouts = nliners = liner_share = 0;
     ldeck_n[0] = ldeck_n[1] = ldeck_pos[0] = ldeck_pos[1] = 0;
     accent = 0;
+    battery = battery_default;
     min_contrast = CONTRAST_DEFAULT;
     has_cream = false;
     w_pal = 100; w_cream = 0; w_dark = 0;
@@ -309,6 +314,28 @@ void tilestyle_load(const char * theme_path)
         else if(sscanf(line, "accent %63s", a) == 1) {
             if(!parse_hex(a, &accent)) accent = 0;
         }
+        else if(strncmp(line, "battery", 7) == 0 && (line[7] == ' ' || line[7] == '\t')) {
+            char * save;
+            for(char * tok = strtok_r(line + 7, " \t\n", &save); tok; tok = strtok_r(NULL, " \t\n", &save)) {
+                char * eq = strchr(tok, '=');
+                if(!eq) continue;
+                *eq = 0;
+                const char * v = eq + 1;
+                uint32_t rgb;
+                if(strcmp(tok, "diameter") == 0)       battery.diameter = atoi(v) > 0 ? atoi(v) : battery.diameter;
+                else if(strcmp(tok, "size") == 0)      battery.size = atoi(v) > 0 ? atoi(v) : battery.size;
+                else if(strcmp(tok, "mid_from") == 0)  battery.mid_from = atoi(v);
+                else if(strcmp(tok, "high_from") == 0) battery.high_from = atoi(v);
+                else if(strcmp(tok, "font") == 0)      snprintf(battery.font, sizeof(battery.font), "%s", v);
+                else if(!parse_hex(v, &rgb)) continue;
+                else if(strcmp(tok, "high") == 0)      battery.high = rgb;
+                else if(strcmp(tok, "mid") == 0)       battery.mid = rgb;
+                else if(strcmp(tok, "low") == 0)       battery.low = rgb;
+                else if(strcmp(tok, "charge") == 0)    battery.charge = rgb;
+                else if(strcmp(tok, "ink") == 0)       battery.ink = rgb;
+                else if(strcmp(tok, "inklight") == 0)  battery.ink_light = rgb;
+            }
+        }
         else if(strncmp(line, "colourway", 9) == 0 || strncmp(line, "tileway", 7) == 0) {
             bool tileway = line[0] == 't';
             uint32_t label = 0, ink = 0, bg = 0;
@@ -339,6 +366,7 @@ void tilestyle_load(const char * theme_path)
 double   tilestyle_min_contrast(void) { return min_contrast; }
 uint32_t tilestyle_cream(void)        { return has_cream ? cream : 0; }
 uint32_t tilestyle_accent(void)       { return accent; }
+const battery_style_t * tilestyle_battery(void) { return &battery; }
 
 uint32_t tilestyle_dark_ink(void)
 {

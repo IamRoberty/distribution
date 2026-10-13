@@ -255,8 +255,37 @@
 # blocks and restore_paused in a unit's existing mpd.conf. Measured: with
 # the ceiling and two DST threads the SoC peaks at 73 C on the track that
 # reset it at 90+ (threads2.txt).
+# 0.18 (12 Oct 2026): power management (power.c/h, power-management-
+# proposal.md). The battery indicator (icon + %, smoothed, red under 15 %,
+# notices at 10/5 %, clean shutdown at 3 %) on every screen; the power key
+# grabbed from the kernel: one press = "Sleeping..." then deep suspend
+# written to /sys/power/state by us (ROCKNIX's sleep hook took 13-15 s),
+# held 2 s = Sleep / Power off / Cancel with a countdown that powers off
+# cleanly while the key stays held; the screen dims and goes off after a
+# while (X and Y keep working in the dark, any other button only lights
+# the screen), idle sleep, a one-shot sleep timer that finishes the track;
+# long tracks (over 20 min, cue/ISO tracks by their own length): X seeks
+# 30 s instead of skipping; the lights red charging / green full / off; a
+# Settings -> Power page for all of it; "Switching output..." while MPD
+# restarts on a DAC swap, with the pressed Play replayed when it is back.
+# 0.18a (12 Oct 2026, 21:30): after Ian's first look. The screen fades to
+# black in the second before the backlight goes (the panel showed garbage
+# as it went) and comes back on a black frame; the battery indicator is
+# Ian's design for Archer Ave. - a 50 px disc top right with the number in
+# Jost Bold, blue / yellow / red by charge, green on the cable, the ink
+# that reads better - as one theme line ("battery ..." in archer.theme,
+# tilestyle.c), so another theme can draw its own.
+# 0.18b (12 Oct 2026, 22:10): the disc moves to the top left, steps aside
+# while the grid's name bar is up, and by default shows only for a few
+# seconds after a button (Settings -> Power -> Battery indicator: Never /
+# After a button / Always; under 15 % on battery it stays) - Ian: it was
+# "screwing up the purity of the album view".
+# 0.18c (12 Oct 2026, 22:40): the disc comes up on the first button after a
+# quiet minute, on the press that lights the screen and on waking from
+# sleep, then fades - not on every press while browsing (Ian).
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
 #   main.c        - theme/indev setup, screen switch, action dispatch
+#   power.c/h     - battery indicator, screen off, sleep, power key, lights
 #   display.c/h   - DRM/KMS output choice, modeset, page flips, hotplug
 #   theme.c       - the square stage behind theme.h
 #   layout.c/h    - real screen, sizes XXL..S, grid and list measurements
@@ -304,7 +333,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.17o"
+PKG_VERSION="0.18c"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk alsa-lib"
@@ -339,7 +368,7 @@ make_target() {
     ${PKG_BUILD}/library.c ${PKG_BUILD}/config.c ${PKG_BUILD}/shelf.c ${PKG_BUILD}/home.c \
     ${PKG_BUILD}/settings.c ${PKG_BUILD}/notice.c ${PKG_BUILD}/picker.c \
     ${PKG_BUILD}/grid.c ${PKG_BUILD}/thumbs.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/tilestyle.c ${PKG_BUILD}/palette.c \
-    ${PKG_BUILD}/textfit.c ${PKG_BUILD}/tiletext.c ${PKG_BUILD}/albumpage.c ${PKG_BUILD}/hdmisilence.c \
+    ${PKG_BUILD}/textfit.c ${PKG_BUILD}/tiletext.c ${PKG_BUILD}/albumpage.c ${PKG_BUILD}/hdmisilence.c ${PKG_BUILD}/power.c \
     ${TARGET_LDFLAGS} -rdynamic \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \

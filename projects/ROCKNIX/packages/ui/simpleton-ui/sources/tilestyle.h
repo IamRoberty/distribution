@@ -143,6 +143,21 @@ uint32_t tilestyle_accent(void);       /* the theme's accent line, 0 = none */
 /* An off-black from the palettes (the darkest), or 0x202020. */
 uint32_t tilestyle_dark_ink(void);
 
+/* The battery indicator (0.18a, Ian's design for Archer Ave.): a solid disc
+ * top right with the percentage in it, no icon, no sign. One theme line:
+ *   battery diameter=50 font=Jost-Bold.ttf size=22 high=45ACC8 mid=E3D200 low=B41823
+ *           charge=17B436 ink=29221E inklight=FAEFD0 [mid_from=10] [high_from=50]
+ * The disc is `high` from high_from %, `mid` from mid_from %, `low` under
+ * that, `charge` on the cable; the number in whichever ink reads better.
+ * Missing values take Archer's. diameter and size are stage units. */
+typedef struct {
+    int      diameter, size;
+    int      mid_from, high_from;
+    char     font[64];
+    uint32_t high, mid, low, charge, ink, ink_light;
+} battery_style_t;
+const battery_style_t * tilestyle_battery(void);
+
 /* A second colourway from the same tilepalette set as `tile` (the album
  * page beside a no-art tile: the tile's own colours carry over, Ian 10 Oct):
  * another colour of the set as the background, inked from the set as the

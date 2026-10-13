@@ -109,4 +109,38 @@ page.disc = Disc
 
 settings.jump_strip = Alphabet picker
 
+power.sleeping = Sleeping…
+power.shutting_down = Shutting down…
+power.title = Power
+power.sleep = Sleep
+power.off = Power off
+power.cancel = Cancel
+power.off_in = Keep holding: power off in {n}
+
+battery.low = Battery low: {n}%
+battery.empty = Battery empty — shutting down
+battery.unknown = No battery reading
+battery.full = full
+battery.charging = charging
+battery.on_battery = on battery
+
+np.switching_dac = Switching output…
+
+settings.power = Power
+settings.battery = Battery
+settings.screen_off = Screen off after
+settings.screen_dim = Dim before the screen goes off
+settings.idle_sleep = Sleep when nothing is playing
+settings.sleep_timer = Sleep timer
+settings.long_skip = Long tracks: skip 30 seconds
+settings.long_from = A track is long from
+settings.leds = Lights
+settings.keep_on_plugged = Plugged in: screen stays on
+settings.battery_show = Battery indicator
+settings.after_button = After a pause
+settings.always = Always
+settings.never = Never
+settings.seconds = {n} s
+settings.minutes = {n} min
+
 lang.name = English

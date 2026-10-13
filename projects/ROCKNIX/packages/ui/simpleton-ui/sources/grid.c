@@ -20,6 +20,7 @@
  * tiles on screen, then the page ahead - every time the view moves.
  */
 #include "grid.h"
+#include "power.h"
 #include "cache.h"
 #include "config.h"
 #include "library.h"
@@ -597,6 +598,7 @@ static void namebar_hide_cb(lv_timer_t * tm)
 {
     (void)tm;
     lv_obj_add_flag(namebar, LV_OBJ_FLAG_HIDDEN);
+    power_indicator_yield(false);
     namebar_timer = NULL;
 }
 
@@ -683,6 +685,7 @@ static void show_name(void)
     name_fill(&name_main, &name_tail, g.w - 2 * mm.margin, mm.font_px, a);
     lv_obj_remove_flag(namebar, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(namebar);
+    power_indicator_yield(true);                            /* the battery disc steps aside (0.18b) */
     if(namebar_timer) lv_timer_reset(namebar_timer);
     else { namebar_timer = lv_timer_create(namebar_hide_cb, NAMEBAR_MS, NULL); lv_timer_set_repeat_count(namebar_timer, 1); }
 }
@@ -982,6 +985,7 @@ static void rebuild(void)
         lv_label_set_text(msg, T(lib_loaded ? S_GRID_EMPTY : S_BROWSER_STARTING));
         lv_obj_remove_flag(msg, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(namebar, LV_OBJ_FLAG_HIDDEN);
+        power_indicator_yield(false);
         if(g.band_h) { lv_label_set_text(band_main.l[0], ""); lv_label_set_text(band_tail.l[0], ""); }
         return;
     }
@@ -1151,6 +1155,9 @@ void grid_show(bool fresh)
 void grid_hide(void)
 {
     shown = false;
+    if(namebar_timer) { lv_timer_delete(namebar_timer); namebar_timer = NULL; }
+    lv_obj_add_flag(namebar, LV_OBJ_FLAG_HIDDEN);
+    power_indicator_yield(false);
     if(picker_mode() != PICKER_NONE) picker_close();
     lv_timer_pause(poll_timer);
     lv_timer_pause(index_timer);

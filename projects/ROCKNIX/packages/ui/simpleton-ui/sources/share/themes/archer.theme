@@ -21,6 +21,10 @@ colourway background=46ACC8 shell=DD8D29 label=E2D200 text=B40F20 ; Fantastic Fo
 colourway background=5BBCD6 shell=F2AD00 label=00A08A text=FAEFD1 ; Darjeeling
 colourway background=35274A shell=EABE94 label=0B775E text=E1BD6D ; Rushmore
 uifont Jost-Medium.ttf
+# The battery indicator (0.18a, Ian): a 50 px disc top right, the percentage in
+# Jost Bold 22 - blue from 50 %, yellow from 10 %, red under, green on the cable;
+# black numbers on blue/yellow/green, cream on red (whichever ink reads better).
+battery diameter=50 font=Jost-Bold.ttf size=22 high=45ACC8 mid=E3D200 low=B41823 charge=17B436 ink=29221E inklight=FAEFD0
 
 # Artless album tiles in the grid (0.16f, 9 Oct 2026; tilestyle.h).
 # Ian's colour sets, one per line: tilepalette <name> <colours...>

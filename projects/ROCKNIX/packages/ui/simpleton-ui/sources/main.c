@@ -53,6 +53,7 @@
 #include "notice.h"
 #include "nowplaying.h"
 #include "playthrough.h"
+#include "power.h"
 #include "settings.h"
 #include "strings.h"
 #include "theme.h"
@@ -273,13 +274,38 @@ static void on_play(void)
 
 /* ---- action dispatch ---- */
 
-static void dispatch(ui_action_t a)
+/* A play pressed while MPD is away (restarting for a new DAC, 12 Oct: four
+ * seconds in which a press used to vanish) is kept and played when it is
+ * back. */
+static bool pending_play;
+
+static void transport(ui_action_t a)
 {
-    /* transport keys work on every screen */
+    if(!mpd_is_connected()) {
+        if(a == ACT_PLAYPAUSE || a == ACT_PLAY) { pending_play = true; nowplaying_mpd_away(); }
+        return;
+    }
     switch(a) {
         case ACT_PLAYPAUSE: mpd_toggle_pause(); break;
-        case ACT_NEXT:      mpd_next();         break;
-        case ACT_PREV:      mpd_previous();     break;
+        /* a long track (a podcast, an audiobook, a 25-minute side): X moves
+         * 30 s instead of a whole track (Ian, 12 Oct) */
+        case ACT_NEXT:      if(power_skip_is_seek()) mpd_seek_relative(POWER_SEEK_STEP_S);  else mpd_next();     break;
+        case ACT_PREV:      if(power_skip_is_seek()) mpd_seek_relative(-POWER_SEEK_STEP_S); else mpd_previous(); break;
+        default: break;
+    }
+}
+
+static void dispatch(ui_action_t a)
+{
+    /* the power menu takes everything while it is up */
+    if(power_menu_active()) { power_activity(a); power_menu_handle_action(a); return; }
+    /* a button in the dark: X and Y act (pause, skip), anything else only
+     * lights the screen and is spent on that (0.18) */
+    if(power_activity(a)) return;
+
+    /* transport keys work on every screen */
+    switch(a) {
+        case ACT_PLAYPAUSE: case ACT_NEXT: case ACT_PREV: transport(a); break;
         /* Remote-only explicit play/pause (cec.c), consumed here so no screen
          * sees an action it does not know; now-playing catches up on its poll. */
         case ACT_PLAY:      mpd_resume();       return;
@@ -396,7 +422,23 @@ static void mpd_retry_cb(lv_timer_t * t)
     browser_tick();
     /* Not connected for notices (start-up before MPD, or MPD restarted):
      * try again. Anything may have changed while we weren't listening. */
-    if(mpd_idle_start()) mpd_changed(MPD_CHANGED_ALL);
+    if(mpd_idle_start()) {
+        mpd_changed(MPD_CHANGED_ALL);
+        if(pending_play && mpd_is_connected()) { pending_play = false; mpd_resume(); }
+    }
+}
+
+/* Back from a sleep: whatever changed while the unit was frozen (a DAC
+ * gone, a card swapped) comes in through the usual notices; ask for all. */
+static void after_resume(void)
+{
+    mpd_changed(MPD_CHANGED_ALL);
+}
+
+/* Just before a clean power-off: nothing of ours needs saving today (MPD
+ * keeps its own state); the hook is here for when something does. */
+static void before_poweroff(void)
+{
 }
 
 /* A crash prints where it happened (0.16c, 8 Oct: the UI died twice on the
@@ -492,6 +534,8 @@ int main(int argc, char ** argv)
 
     if(!input_init()) fprintf(stderr, "simpleton-ui: running without joypad input\n");
     cec_init();      /* optional: TV remote via HDMI-CEC; quiet no-op without it */
+    power_set_external(di.external);             /* first: on a TV the panel is left alone */
+    power_init(after_resume, before_poweroff);   /* battery, screen, sleep, the power key (0.18) */
 
     mpd_connect();   /* may fail: browser shows "Starting library" and retries */
     mpd_idle_start();/* change notices; retried with the connection if MPD isn't up */
@@ -521,14 +565,16 @@ int main(int argc, char ** argv)
         uint32_t idle_ms = lv_timer_handler();
         if(idle_ms > 20) idle_ms = 20;          /* keep hold/repeat timing tight */
 
-        struct pollfd pfd[4] = { { .fd = input_fd(), .events = POLLIN },
+        struct pollfd pfd[5] = { { .fd = input_fd(), .events = POLLIN },
                                  { .fd = display_hotplug_fd(), .events = POLLIN },
                                  { .fd = cec_fd(), .events = POLLIN | POLLPRI },
-                                 { .fd = mpd_idle_fd(), .events = POLLIN } };
-        poll(pfd, 4, (int)idle_ms);             /* negative fds are ignored by poll() */
+                                 { .fd = mpd_idle_fd(), .events = POLLIN },
+                                 { .fd = power_key_fd(), .events = POLLIN } };
+        poll(pfd, 5, (int)idle_ms);             /* negative fds are ignored by poll() */
 
         input_poll();
         cec_poll();                             /* TV remote keys join the same queue */
+        power_poll();                           /* the power key: press, hold, countdown */
         if(pfd[3].fd >= 0 && (pfd[3].revents & (POLLIN | POLLHUP | POLLERR))) {
             unsigned what = mpd_idle_poll();
             if(what & MPD_IDLE_LOST) fprintf(stderr, "simpleton-ui: mpd[idle]: connection lost, reconnecting\n");

@@ -34,6 +34,10 @@ void nowplaying_hide(void);
  * (now if the screen is showing, else when it is next shown). */
 void nowplaying_mpd_changed(void);
 
+/* MPD is away (restarting for a new DAC): the format line says "Switching
+ * output..." until the next change notice finds it back (0.18). */
+void nowplaying_mpd_away(void);
+
 /* Handle any action while active. NP_EXIT = user backed out to the browser;
  * the caller switches screens. */
 np_result_t nowplaying_handle_action(ui_action_t a);

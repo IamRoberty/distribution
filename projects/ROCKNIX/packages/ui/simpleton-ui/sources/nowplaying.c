@@ -36,6 +36,7 @@
  * got PCM. Cards are matched by "which one is running", never by index.
  */
 #include "nowplaying.h"
+#include "power.h"
 #include "art.h"
 #include "mpdc.h"
 #include "strings.h"
@@ -82,6 +83,7 @@ static lv_timer_t * clock_timer, * art_timer, * idle_timer, * badge_timer;
 
 static bool active;
 static bool controls_visible;
+static bool mpd_away;                 /* MPD is restarting for a new DAC (0.18): say so */
 static bool embedded;                 /* the stage lives in the album page's screen (0.17b) */
 static bool host_hides_art;           /* ...which keeps its own picture: ours stays hidden */
 static bool badge_single;             /* the badge may show "1 / 1" while it flashes (the page's cover browse) */
@@ -264,7 +266,8 @@ static void update_format_line(void)
     describe_source(st.audio, src, sizeof(src));
     const char * codec = codec_name(st.file);
     char text[400];
-    if(dac_line[0]) snprintf(text, sizeof(text), "%s %s   " LV_SYMBOL_RIGHT "   %s", codec, src, dac_line);
+    if(mpd_away || !mpd_is_connected()) snprintf(text, sizeof(text), "%s %s   " LV_SYMBOL_RIGHT "   %s", codec, src, T(S_NP_SWITCHING_DAC));
+    else if(dac_line[0]) snprintf(text, sizeof(text), "%s %s   " LV_SYMBOL_RIGHT "   %s", codec, src, dac_line);
     else if(st.error[0]) {
         /* MPD could not open its output (11 Oct: "Failed to open "DAC"
          * (alsa); Failed to open ALSA device "hw:CARD=AUDIO,DEV=0": No such
@@ -641,6 +644,13 @@ static void request_status(void)
     if(active) lv_timer_ready(clock_timer);
 }
 
+/* Our own screen is the one on display (at start-up `active` can be true
+ * while another screen shows; the battery disc belongs to that screen then). */
+static bool on_display(void)
+{
+    return active && !embedded && lv_obj_get_screen(stage) == lv_screen_active();
+}
+
 static void hide_controls(void)
 {
     if(!controls_visible) return;
@@ -648,6 +658,7 @@ static void hide_controls(void)
     lv_obj_fade_out(overlay, FADE_MS, 0);
     lv_timer_pause(idle_timer);
     badge_refresh();
+    if(on_display()) power_indicator_set_hidden(true);    /* the cover is the whole screen */
 }
 
 static void show_controls(void)
@@ -658,6 +669,7 @@ static void show_controls(void)
     controls_visible = true;
     lv_obj_fade_in(overlay, FADE_MS, 0);
     badge_refresh();
+    if(on_display()) power_indicator_set_hidden(false);
 }
 
 static void idle_timer_cb(lv_timer_t * t)
@@ -854,11 +866,19 @@ void nowplaying_show(void)
     lv_timer_reset(idle_timer);
     lv_timer_resume(idle_timer);
     badge_refresh();
+    if(!embedded) power_indicator_set_hidden(false);
 }
 
 void nowplaying_mpd_changed(void)
 {
+    if(mpd_is_connected()) mpd_away = false;
     request_status();                       /* while hidden: fetched on show */
+}
+
+void nowplaying_mpd_away(void)
+{
+    mpd_away = true;
+    if(active) update_format_line();
 }
 
 /* ---- hosted in the album page (0.17b) ---- */
@@ -1007,6 +1027,7 @@ void nowplaying_hide(void)
     active = false;
     lv_timer_pause(clock_timer);
     lv_timer_pause(idle_timer);
+    power_indicator_set_hidden(false);      /* whatever comes next has a header */
 }
 
 static void transport_act(void)
