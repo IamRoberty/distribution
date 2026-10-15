@@ -283,6 +283,98 @@
 # 0.18c (12 Oct 2026, 22:40): the disc comes up on the first button after a
 # quiet minute, on the press that lights the screen and on waking from
 # sleep, then fades - not on every press while browsing (Ian).
+# 0.19 (13 Oct 2026): Note 05 step 7 and the Tracks / Recent views. A list
+# page (listpage.c) for long lists - every track, the newest, a collection
+# folder as a mixtape - beside the TV art square, windowed rows, a
+# colourway per sort section, the "<< A >>" jump row, Left/Right paging;
+# the grid shows albums, tracks or a folder's children (artist pictures,
+# name tiles with a keyline); folder types open from the browser as their
+# views; the cards' indexes shared in libs.c; play-through's list mode.
+# 0.19a (13 Oct 2026, late): Ian's first pass on the unit. The sort key
+# (library_sort_key: leading punctuation and track numbers dropped, "#"
+# after Z) used by every name sort and jump letter; stops under a
+# screenful join their neighbour; one colourway per letter; no jump row
+# on the handheld, the TV's pinned above the list; the playing mark
+# leaves the track played before; a no-art track's companion in the TV
+# square is its album's tile, cassette or record; the Tracks grid is two
+# columns of text cells; a folder with few albums fills the screen (1,
+# 2x2, 3x3); the grid's name line is a switch (off for folders); a
+# folder's picker sorts by name or newest and has a List face (the list
+# page's LIST_ALBUMS); an album of many artists opens as the mixtape-style
+# list; Recent is what was played last (history.c); a folder view handed
+# over from the picker's View row reopens the picker on that row.
+# 0.19b (13 Oct 2026, 23:45): the TV square keeps an album's cover up across
+# its tracks and across to the next cover (it had shown the tape between);
+# the Genre tag in the index (a cache run fills it) - a mixtape's label's
+# third line names the folder's commonest genres, an album's cassette its
+# own.
+# 0.19c (14 Oct 2026, 00:15): the want-ad cells after Ian's look. The type
+# size follows the title's length (short big, long smaller - it had been
+# the other way round), a bracketed tail smaller on its own line, bigger
+# type and a bigger artist line, cell heights in whole units so the two
+# columns' corners meet, the selected cell with its colours turned round,
+# Left/Right to the cell next door at the same height, and Tracks comes
+# back where it was left.
+# 0.20 (14 Oct 2026): Artists (Note 05 step 8; Ian's direction of 13-14 Oct
+# in browse-views-ian-2026-10-13.md). artists.c lists every album artist of
+# every card, merged by name, their albums in year order, Various Artists
+# as a row of its own last, and leaves out artists with no album of their
+# own and only a handful of tracks. Three faces of one setting
+# (style-artists-<kind>, handed over through the picker's View row):
+#   - Rows (rows.c): one row an artist, their name tile (or the artist
+#     folder's picture) pinned at the left, their albums running right.
+#     Right walks to the row's centre slot, then the row slides under the
+#     cursor until its last album shows, then the cursor walks on; Left
+#     mirrors it. Right on the last album pages down a screenful of
+#     artists, Left on the artist tile pages up. Up/Down keep the column,
+#     past the centre they land on the centre slot of a row that slides.
+#     A row keeps its scroll while on screen; off screen it resets.
+#   - Grid (grid.c scope ARTISTS): an artist tile each, picture or name;
+#     the band says "n albums". One artist's albums (scope ARTIST) fill
+#     the screen as a small folder does (1x1 .. 3x3), sorted by year, title
+#     or newest.
+#   - List (listpage.c LIST_ARTISTS): artist rows with the album count; on
+#     a TV the square is a mosaic of the artist's albums (1, 2x2 .. 5x5;
+#     covers, or small name tiles for albums without art). Various Artists
+#     is the "VA" stop at the end.
+# The picker's Sort row reads "Opens as" on all three: Select on an artist
+# opens their albums (the grid), their tracks by title, or their tracks
+# album by album (LIST_ARTIST_TRACKS, whose Sort row has both and Newest;
+# the jump stops are the albums' years). Back from an artist's albums or
+# tracks returns to the artists view with the cursor on the artist; an
+# album opened from a row returns to the row. Restart lines --artists,
+# --artistsgrid, --artistslist, --artist <name>, --artisttracks <name>.
+# Settings -> Artists: view, size, "An artist opens as", names, the
+# alphabet picker. Also: a list or grid come back from a deeper view in the
+# colours they had (the deal is kept per kind / scope), and the folder
+# grid's Newest sort was read back as the wrong sort since 0.19a - fixed.
+# 0.20a (14 Oct 2026, evening): Ian on 0.20. The rows no longer slide: an
+# artist takes as many lines as their albums need, the artist's tile
+# spanning them, and the D-pad moves cell by cell (Right on an artist's last
+# album, Left on the tile: a page). Up on the TV jump row goes on up the
+# list (it had wrapped to the bottom) and, in one run of Ups, the jump row
+# isn't stopped at again. An artist's tracks in album order show a break
+# with the album's title and year before each album, and the sort reads
+# "Album order". A small folder's or artist's grid fills its spare cells
+# with flat squares in dealt colours, as the mosaic does.
+# 0.20b (14 Oct 2026, late): a selected cover in the rows was cut at its
+# row's edge (the art seemed to outgrow its box) - rows draw overflow now; a
+# tall artist tile grows when selected, and selecting it brings all its
+# lines on screen at once. An artist's tracks show the album under each
+# title instead of the artist. In a list with album breaks, Down on the last
+# track goes round to the first (it had landed on the jump row), and paging
+# or jumping onto a break lands on the album's first track.
+# 0.20c (14 Oct 2026, night): under an artist the count follows "Opens as"
+# (tracks when an artist opens as tracks, albums otherwise) in all three
+# Artists faces; an artist with one album opens straight on its page when
+# artists open as albums, and Back returns to the artist; a long press of A
+# on a Home tape (the remote's menu key) opens that view with its picker
+# panel up on the View row.
+# 0.20d (14 Oct 2026, night): the rows' grown covers were still cut at
+# their row's edge (LVGL clips a child to its parent plus the parent's extra
+# draw size, even with overflow visible): each row now claims room for a
+# grown cover and its shadow. An artist's albums share their lines evenly
+# (7 in rows of 5 as 4 + 3, 6 as 3 + 3).
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
 #   main.c        - theme/indev setup, screen switch, action dispatch
 #   power.c/h     - battery indicator, screen off, sleep, power key, lights
@@ -309,6 +401,14 @@
 #   palette.c/h   - a cover's colours (cache tool: extraction; UI: page roles)
 #   albumpage.c/h - the album page (0.17)
 #   hdmisilence.c/h - zeros on the HDMI audio link while on HDMI (0.17j)
+#   libs.c/h      - the mounted cards' library indexes, shared by the views (0.19)
+#   listpage.c/h  - the list page: Tracks (its Grid is text cells since 0.19a),
+#                   Recent (last played), mixtape-style folders and albums, a
+#                   folder's albums as rows (0.19 / 0.19a); grid.c shows
+#                   albums or a folder's children since 0.19
+#   history.c/h   - what was played, newest first, for Recent (0.19a)
+#   artists.c/h   - every album artist across the cards, Various Artists last (0.20)
+#   rows.c/h      - the Artists rows view, an artist's albums running right (0.20)
 #   stb_truetype.h- vendored, public domain (github.com/nothings/stb)
 #   theme.h       - shared style tokens
 #   share/        - placeholder layers, OFL fonts, theme files, lang/<code>.txt
@@ -333,7 +433,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.18c"
+PKG_VERSION="0.20d"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk alsa-lib"
@@ -369,6 +469,8 @@ make_target() {
     ${PKG_BUILD}/settings.c ${PKG_BUILD}/notice.c ${PKG_BUILD}/picker.c \
     ${PKG_BUILD}/grid.c ${PKG_BUILD}/thumbs.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/tilestyle.c ${PKG_BUILD}/palette.c \
     ${PKG_BUILD}/textfit.c ${PKG_BUILD}/tiletext.c ${PKG_BUILD}/albumpage.c ${PKG_BUILD}/hdmisilence.c ${PKG_BUILD}/power.c \
+    ${PKG_BUILD}/libs.c ${PKG_BUILD}/listpage.c ${PKG_BUILD}/history.c \
+    ${PKG_BUILD}/artists.c ${PKG_BUILD}/rows.c \
     ${TARGET_LDFLAGS} -rdynamic \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \

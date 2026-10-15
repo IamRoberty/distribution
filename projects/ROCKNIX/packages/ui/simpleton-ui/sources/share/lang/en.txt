@@ -104,6 +104,46 @@ library.various = Various Artists
 
 grid.empty = No albums yet
 
+picker.jump = Jump to
+
+style.tiles = Tiles
+
+sort.artist_album = Artist, album
+sort.file_order = File order
+
+list.empty = No tracks yet
+list.tracks_count = {n} tracks
+list.track_one = 1 track
+
+picker.names = Names
+
+sort.track_order = Track order
+sort.last_played = Last played
+
+list.albums_count = {n} albums
+list.album_one = 1 album
+list.albums_empty = Nothing in this folder yet
+list.recent_empty = Nothing played yet
+
+settings.names = Names over the covers
+
+style.rows = Rows
+
+picker.opens = Opens as
+
+opens.albums = Albums
+opens.tracks = Tracks by title
+opens.tracks_album = Tracks by album
+
+artists.empty = No artists yet
+
+list.artists_count = {n} artists
+
+settings.artists = Artists
+settings.opens = An artist opens as
+
+sort.album_order = Album order
+
 page.side = Side
 page.disc = Disc
 

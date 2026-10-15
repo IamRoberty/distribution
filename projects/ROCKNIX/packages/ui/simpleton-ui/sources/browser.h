@@ -41,6 +41,9 @@ bool browser_open_folder(const char * uri);   /* false: the folder could not be 
  * is, so Back from the page lands on the folder's row. */
 void browser_set_folder_hook(bool (*hook)(const char * uri));
 void browser_open_root(void);
+/* Open at a folder with Back climbing its parents (0.19: coming back out
+ * of a folder view to the browser), the cursor on `child` if given. */
+bool browser_open_path(const char * uri, const char * child);
 bool browser_opened_at_folder(void);
 
 /* The picker or the jump strip is up (0.14): every action, UP/DOWN/SELECT

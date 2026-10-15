@@ -74,4 +74,8 @@ uint8_t * art_fetch_cover(const char * track_uri, size_t * len, char * source, s
  * any thread (0.16: the grid's thumbnail decoder uses it). */
 uint8_t * art_decode_fit(const uint8_t * data, size_t len, int box, int * w, int * h);
 
+/* A folder's own picture on disk (0.19): artist.* / folder.* / cover.* /
+ * front.* directly in the folder, else the only image there. */
+bool art_folder_image(const char * folder_uri, char * out, size_t len);
+
 #endif

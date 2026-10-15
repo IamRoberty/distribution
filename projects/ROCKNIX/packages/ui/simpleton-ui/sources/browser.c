@@ -578,25 +578,49 @@ void browser_create(lv_obj_t * scr, lv_group_t * group, void (*on_play)(void), v
      * out of - focus -1 means "find it by name"). No picker or strip on a
      * resumed listing: the person was already in it. */
     suppress_overlay = true;
-    if(resume_uri && resume_uri[0]) {
-        char * path = strdup(resume_uri);
-        for(char * slash = path; path && depth < MAX_DEPTH; ) {
-            slash = strchr(slash, '/');
-            if(slash) *slash = 0;
-            stack[depth].uri = strdup(path);
-            stack[depth].focus = -1;
-            depth++;
-            if(!slash) break;
-            *slash++ = '/';
-        }
-        free(path);
-        root_focus = -1;
-        if(load(cur_uri(), 0)) { suppress_overlay = false; return; }
-        while(depth) { free(stack[--depth].uri); stack[depth].uri = NULL; }   /* gone: start at the top */
-        root_focus = 0;
-    }
+    if(resume_uri && resume_uri[0] && browser_open_path(resume_uri, NULL)) { suppress_overlay = false; return; }
     suppress_overlay = false;
     if(load("", 0)) after_enter();
+}
+
+/* Open at `uri` with the folder stack rebuilt from its path, so Back
+ * climbs up through the parents (landing on the folder left: focus -1 =
+ * "find it by name"); the cursor on `child` when it is in the listing.
+ * No picker or strip. False (and nothing changed) when the folder can't
+ * be read. */
+bool browser_open_path(const char * uri, const char * child)
+{
+    close_overlay();
+    nav_frame_t saved[MAX_DEPTH];
+    int saved_depth = depth, saved_root = root_focus, saved_exit = exit_depth;
+    memcpy(saved, stack, sizeof(saved));
+    depth = 0;
+    exit_depth = 0;
+    char * path = strdup(uri);
+    for(char * slash = path; path && depth < MAX_DEPTH; ) {
+        slash = strchr(slash, '/');
+        if(slash) *slash = 0;
+        stack[depth].uri = strdup(path);
+        stack[depth].focus = -1;
+        depth++;
+        if(!slash) break;
+        *slash++ = '/';
+    }
+    free(path);
+    root_focus = -1;
+    bool was = suppress_overlay;
+    suppress_overlay = true;
+    if(!load(cur_uri(), 0)) {
+        while(depth) { free(stack[--depth].uri); stack[depth].uri = NULL; }
+        memcpy(stack, saved, sizeof(saved));
+        depth = saved_depth; root_focus = saved_root; exit_depth = saved_exit;
+        suppress_overlay = was;
+        return false;
+    }
+    for(int i = 0; i < saved_depth; i++) free(saved[i].uri);
+    suppress_overlay = was;
+    if(child) focus_uri(child);
+    return true;
 }
 
 /* A size change: re-measure everything on the stage and draw the listing

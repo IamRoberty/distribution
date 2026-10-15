@@ -40,6 +40,11 @@ typedef enum {
  * user selected; main.c switches screens. */
 void home_create(void (*on_open)(home_view_t view));
 
+/* A long press of A on a tape (the remote's menu key): open that view with
+ * its picker panel up, on the View row (0.20c, Ian: choose the view and the
+ * sort straight from Home). */
+void home_set_menu_callback(void (*on_menu)(home_view_t));
+
 void home_show(void);
 void home_hide(void);
 

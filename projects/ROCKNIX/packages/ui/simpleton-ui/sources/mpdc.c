@@ -333,6 +333,11 @@ bool mpd_listallinfo(const char * uri, bool (*cb)(const mpd_song_info_t * song, 
         else if(strcasecmp(key, "Last-Modified") == 0) song.mtime = iso_time(val);
         else if(strcasecmp(key, "Added") == 0)         song.added = iso_time(val);
         else if(strcasecmp(key, "Format") == 0)        snprintf(song.format, sizeof(song.format), "%s", val);
+        else if(strcasecmp(key, "Genre") == 0) {
+            size_t o = strlen(song.genre);
+            if(o == 0) snprintf(song.genre, sizeof(song.genre), "%s", val);
+            else if(o + 3 < sizeof(song.genre)) snprintf(song.genre + o, sizeof(song.genre) - o, " / %s", val);
+        }
     }
     if(in_song && go_on) cb(&song, ctx);
     return ok;

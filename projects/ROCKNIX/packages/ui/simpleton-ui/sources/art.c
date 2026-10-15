@@ -134,6 +134,39 @@ static bool skip_image(const char * name)
     return name[0] == '.' || strncasecmp(name, "albumartsmall", 13) == 0 || strncasecmp(name, "albumart_{", 10) == 0;
 }
 
+/* A folder's own picture (0.19, Note 05 section 7: an artist folder's
+ * artist.jpg or folder.jpg, else the only image directly in it): the path
+ * on disk, or false. Album stems (cover, front) are left to album art. */
+bool art_folder_image(const char * folder_uri, char * out, size_t len)
+{
+    char dir[1200];
+    snprintf(dir, sizeof(dir), "%s/%s", MUSIC_DIR, folder_uri);
+    struct dirent ** ents;
+    int n = scandir(dir, &ents, NULL, alphasort);
+    if(n < 0) return false;
+    static const char * const stems[] = { "artist", "folder", "cover", "front", NULL };
+    int best_rank = 99, images = 0;
+    char best[1500] = "", only[1500] = "";
+    for(int i = 0; i < n; i++) {
+        const char * name = ents[i]->d_name;
+        if(skip_image(name) || !has_ext(name, image_exts)) { free(ents[i]); continue; }
+        images++;
+        snprintf(only, sizeof(only), "%s/%s", dir, name);
+        char stem[256];
+        snprintf(stem, sizeof(stem), "%s", name);
+        char * dot = strrchr(stem, '.');
+        if(dot) *dot = 0;
+        for(int r = 0; stems[r]; r++) if(strcasecmp(stem, stems[r]) == 0 && r < best_rank) { best_rank = r; snprintf(best, sizeof(best), "%s/%s", dir, name); }
+        free(ents[i]);
+    }
+    free(ents);
+    if(best[0]) snprintf(out, len, "%s", best);
+    else if(images == 1) snprintf(out, len, "%s", only);
+    else return false;
+    return true;
+}
+
+
 static bool is_art_subdir(const char * name)
 {
     for(int s = 0; art_subdirs[s]; s++) if(strcasecmp(name, art_subdirs[s]) == 0) return true;

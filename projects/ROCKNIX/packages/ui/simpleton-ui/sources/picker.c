@@ -17,6 +17,7 @@
  * made (changes apply live and are the caller's to remember).
  */
 #include "picker.h"
+#include "library.h"
 #include "strings.h"
 #include "theme.h"
 
@@ -29,7 +30,12 @@
 #define PICKER_MINIMIZE 1              /* 1: the rows not in focus are drawn smaller */
 #endif
 
-typedef enum { ROW_STYLE, ROW_SIZE, ROW_SORT, ROW_STRIP, ROW_COUNT } row_t;
+typedef enum { ROW_JUMP, ROW_STYLE, ROW_SIZE, ROW_SORT, ROW_NAMES, ROW_STRIP, ROW_COUNT } row_t;
+/* The rows the panel shows, in order: the jump row first when the view asks
+ * for it (0.19: a track list's panel opens on it, so a letter jump is two
+ * presses on the handheld), then style, size, sort, the alphabet switch. */
+static row_t order[ROW_COUNT];
+static int   nrows;
 
 static ui_list_t lm;        /* the view's list area: where the overlay sits */
 static ui_list_t mm;        /* the menu's measurements: how big it is drawn (the
@@ -146,7 +152,9 @@ static uint32_t fold_cp(const char * name)
 
 void picker_fold(const char * name, char out[PICKER_LABEL_LEN])
 {
-    uint32_t c = fold_cp(name ? name : "");
+    /* the letter of the name's sort key (0.19a): "(What's the Story)" under W,
+     * "01 - Song" under S, as the sort puts them */
+    uint32_t c = fold_cp(library_sort_key(name ? name : ""));
     int n = utf8_put(out, c);
     out[n] = 0;
 }
@@ -207,9 +215,11 @@ static void strip_render(void)
 static bool row_steppable(row_t r)
 {
     switch(r) {
+        case ROW_JUMP:  return opts.label_count > 1;
         case ROW_STYLE: return opts.style_count > 1;
         case ROW_SIZE:  return true;
         case ROW_SORT:  return opts.sort_count > 1;
+        case ROW_NAMES: return true;
         case ROW_STRIP: return true;
         default: return false;
     }
@@ -219,9 +229,11 @@ static void panel_value_text(row_t r, char * out, size_t len)
 {
     const char * v = "";
     switch(r) {
+        case ROW_JUMP:  v = (opts.label_count && opts.jump >= 0) ? opts.labels[opts.jump] : "-"; break;
         case ROW_STYLE: v = opts.style_count ? opts.styles[opts.style] : ""; break;
         case ROW_SIZE:  v = ui_size_name(opts.size); break;
         case ROW_SORT:  v = opts.sort_count ? opts.sorts[opts.sort] : ""; break;
+        case ROW_NAMES: v = opts.names ? T(S_SET_ON) : T(S_SET_OFF); break;
         case ROW_STRIP: v = opts.strip ? T(S_SET_ON) : T(S_SET_OFF); break;
         default: break;
     }
@@ -242,7 +254,7 @@ static void panel_refresh(void)
     int pad = panel_pad();
     int y = pad;
     int inner_w = panel_w() - 2 * pad;
-    for(int r = 0; r < ROW_COUNT; r++) {
+    for(int r = 0; r < nrows; r++) {
         bool on = (r == focus_row);
         int h = row_height(on);
         lv_obj_set_size(rows[r], inner_w, h);
@@ -252,7 +264,7 @@ static void panel_refresh(void)
         lv_obj_set_style_text_color(row_names[r], lv_color_hex(on ? UI_COLOR_FOCUS_FG : UI_COLOR_DIM), 0);
         lv_obj_set_style_text_color(row_values[r], lv_color_hex(on ? UI_COLOR_FOCUS_FG : UI_COLOR_DIM), 0);
         char v[64];
-        panel_value_text((row_t)r, v, sizeof(v));
+        panel_value_text(order[r], v, sizeof(v));
         lv_label_set_text(row_values[r], v);
         lv_obj_align(row_names[r], LV_ALIGN_LEFT_MID, 0, 0);
         lv_obj_align(row_values[r], LV_ALIGN_RIGHT_MID, 0, 0);
@@ -267,8 +279,16 @@ static void panel_refresh(void)
 static void panel_build(void)
 {
     lv_obj_clean(panel);
-    const char * names[ROW_COUNT] = { T(S_PICKER_STYLE), T(S_PICKER_SIZE), T(S_PICKER_SORT), T(S_PICKER_STRIP) };
-    for(int r = 0; r < ROW_COUNT; r++) {
+    const char * names[ROW_COUNT] = { T(S_PICKER_JUMP), T(S_PICKER_STYLE), T(S_PICKER_SIZE), opts.sort_name ? opts.sort_name : T(S_PICKER_SORT), T(S_PICKER_NAMES), T(S_PICKER_STRIP) };
+    nrows = 0;
+    if(opts.jump_row && opts.label_count > 0) order[nrows++] = ROW_JUMP;
+    order[nrows++] = ROW_STYLE;
+    order[nrows++] = ROW_SIZE;
+    order[nrows++] = ROW_SORT;
+    if(opts.names_row) order[nrows++] = ROW_NAMES;
+    order[nrows++] = ROW_STRIP;
+    if(focus_row >= nrows) focus_row = 0;
+    for(int r = 0; r < nrows; r++) {
         lv_obj_t * row = lv_obj_create(panel);
         lv_obj_remove_style_all(row);
         lv_obj_set_style_radius(row, mm.row_radius, 0);
@@ -277,7 +297,7 @@ static void panel_build(void)
         lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         rows[r] = row;
         row_names[r] = lv_label_create(row);
-        lv_label_set_text(row_names[r], names[r]);
+        lv_label_set_text(row_names[r], names[order[r]]);
         row_values[r] = lv_label_create(row);
     }
     panel_refresh();
@@ -406,7 +426,8 @@ static void step_jump(int dir)
 
 static void step_row(int dir)
 {
-    switch((row_t)focus_row) {
+    if(order[focus_row] == ROW_JUMP) { step_jump(dir); panel_refresh(); return; }   /* a jump, not a setting */
+    switch(order[focus_row]) {
         case ROW_STYLE: if(opts.style_count > 1) opts.style = (opts.style + dir + opts.style_count) % opts.style_count; break;
         case ROW_SIZE: {
             /* only the sizes this screen offers */
@@ -419,6 +440,7 @@ static void step_row(int dir)
             break;
         }
         case ROW_SORT:  if(opts.sort_count > 1) opts.sort = (opts.sort + dir + opts.sort_count) % opts.sort_count; break;
+        case ROW_NAMES: opts.names = !opts.names; break;
         case ROW_STRIP: opts.strip = !opts.strip; break;
         default: break;
     }
@@ -445,12 +467,13 @@ void picker_handle_action(ui_action_t a)
     if(mode == PICKER_FULL) {
         switch(a) {
             case ACT_UP:    if(focus_row > 0) focus_row--; panel_refresh(); break;
-            case ACT_DOWN:  if(focus_row < ROW_COUNT - 1) focus_row++; panel_refresh(); break;
+            case ACT_DOWN:  if(focus_row < nrows - 1) focus_row++; panel_refresh(); break;
             case ACT_LEFT:  step_row(-1); break;
             case ACT_RIGHT: step_row(+1); break;
             case ACT_SELECT:
                 /* "that one": on to the next row; from the last row, done */
-                if(focus_row < ROW_COUNT - 1) { focus_row++; panel_refresh(); }
+                if(order[focus_row] == ROW_JUMP) { panel_done(); break; }      /* jumped: that's what was wanted */
+                if(focus_row < nrows - 1) { focus_row++; panel_refresh(); }
                 else panel_done();
                 break;
             case ACT_BACK:
@@ -467,3 +490,13 @@ void picker_toggle_panel(void)
 }
 
 bool picker_from_strip(void) { return from_strip; }
+
+void picker_focus_style(void)
+{
+    if(mode != PICKER_FULL) return;
+    /* the View row; when a view has only the one face (Albums, Folders), the
+     * Sort row instead (0.20c: the panel opened from Home is for choosing) */
+    row_t want = row_steppable(ROW_STYLE) ? ROW_STYLE : row_steppable(ROW_SORT) ? ROW_SORT : ROW_STYLE;
+    for(int r = 0; r < nrows; r++) if(order[r] == want) { focus_row = r; break; }
+    panel_refresh();
+}

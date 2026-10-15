@@ -50,6 +50,9 @@ tilecolours palettes
 # The least contrast an ink may have (1 = none, 21 = black on white). Low on
 # purpose: Archer Ave. is about vibe more than contrast.
 tilecontrast 2.0
+# The floor for a whole list of text (the track lists, 0.19): a tick above
+# the tiles' - a screen of titles needs more than one tile (Ian, 13 Oct).
+listcontrast 3.0
 # A cream any non-pastel tile may take as its ink.
 tilecream FAEFD0
 # How often each kind of ink is drawn: a palette colour, the cream, an

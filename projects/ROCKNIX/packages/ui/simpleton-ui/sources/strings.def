@@ -117,6 +117,38 @@ STR(SORT_NEWEST,         "sort.newest",         "Newest on card")
 STR(VARIOUS_ARTISTS,     "library.various",     "Various Artists")
 STR(GRID_EMPTY,          "grid.empty",          "No albums yet")
 
+/* track lists and folder views (0.19) */
+STR(PICKER_JUMP,         "picker.jump",         "Jump to")
+STR(STYLE_TILES,         "style.tiles",         "Tiles")
+STR(SORT_ARTIST_ALBUM,   "sort.artist_album",   "Artist, album")
+STR(SORT_FILE_ORDER,     "sort.file_order",     "File order")
+STR(LIST_EMPTY,          "list.empty",          "No tracks yet")
+STR(LIST_TRACKS_COUNT,   "list.tracks_count",   "{n} tracks")
+STR(LIST_TRACK_ONE,      "list.track_one",      "1 track")
+
+/* 0.19a (Ian's 13 Oct pass): the grid's name line switch, a folder's list
+ * of albums, one album's tracks, what Recent lists now */
+STR(PICKER_NAMES,        "picker.names",        "Names")
+STR(SORT_TRACK_ORDER,    "sort.track_order",    "Track order")
+STR(SORT_LAST_PLAYED,    "sort.last_played",    "Last played")
+STR(LIST_ALBUMS_COUNT,   "list.albums_count",   "{n} albums")
+STR(LIST_ALBUM_ONE,      "list.album_one",      "1 album")
+STR(LIST_ALBUMS_EMPTY,   "list.albums_empty",   "Nothing in this folder yet")
+STR(LIST_RECENT_EMPTY,   "list.recent_empty",   "Nothing played yet")
+STR(SET_NAMES,           "settings.names",      "Names over the covers")
+
+/* 0.20: the Artists views (rows / grid / list) and their "Opens as" row */
+STR(STYLE_ROWS,          "style.rows",          "Rows")
+STR(PICKER_OPENS,        "picker.opens",        "Opens as")
+STR(OPENS_ALBUMS,        "opens.albums",        "Albums")
+STR(OPENS_TRACKS,        "opens.tracks",        "Tracks by title")
+STR(OPENS_TRACKS_ALBUM,  "opens.tracks_album",  "Tracks by album")
+STR(ARTISTS_EMPTY,       "artists.empty",       "No artists yet")
+STR(LIST_ARTISTS_COUNT,  "list.artists_count",  "{n} artists")
+STR(SET_ARTISTS,         "settings.artists",    "Artists")
+STR(SET_OPENS,           "settings.opens",      "An artist opens as")
+STR(SORT_ALBUM_ORDER,    "sort.album_order",    "Album order")
+
 /* the album page (0.17): the words over a split track list, "Side A" / "Disc 1" */
 STR(PAGE_SIDE,           "page.side",           "Side")
 STR(PAGE_DISC,           "page.disc",           "Disc")

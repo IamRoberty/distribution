@@ -16,6 +16,67 @@
 static char last_file[1024];
 static int  last_len = -1;
 
+/* List mode (0.19): a track started from a track list (Tracks, Recent, a
+ * mixtape-style folder) plays on through the list as shown, whatever the
+ * play-through-folders setting says; the list is fed to MPD in slices so a
+ * 5,000-track list never goes over the wire at once. Dropped when the
+ * current song is no longer one the list queued. */
+#define LIST_SLICE 50
+static char ** list_uris;
+static int     list_n, list_next;      /* list_next: the first not yet queued */
+static bool    list_active;
+
+static void list_drop(void)
+{
+    for(int i = 0; i < list_n; i++) free(list_uris[i]);
+    free(list_uris);
+    list_uris = NULL;
+    list_n = list_next = 0;
+    list_active = false;
+}
+
+bool playthrough_play_list(const char ** uris, int n, int start)
+{
+    if(!uris || n <= 0 || start < 0 || start >= n) return false;
+    list_drop();
+    list_uris = calloc((size_t)n, sizeof(char *));
+    if(!list_uris) return false;
+    for(int i = 0; i < n; i++) list_uris[i] = strdup(uris[i]);
+    list_n = n;
+    int end = start + LIST_SLICE < n ? start + LIST_SLICE : n;
+    if(!mpd_play_uris((char **)list_uris + start, end - start, 0)) { list_drop(); return false; }
+    list_next = end;
+    list_active = true;
+    last_len = -1;
+    fprintf(stderr, "simpleton-ui: play-through: list of %d from %d, %d queued\n", n, start + 1, end - start);
+    return true;
+}
+
+bool playthrough_list_active(void) { return list_active; }
+
+/* The list's turn: when MPD has nothing after the current song and the
+ * song is one of ours, queue the next slice; past the end, the list is done
+ * (nothing more: the folder walk is not for a list). */
+static bool list_check(const mpd_status_t * st)
+{
+    if(!list_active) return false;
+    bool ours = false;
+    for(int i = 0; i < list_next && !ours; i++) ours = strcmp(list_uris[i], st->file) == 0;
+    if(!ours) { list_drop(); return false; }          /* something else was started: the list is over */
+    if(st->nextsong >= 0) return true;
+    if(st->repeat || st->single) return true;
+    if(list_next >= list_n) return true;              /* the end of the list */
+    if(strcmp(st->file, last_file) == 0 && st->playlistlength == last_len) return true;
+    int end = list_next + LIST_SLICE < list_n ? list_next + LIST_SLICE : list_n;
+    if(mpd_add_uris(list_uris + list_next, end - list_next)) {
+        snprintf(last_file, sizeof(last_file), "%s", st->file);
+        last_len = st->playlistlength;
+        fprintf(stderr, "simpleton-ui: play-through: list, %d more queued (%d of %d)\n", end - list_next, end, list_n);
+        list_next = end;
+    }
+    return true;
+}
+
 bool playthrough_enabled(void)
 {
     return config_read_bool("play_through", true);   /* default: on */
@@ -104,11 +165,13 @@ static bool next_folder_tracks(const char * file, char *** uris, int * count)
 
 static void check(void)
 {
-    if(!playthrough_enabled()) return;
     mpd_status_t st;
     if(!mpd_status(&st)) return;
     if(strcmp(st.state, "play") != 0 && strcmp(st.state, "pause") != 0) return;
-    if(!st.file[0] || st.nextsong >= 0) return;   /* MPD already has somewhere to go */
+    if(!st.file[0]) return;
+    if(list_check(&st)) return;                   /* a list is playing: its rules, not the folders' */
+    if(!playthrough_enabled()) return;
+    if(st.nextsong >= 0) return;                  /* MPD already has somewhere to go */
     if(st.repeat || st.single) return;            /* repeat / repeat-one: HiBy disables it too */
     if(strcmp(st.file, last_file) == 0 && st.playlistlength == last_len) return;
 

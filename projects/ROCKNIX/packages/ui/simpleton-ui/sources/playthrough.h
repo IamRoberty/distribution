@@ -36,6 +36,12 @@
  *   /storage/.config/simpleton/play_through   "1" / "0" */
 bool playthrough_enabled(void);
 
+/* List mode (0.19): play `uris[start]` and the rest of the list after it,
+ * in order, regardless of the folder setting; MPD gets the list in
+ * slices. The list is copied. False when MPD refused the first slice. */
+bool playthrough_play_list(const char ** uris, int n, int start);
+bool playthrough_list_active(void);
+
 /* Hand over MPD's change bits (MPD_CHANGED_*). Cheap for bits it ignores. */
 void playthrough_mpd_changed(unsigned what);
 

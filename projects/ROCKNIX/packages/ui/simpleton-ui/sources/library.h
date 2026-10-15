@@ -47,6 +47,7 @@ typedef struct {
     long     mtime, added;     /* epoch seconds                               */
     int      album;            /* index into library_t.albums                 */
     char *   format;           /* MPD's audio format "44100:16:2" / "dsd64:2", "" unknown (0.17g) */
+    char *   genre;            /* the Genre tag(s), "" when untagged (0.19b; needs a cache run) */
 } lib_track_t;
 
 /* A rank for "the better copy" of a track from its format: DSD above PCM,
@@ -152,8 +153,15 @@ const lib_folder_t * library_folder(const library_t * lib, const char * uri);
 
 /* Case-insensitive, accent-insensitive-enough compare for sorting names:
  * Unicode-aware ordering arrives with the jump strip; this is byte order on
- * lower-cased ASCII, leading "The " ignored. */
+ * lower-cased ASCII of the name's sort key (below): names starting with a
+ * letter first, then those starting with a digit. */
 int library_name_cmp(const char * a, const char * b);
+
+/* The part of a name that sorts and gives its jump letter (0.19a): leading
+ * blanks, quotes and brackets dropped, a leading track number or year with
+ * its separator dropped ("01 - Song" -> "Song"; "1979" stays), a leading
+ * "The " dropped. A pointer into `name`; `name` itself when nothing is left. */
+const char * library_sort_key(const char * name);
 
 const char * library_sort_name(lib_sort_t s);     /* "title" ... for files and logs */
 const char * library_folder_type_name(folder_type_t t);

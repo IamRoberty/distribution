@@ -45,6 +45,36 @@
 #include "tilestyle.h"
 #include <stdbool.h>
 
+/* What the grid shows (0.19): every album (the Albums view), one folder's
+ * children (an artist or library folder: album covers, and a name or
+ * picture tile for a subfolder that isn't an album), or every track (the
+ * Tracks view's grid). Set before grid_show(); the view's settings are
+ * kept per scope kind (albums / folder / tracks) and per screen type. */
+typedef enum {
+    GRID_SCOPE_ALBUMS,
+    GRID_SCOPE_FOLDER,
+    GRID_SCOPE_TRACKS,
+    GRID_SCOPE_ARTISTS,        /* 0.20: every artist (artists.h) - a picture or a name tile each */
+    GRID_SCOPE_ARTIST          /* 0.20: one artist's albums, `folder` = the artist's name       */
+} grid_scope_t;
+void         grid_set_scope(grid_scope_t scope, const char * folder);
+grid_scope_t grid_scope(void);
+const char * grid_scope_folder(void);          /* NULL unless GRID_SCOPE_FOLDER */
+const char * grid_scope_artist(void);          /* NULL unless GRID_SCOPE_ARTIST: the artist's name */
+
+/* `open_folder`: Select on a folder tile (main.c opens that folder's own
+ * view); `on_play`: a track was started from the Tracks grid (main.c shows
+ * now-playing on the handheld). */
+void grid_set_callbacks(void (*open_folder)(const char * uri), void (*on_play)(void), void (*on_style)(const char * style));
+/* `open_artist`: Select on an artist tile (GRID_SCOPE_ARTISTS), the
+ * artists.h index; main.c opens what the "Opens as" row says (0.20). */
+void grid_set_artist_callback(void (*open_artist)(int artist));
+
+/* Put the cursor on the tile whose key this is (an album's folder, a
+ * folder's URI, a track's URI, an artist's name); false when it isn't in
+ * the grid. */
+bool grid_focus_key(const char * key);
+
 /* `on_open` gets the album's library, its index in it, the card's cache
  * name, and the style its no-art tile was dealt (NULL for an album with
  * art) - the album page copies what it needs; the library may be reloaded
@@ -70,6 +100,7 @@ void grid_hide(void);
 void grid_handle_action(ui_action_t a);
 bool grid_overlay_active(void);        /* the picker panel or the pill is up */
 void grid_toggle_picker(void);         /* the Settings button on the view   */
+void grid_show_picker_style(void);     /* the panel, on its View row (a handover from the list page's panel, 0.19a) */
 
 /* The view's settings files changed (Settings page). */
 void grid_reload_options(void);

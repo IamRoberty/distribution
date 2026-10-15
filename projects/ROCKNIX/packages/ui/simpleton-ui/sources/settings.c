@@ -194,6 +194,25 @@ static void view_key(const char * what, const char * view, char * out, size_t le
 /* The sorts and styles of the view whose page is on screen (`page`). */
 static void sort_choices(void)
 {
+    if(strcmp(page, "tracks") == 0 || strcmp(page, "mixtape") == 0 || strcmp(page, "recent") == 0) {
+        /* the list page's sorts (0.19) */
+        static const int ids[] = { S_SORT_TITLE, S_SORT_ARTIST_TITLE, S_SORT_ARTIST_ALBUM, S_SORT_YEAR, S_SORT_NEWEST };
+        static const char * const codes[] = { "title", "artist-title", "artist-year", "year", "newest" };
+        choice_count = strcmp(page, "recent") == 0 ? 1 : 5;
+        for(int i = 0; i < choice_count; i++) {
+            snprintf(choices[i].code, sizeof(choices[i].code), "%s", strcmp(page, "recent") == 0 ? "newest" : codes[i]);
+            snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(strcmp(page, "recent") == 0 ? S_SORT_NEWEST : ids[i]));
+        }
+        return;
+    }
+    if(strcmp(page, "artists") == 0) {
+        /* the Artists views' "Opens as" (0.20) sits in the sort row's place */
+        static const int ids[] = { S_OPENS_ALBUMS, S_OPENS_TRACKS, S_OPENS_TRACKS_ALBUM };
+        static const char * const codes[] = { "albums", "tracks", "tracks-album" };
+        choice_count = 3;
+        for(int i = 0; i < 3; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", codes[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(ids[i])); }
+        return;
+    }
     if(strcmp(page, "albums") == 0) {
         static const int ids[LIB_SORT_COUNT] = { S_SORT_TITLE, S_SORT_ARTIST_TITLE, S_SORT_ARTIST_YEAR, S_SORT_YEAR, S_SORT_NEWEST };
         choice_count = LIB_SORT_COUNT;
@@ -213,6 +232,22 @@ static void sort_choices(void)
 static void style_choices(void)
 {
     bool grid = strcmp(page, "albums") == 0;
+    if(strcmp(page, "artists") == 0) {
+        /* rows, the grid, and the list page's faces (0.20) */
+        choice_count = 0;
+        snprintf(choices[choice_count].code, sizeof(choices[0].code), "rows"); snprintf(choices[choice_count].name, sizeof(choices[0].name), "%s", T(S_STYLE_ROWS)); choice_count++;
+        snprintf(choices[choice_count].code, sizeof(choices[0].code), "grid"); snprintf(choices[choice_count].name, sizeof(choices[0].name), "%s", T(S_STYLE_GRID)); choice_count++;
+        if(ui_screen.kind != UI_SCREEN_TV) { snprintf(choices[choice_count].code, sizeof(choices[0].code), "tiles"); snprintf(choices[choice_count].name, sizeof(choices[0].name), "%s", T(S_STYLE_TILES)); choice_count++; }
+        snprintf(choices[choice_count].code, sizeof(choices[0].code), "list"); snprintf(choices[choice_count].name, sizeof(choices[0].name), "%s", T(S_STYLE_LIST)); choice_count++;
+        return;
+    }
+    if(strcmp(page, "tracks") == 0 || strcmp(page, "mixtape") == 0 || strcmp(page, "recent") == 0) {
+        choice_count = 0;
+        if(ui_screen.kind != UI_SCREEN_TV) { snprintf(choices[choice_count].code, sizeof(choices[0].code), "tiles"); snprintf(choices[choice_count].name, sizeof(choices[0].name), "%s", T(S_STYLE_TILES)); choice_count++; }
+        snprintf(choices[choice_count].code, sizeof(choices[0].code), "list"); snprintf(choices[choice_count].name, sizeof(choices[0].name), "%s", T(S_STYLE_LIST)); choice_count++;
+        if(strcmp(page, "tracks") == 0) { snprintf(choices[choice_count].code, sizeof(choices[0].code), "grid"); snprintf(choices[choice_count].name, sizeof(choices[0].name), "%s", T(S_STYLE_GRID)); choice_count++; }
+        return;
+    }
     choice_count = 1;
     snprintf(choices[0].code, sizeof(choices[0].code), "%s", grid ? "grid" : "list");
     snprintf(choices[0].name, sizeof(choices[0].name), "%s", T(grid ? S_STYLE_GRID : S_STYLE_LIST));
@@ -329,21 +364,39 @@ static void build_rows(void)
     else {
         /* a view's page: the picker's rows, remembered for this screen type */
         home_view_t v = home_view_from_id(page);
-        if(v == HOME_FOLDERS || v == HOME_ALBUMS) {
+        if(v == HOME_FOLDERS || v == HOME_ALBUMS || v == HOME_TRACKS || v == HOME_RECENT || v == HOME_ARTISTS) {
+            /* Tracks and Recent (0.19): the list page's rows; Artists (0.20): "Opens as" for the sort */
             char key[64], cur[32];
+            bool list = v == HOME_TRACKS || v == HOME_RECENT;
             view_key("style", page, key, sizeof(key));
             style_choices();
-            add_choice(T(S_PICKER_STYLE), key, CH_STYLE, v == HOME_ALBUMS ? "grid" : "list");
+            add_choice(T(S_PICKER_STYLE), key, CH_STYLE, v == HOME_ALBUMS ? "grid" : v == HOME_ARTISTS ? "rows" : (list && ui_screen.kind != UI_SCREEN_TV) ? "tiles" : "list");
             view_key("size", page, key, sizeof(key));
             size_choices();
             config_read(key, cur, sizeof(cur), ui_size_name(UI_SIZE_DEFAULT));
             add_choice(T(S_PICKER_SIZE), key, CH_SIZE, cur);
-            view_key("sort", page, key, sizeof(key));
-            sort_choices();
-            config_read(key, cur, sizeof(cur), v == HOME_ALBUMS ? library_sort_name(LIB_SORT_TITLE) : "name");
-            add_choice(T(S_PICKER_SORT), key, CH_SORT, cur);
-            view_key("jump", page, key, sizeof(key));
-            add_toggle(T(S_SET_JUMP_STRIP), key, true);
+            if(v == HOME_ARTISTS) {
+                view_key("opens", page, key, sizeof(key));
+                sort_choices();
+                config_read(key, cur, sizeof(cur), "albums");
+                add_choice(T(S_SET_OPENS), key, CH_SORT, cur);
+                view_key("names", page, key, sizeof(key));
+                add_toggle(T(S_SET_NAMES), key, true);
+                view_key("jump", page, key, sizeof(key));
+                add_toggle(T(S_SET_JUMP_STRIP), key, true);
+            }
+            else if(v != HOME_RECENT) {
+                view_key("sort", page, key, sizeof(key));
+                sort_choices();
+                config_read(key, cur, sizeof(cur), v == HOME_ALBUMS || v == HOME_TRACKS ? library_sort_name(LIB_SORT_TITLE) : "name");
+                add_choice(T(S_PICKER_SORT), key, CH_SORT, cur);
+                if(v == HOME_ALBUMS) {
+                    view_key("names", page, key, sizeof(key));
+                    add_toggle(T(S_SET_NAMES), key, true);          /* the name line over the covers (0.19a) */
+                }
+                view_key("jump", page, key, sizeof(key));
+                add_toggle(T(S_SET_JUMP_STRIP), key, true);
+            }
         }
         else add_row(ROW_TEXT, T(S_SET_EMPTY));
         add_row(ROW_HUB, T(S_SET_ALL));
@@ -449,7 +502,8 @@ static void refresh_value(row_t * r)
 static bool is_view_key(const char * key)
 {
     return strncmp(key, "size-", 5) == 0 || strncmp(key, "sort-", 5) == 0 ||
-           strncmp(key, "jump-", 5) == 0 || strncmp(key, "style-", 6) == 0;
+           strncmp(key, "jump-", 5) == 0 || strncmp(key, "style-", 6) == 0 ||
+           strncmp(key, "names-", 6) == 0 || strncmp(key, "opens-", 6) == 0;
 }
 
 static void flip_toggle(row_t * r)

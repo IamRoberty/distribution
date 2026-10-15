@@ -81,11 +81,48 @@ static int year_of(const char * original, const char * date)
     return (y >= 1000 && y <= 9999) ? y : 0;
 }
 
+/* The part of a name that sorts (0.19a, Ian 13 Oct: "the sorting system is
+ * kind of messy because of track titles that begin with numbers that aren't
+ * part of their actual title"): leading blanks, quotes and brackets go, a
+ * leading track number or year with its separator goes ("01 - Song",
+ * "1999. Song", "03_Song" - but not "2 Become 1" or "1979", which have no
+ * separator), then a leading "The ". A name that is nothing but those keeps
+ * itself. */
+static bool key_sep(char c) { return c == '.' || c == '-' || c == '_' || c == ')' || c == ']' || c == ':'; }
+static bool key_punct(unsigned char c) { return c < 0x80 && !isalnum(c); }
+
+const char * library_sort_key(const char * name)
+{
+    if(!name) return "";
+    const char * s = name;
+    while(*s && key_punct((unsigned char)*s)) s++;
+    if(isdigit((unsigned char)*s)) {
+        const char * p = s;
+        int n = 0;
+        while(isdigit((unsigned char)*p) && n < 4) { p++; n++; }
+        if(!isdigit((unsigned char)*p)) {
+            const char * q = p;
+            while(*q == ' ') q++;
+            if(key_sep(*q)) {
+                q++;
+                while(*q && key_punct((unsigned char)*q)) q++;
+                if(*q) s = q;
+            }
+        }
+    }
+    if(strncasecmp(s, "the ", 4) == 0) { s += 4; while(*s == ' ') s++; }
+    return *s ? s : name;
+}
+
 int library_name_cmp(const char * a, const char * b)
 {
-    if(strncasecmp(a, "the ", 4) == 0) a += 4;
-    if(strncasecmp(b, "the ", 4) == 0) b += 4;
-    return strcasecmp(a, b);
+    const char * ka = library_sort_key(a), * kb = library_sort_key(b);
+    /* letters first, then names that start with a digit (the "#" stop), as
+     * the picker orders its labels */
+    int ca = isdigit((unsigned char)ka[0]) ? 1 : 0, cb = isdigit((unsigned char)kb[0]) ? 1 : 0;
+    if(ca != cb) return ca - cb;
+    int c = strcasecmp(ka, kb);
+    return c ? c : strcasecmp(a, b);
 }
 
 long library_format_rank(const char * format)
@@ -153,6 +190,7 @@ static bool take_song(const mpd_song_info_t * s, void * ctx)
     t->added = s->added;
     t->album = -1;
     t->format = xstrdup(s->format);
+    t->genre = xstrdup(s->genre);
 
     char f[1024];
     folder_of(s->uri, f, sizeof(f));
@@ -672,7 +710,7 @@ bool library_build(library_t * lib, const char * root)
 
 void library_free(library_t * lib)
 {
-    for(int i = 0; i < lib->ntracks; i++) { free(lib->tracks[i].uri); free(lib->tracks[i].title); free(lib->tracks[i].artist); free(lib->tracks[i].format); }
+    for(int i = 0; i < lib->ntracks; i++) { free(lib->tracks[i].uri); free(lib->tracks[i].title); free(lib->tracks[i].artist); free(lib->tracks[i].format); free(lib->tracks[i].genre); }
     for(int i = 0; i < lib->nalbums; i++) { free(lib->albums[i].title); free(lib->albums[i].artist); free(lib->albums[i].folder); free(lib->albums[i].first_uri); free(lib->albums[i].release); }
     for(int i = 0; i < lib->nartists; i++) free(lib->artists[i].name);
     for(int i = 0; i < lib->nfolders; i++) free(lib->folders[i].uri);
@@ -782,6 +820,8 @@ bool library_save(const library_t * lib, const char * path)
         put_field(f, t->uri); put_field(f, t->title); put_field(f, t->artist);
         fprintf(f, "%d\t%d\t%.3f\t%ld\t%ld\t%d\t", t->track, t->disc, (double)t->duration, t->mtime, t->added, t->album);
         for(const char * c = t->format ? t->format : ""; *c; c++) fputc((*c == '\t' || *c == '\n' || *c == '\r') ? ' ' : *c, f);
+        fputc('\t', f);
+        for(const char * c = t->genre ? t->genre : ""; *c; c++) fputc((*c == '\t' || *c == '\n' || *c == '\r') ? ' ' : *c, f);   /* 0.19b */
         fputc('\n', f);
     }
     fprintf(f, "artists\t%d\n", lib->nartists);
@@ -857,6 +897,7 @@ bool library_load(library_t * lib, const char * path)
             t->uri = xstrdup(fl[1]); t->title = xstrdup(fl[2]); t->artist = xstrdup(fl[3]);
             t->track = atoi(fl[4]); t->disc = atoi(fl[5]); t->duration = (float)atof(fl[6]); t->mtime = atol(fl[7]); t->added = atol(fl[8]); t->album = atoi(fl[9]);
             t->format = xstrdup(n >= 11 ? fl[10] : "");            /* 0.17g; an older line has none */
+            t->genre = xstrdup(n >= 12 ? fl[11] : "");             /* 0.19b; an older line has none */
             if(t->album < 0 || t->album >= na) t->album = -1;
             lib->ntracks = it;
         }

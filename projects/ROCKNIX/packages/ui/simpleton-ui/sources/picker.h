@@ -40,7 +40,7 @@
 #include <stdbool.h>
 
 #define PICKER_MAX_CHOICES 6
-#define PICKER_MAX_LABELS  96
+#define PICKER_MAX_LABELS  512
 #define PICKER_LABEL_LEN   8          /* one UTF-8 letter, or "#" / "?" */
 
 typedef struct {
@@ -49,7 +49,11 @@ typedef struct {
     ui_size_t    size;
     int          sort, sort_count;
     const char * sorts[PICKER_MAX_CHOICES];
+    const char * sort_name;                       /* 0.20: another name for the Sort row ("Opens as" on Artists), NULL = "Sort" */
     bool         strip;                           /* the alphabet picker (pill) is on for this view */
+    bool         jump_row;                        /* 0.19: the panel opens on a "Jump to < A >" row (track lists) */
+    bool         names_row;                       /* 0.19a: a "Names: on / off" row (the grid's name line over the tiles) */
+    bool         names;
     int          jump;                            /* index into labels, -1 = none */
     int          label_count;
     char         labels[PICKER_MAX_LABELS][PICKER_LABEL_LEN];
@@ -81,6 +85,11 @@ const picker_opts_t * picker_opts(void);        /* the values while open */
 /* The Settings button on a browse view: panel up -> close it; pill up ->
  * the panel. (With nothing up the caller opens the panel itself.) */
 void picker_toggle_panel(void);
+
+/* Put the panel's focus on its View row (0.19a): a view handed over to
+ * another page from the panel's View row reopens the panel there, so the
+ * row can be stepped on without the panel going away (Ian, 13 Oct). */
+void picker_focus_style(void);
 
 /* Every action while open. */
 void picker_handle_action(ui_action_t a);

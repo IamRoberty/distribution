@@ -125,6 +125,13 @@ bool                tilestyle_font_fits(int i, int letters, uint32_t bg, uint32_
  * letter count (may be NULL). Same seed, same inputs -> same result. */
 void tilestyle_deal(unsigned seed, int n, int cols, const bool * noart, const int * letters, tile_style_t * out);
 
+/* Colourways for a long list's sections (0.19): dealt like the tiles, one
+ * column, at the theme's `listcontrast` floor (default tilecontrast + 1:
+ * a whole list of text needs more than a tile). Fonts are dealt too but
+ * lists ignore them. */
+void   tilestyle_deal_list(unsigned seed, int n, tile_style_t * out);
+double tilestyle_list_contrast(void);
+
 /* WCAG contrast ratio of two RRGGBB colours (1..21). */
 double tilestyle_contrast(uint32_t a, uint32_t b);
 /* "Redmean" distance of two colours, 0..~765; under 70 they read as one. */

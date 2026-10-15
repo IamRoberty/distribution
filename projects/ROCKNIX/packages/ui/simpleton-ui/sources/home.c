@@ -57,6 +57,7 @@ static int sel;
 static bool playing;              /* something is playing or paused */
 static bool active;
 static void (*open_cb)(home_view_t);
+static void (*menu_cb)(home_view_t);
 
 /* ------------------------------------------------------------ names */
 
@@ -247,6 +248,8 @@ static void refresh_playing(void)
     }
 }
 
+void home_set_menu_callback(void (*on_menu)(home_view_t)) { menu_cb = on_menu; }
+
 void home_create(void (*on_open)(home_view_t))
 {
     open_cb = on_open;
@@ -308,6 +311,7 @@ void home_handle_action(ui_action_t a)
     if(shelf) {
         if(shelf_handle_action(shelf, a)) { sel = shelf_selected(shelf); return; }
         if(a == ACT_SELECT && open_cb) open_cb(entries[sel].view);
+        if(a == ACT_MENU) { if(menu_cb) menu_cb(entries[sel].view); else if(open_cb) open_cb(entries[sel].view); }
         return;
     }
     switch(a) {
@@ -325,6 +329,9 @@ void home_handle_action(ui_action_t a)
         }
         case ACT_SELECT:
             if(open_cb) open_cb(entries[sel].view);
+            break;
+        case ACT_MENU:
+            if(menu_cb) menu_cb(entries[sel].view); else if(open_cb) open_cb(entries[sel].view);
             break;
         default:
             break;

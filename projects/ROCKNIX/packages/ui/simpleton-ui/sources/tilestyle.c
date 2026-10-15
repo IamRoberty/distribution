@@ -36,6 +36,7 @@ static tile_font_t fonts[FONT_MAX];
 static int      nfonts;
 static int      total_share;
 static double   min_contrast;          /* tilecontrast: how readable an ink must be */
+static double   list_contrast;         /* listcontrast (0.19): the floor for a whole list of text, a tick above the tiles' */
 static uint32_t cream;                 /* tilecream: the shared cream ink, 0 = none  */
 static bool     has_cream;
 static int      w_pal, w_cream, w_dark; /* tileinks: how often each kind of ink is drawn */
@@ -255,6 +256,7 @@ void tilestyle_load(const char * theme_path)
     accent = 0;
     battery = battery_default;
     min_contrast = CONTRAST_DEFAULT;
+    list_contrast = 0;
     has_cream = false;
     w_pal = 100; w_cream = 0; w_dark = 0;
     text_min = TEXT_MIN_DEFAULT;
@@ -273,6 +275,10 @@ void tilestyle_load(const char * theme_path)
         else if(strncmp(line, "tilecontrast", 12) == 0) {
             double v = atof(line + 12);
             if(v >= 1.0 && v <= 21.0) min_contrast = v;
+        }
+        else if(strncmp(line, "listcontrast", 12) == 0) {
+            double v = atof(line + 12);
+            if(v >= 1.0 && v <= 21.0) list_contrast = v;
         }
         else if(strncmp(line, "tiletextmin", 11) == 0) {
             double v = atof(line + 11);
@@ -364,6 +370,20 @@ void tilestyle_load(const char * theme_path)
 }
 
 double   tilestyle_min_contrast(void) { return min_contrast; }
+double   tilestyle_list_contrast(void) { return list_contrast > 0 ? list_contrast : min_contrast + 1.0; }
+
+void tilestyle_deal_list(unsigned seed, int n, tile_style_t * out)
+{
+    if(n <= 0) return;
+    bool * noart = malloc((size_t)n * sizeof(bool));
+    if(!noart) return;
+    for(int i = 0; i < n; i++) noart[i] = true;
+    double keep = min_contrast;
+    min_contrast = tilestyle_list_contrast();      /* the pool and the inks are built per deal */
+    tilestyle_deal(seed, n, 1, noart, NULL, out);
+    min_contrast = keep;
+    free(noart);
+}
 uint32_t tilestyle_cream(void)        { return has_cream ? cream : 0; }
 uint32_t tilestyle_accent(void)       { return accent; }
 const battery_style_t * tilestyle_battery(void) { return &battery; }
