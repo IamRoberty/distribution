@@ -250,6 +250,29 @@ static void refresh_playing(void)
 
 void home_set_menu_callback(void (*on_menu)(home_view_t)) { menu_cb = on_menu; }
 
+/* The theme's shelf and the Mixtapes tape's text rule, for the Mixtapes
+ * view's own shelf (0.21a). False when the theme has no shelf or no
+ * mixtapes tape. */
+int home_shelf_tapes(shelf_style_t * st, shelf_item_t * tapes, int max)
+{
+    if(!shelf) return 0;
+    if(!read_theme(st)) return 0;
+    int m = entry_of(HOME_PLAYLISTS);
+    if(m < 0) return 0;
+    const shelf_item_t * rule = &entries[m].item;
+    int n = 0;
+    for(int i = 0; i < count && n < max; i++) {
+        if(entries[i].view == HOME_NOW_PLAYING) continue;          /* the same tile as Mixtapes */
+        tapes[n] = entries[i].item;                                 /* its tile and its ink */
+        snprintf(tapes[n].font, sizeof(tapes[n].font), "%s", rule->font);   /* the marker's hand */
+        tapes[n].size_pt = rule->size_pt;
+        tapes[n].letter_case = SHELF_CASE_AS_IS;                    /* a mixtape's name as its owner typed it */
+        tapes[n].align = SHELF_ALIGN_CENTRE;
+        n++;
+    }
+    return n;
+}
+
 void home_create(void (*on_open)(home_view_t))
 {
     open_cb = on_open;

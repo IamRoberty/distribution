@@ -21,6 +21,7 @@
 #include "cache.h"
 #include "config.h"
 #include "libs.h"
+#include "objmenu.h"
 #include "picker.h"
 #include "power.h"
 #include "strings.h"
@@ -1118,6 +1119,19 @@ void rows_handle_action(ui_action_t a)
                 rowobj_t * ro = rowobj_of(sel_row);
                 if(al && album_cb) album_cb(&libs_get(artist_of(sel_row)->albums[k].src)->lib, artist_of(sel_row)->albums[k].album, card_of(sel_row, k),
                                             (!al->has_art && ro && k + 1 < ro->nstyles) ? &ro->styles[k + 1] : NULL);
+            }
+            break;
+        case ACT_MENU:
+            if(sel_k >= 0 && album_of(sel_row, sel_k)) {
+                /* the object menu on an album tile (0.21) */
+                const lib_album_t * al = album_of(sel_row, sel_k);
+                const library_t * lib = &libs_get(artist_of(sel_row)->albums[sel_k].src)->lib;
+                int album = artist_of(sel_row)->albums[sel_k].album;
+                const char ** uris = calloc((size_t)al->track_count + 1, sizeof(char *));
+                int n = 0;
+                for(int t = al->first_track; uris && t < lib->ntracks && n < al->track_count; t++) if(lib->tracks[t].album == album) uris[n++] = lib->tracks[t].uri;
+                objmenu_open_album(al->folder, al->title, al->various ? T(S_VARIOUS_ARTISTS) : al->artist, uris, n, 0, -1);
+                free(uris);
             }
             break;
         case ACT_BACK:

@@ -11,8 +11,9 @@
  * dead: in Fixed-volume mode the UI shows an overlay instead of doing nothing.
  *
  * Known quirk, handled here: BTN_MODE (the F button) is emitted by two
- * drivers (adc-keys and the joypad's sw11). We don't open adc-keys and don't
- * map BTN_MODE at all yet, so it can't double-fire.
+ * drivers (adc-keys and the joypad's sw11). We don't open adc-keys, so the
+ * press reaches us once; since 0.21a it is the Home button (Ian, 15 Oct:
+ * a favourite button isn't needed, holding A on a track does that).
  *
  * Auto-repeat (1 Oct 2026): one repeater for every producer. A held D-pad
  * direction repeats after REPEAT_DELAY_MS, every REPEAT_RATE_MS, and after
@@ -38,6 +39,9 @@
 
 /* Timing, ms */
 #define HOLD_MS          450   /* press longer than this = "hold"           */
+#ifndef BTN_MODE
+#define BTN_MODE         0x13c
+#endif
 #define REPEAT_DELAY_MS  400   /* D-pad: first repeat after this            */
 #define REPEAT_RATE_MS   100   /* D-pad: then every this...                 */
 #define REPEAT_ACCEL_MS  1200  /* ...until held this long, then             */
@@ -175,8 +179,9 @@ static void handle_key(uint16_t code, int32_t value, uint32_t t)
         case BTN_SELECT:                        /* 314: settings (0.13) */
             if(pressed) push(ACT_SETTINGS);
             break;
-        /* 316 BTN_MODE is reserved for favorites; it falls through to the
-         * log below until then. */
+        case BTN_MODE:                          /* 316, the F button: Home (0.21a) */
+            if(pressed) push(ACT_HOMEPAGE);
+            break;
         default:
             /* shoulders, select, F: unmapped. Logged once per press so a
              * button that turns out to use a different code is easy to spot. */

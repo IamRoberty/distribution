@@ -36,6 +36,7 @@ typedef enum {
     ACT_PLAY,        /* explicit play (remote keys; no joypad button) */
     ACT_PAUSE,       /* explicit pause (remote Pause / Stop)          */
     ACT_SETTINGS,    /* Select (314): this view's settings page (0.13) */
+    ACT_HOMEPAGE,    /* F (316, BTN_MODE): the Home page (0.21a, Ian: the favourite button isn't needed, hold A does it) */
 } ui_action_t;
 
 /* Open the joypad by its stable by-path name (never by eventN, which moves

@@ -23,6 +23,8 @@
 #include "power.h"
 #include "art.h"
 #include "artists.h"
+#include "curation.h"
+#include "objmenu.h"
 #include "cache.h"
 #include "config.h"
 #include "library.h"
@@ -81,6 +83,8 @@ typedef struct {
 static entry_t * entries;
 static int       nentries;
 static unsigned  lib_gen;          /* libs_generation() the entries were built from */
+static unsigned  cur_gen;          /* curation_generation() a collection's entries were built from (0.21) */
+#define SORT_AS_ADDED LIB_SORT_COUNT   /* a collection in its own order (0.21) */
 
 /* The scope (0.19): every album, one folder's children, or every track. */
 static grid_scope_t scope = GRID_SCOPE_ALBUMS;
@@ -230,6 +234,7 @@ static const char * view_id(void)
         case GRID_SCOPE_FOLDER:  return "folder";
         case GRID_SCOPE_ARTISTS: return "artists";    /* shared with rows.c and the list page: one style key */
         case GRID_SCOPE_ARTIST:  return "artist";
+        case GRID_SCOPE_COLLECTION: return "collection";
         default:                 return "albums";
     }
 }
@@ -253,7 +258,8 @@ static lib_sort_t read_sort(lib_sort_t dflt)
 {
     char key[64], v[24];
     view_key("sort", key, sizeof(key));
-    config_read(key, v, sizeof(v), library_sort_name(dflt));
+    config_read(key, v, sizeof(v), dflt == SORT_AS_ADDED ? "added" : library_sort_name(dflt));
+    if(strcmp(v, "added") == 0) return SORT_AS_ADDED;
     for(int i = 0; i < LIB_SORT_COUNT; i++)
         if(strcmp(library_sort_name((lib_sort_t)i), v) == 0) return (lib_sort_t)i;
     return dflt;
@@ -313,6 +319,13 @@ static void read_options(void)
             /* artists are by name; the row says what an artist opens as */
             sort_map[sort_rows++] = LIB_SORT_TITLE;
             break;
+        case GRID_SCOPE_COLLECTION:
+            /* a collection's albums as they were added, or by title, artist, year */
+            sort_map[sort_rows] = SORT_AS_ADDED;         view_opts.sorts[sort_rows++] = T(S_SORT_ADDED);
+            sort_map[sort_rows] = LIB_SORT_TITLE;        view_opts.sorts[sort_rows++] = T(S_SORT_TITLE);
+            sort_map[sort_rows] = LIB_SORT_ARTIST_TITLE; view_opts.sorts[sort_rows++] = T(S_SORT_ARTIST_TITLE);
+            sort_map[sort_rows] = LIB_SORT_YEAR;         view_opts.sorts[sort_rows++] = T(S_SORT_YEAR);
+            break;
         default:
             sort_map[sort_rows] = LIB_SORT_TITLE;        view_opts.sorts[sort_rows++] = T(S_SORT_TITLE);
             sort_map[sort_rows] = LIB_SORT_ARTIST_TITLE; view_opts.sorts[sort_rows++] = T(S_SORT_ARTIST_TITLE);
@@ -348,7 +361,7 @@ static void write_options(void)
     view_key("size", key, sizeof(key));
     config_write(key, ui_size_name(view_opts.size));
     view_key("sort", key, sizeof(key));
-    config_write(key, library_sort_name(sort_kind));
+    config_write(key, sort_kind == SORT_AS_ADDED ? "added" : library_sort_name(sort_kind));
     view_key("jump", key, sizeof(key));
     config_write(key, view_opts.strip ? "1" : "0");
     view_key("names", key, sizeof(key));
@@ -664,7 +677,7 @@ static void fillers_drop(void)
 static void fillers_make(void)
 {
     fillers_drop();
-    if((scope != GRID_SCOPE_FOLDER && scope != GRID_SCOPE_ARTIST) || nentries == 0 || rows_total > rows_on_screen()) return;
+    if((scope != GRID_SCOPE_FOLDER && scope != GRID_SCOPE_ARTIST && scope != GRID_SCOPE_COLLECTION) || nentries == 0 || rows_total > rows_on_screen()) return;
     int cells = rows_on_screen() * cols();
     if(cells <= nentries || cells > MAX_FILLERS) return;
     tile_style_t * st = calloc((size_t)cells, sizeof(*st));
@@ -1095,7 +1108,7 @@ static void build_labels(void)
     if(nentries == 0) return;
     bool by_year = sort_kind == LIB_SORT_YEAR || sort_kind == LIB_SORT_ARTIST_YEAR;
     bool by_artist = sort_kind == LIB_SORT_ARTIST_TITLE || sort_kind == LIB_SORT_ARTIST_YEAR;
-    if(sort_kind == LIB_SORT_NEWEST) { for(int e = 0; e < nentries; e++) entries[e].label = -1; return; }
+    if(sort_kind == LIB_SORT_NEWEST || sort_kind == SORT_AS_ADDED) { for(int e = 0; e < nentries; e++) entries[e].label = -1; return; }
 
     bool end_section = false;
     for(int e = 0; e < nentries; e++) if(entry_lacks(e, sort_kind)) { end_section = true; break; }
@@ -1151,7 +1164,7 @@ static void build_labels(void)
 
 static void sort_entries(void)
 {
-    if(nentries > 1 && scope != GRID_SCOPE_FOLDER && scope != GRID_SCOPE_ARTISTS) qsort(entries, (size_t)nentries, sizeof(entry_t), entry_cmp);
+    if(nentries > 1 && scope != GRID_SCOPE_FOLDER && scope != GRID_SCOPE_ARTISTS && sort_kind != SORT_AS_ADDED) qsort(entries, (size_t)nentries, sizeof(entry_t), entry_cmp);
     else if(nentries > 1 && sort_kind == LIB_SORT_NEWEST) {
         /* a folder's children newest first (0.19a); the index numbers keep the
          * folder's own order for ties, so sort a copy of the order */
@@ -1236,8 +1249,28 @@ static void load_library(const char * keep)
         int one = scope == GRID_SCOPE_ARTIST ? artists_find(scope_folder) : -1;
         total = scope == GRID_SCOPE_ARTISTS ? artists_count() : one >= 0 ? artists_get(one)->nalbums : 0;
     }
+    cur_gen = curation_generation();
+    const cur_list_t * coll = scope == GRID_SCOPE_COLLECTION ? curation_by_uid(curation_find_key(scope_folder)) : NULL;
+    if(scope == GRID_SCOPE_COLLECTION) total = coll ? coll->n : 0;
     entries = total ? calloc((size_t)total, sizeof(entry_t)) : NULL;
-    if(by_artist) {
+    if(coll && entries) {
+        /* the albums the collection names that are on a card: the folder,
+         * and the title where two releases share it (0.21) */
+        for(int k = 0; k < coll->n; k++) {
+            int bs = -1, ba = -1;
+            for(int s = 0; s < libs_count() && ba < 0; s++) {
+                const library_t * lib = &libs_get(s)->lib;
+                if(strncmp(coll->uris[k], libs_get(s)->card, strlen(libs_get(s)->card)) != 0) continue;
+                for(int a = 0; a < lib->nalbums; a++) {
+                    if(strcmp(lib->albums[a].folder, coll->uris[k]) != 0) continue;
+                    if(bs < 0) { bs = s; ba = a; }
+                    if(coll->titles[k][0] && strcmp(lib->albums[a].title, coll->titles[k]) == 0) { bs = s; ba = a; break; }
+                }
+            }
+            if(ba >= 0) entries_add(bs, ENTRY_ALBUM, ba, -1, NULL, NULL, NULL);
+        }
+    }
+    else if(by_artist) {
         int one = scope == GRID_SCOPE_ARTIST ? artists_find(scope_folder) : -1;
         for(int i = 0; i < artists_count() && entries; i++) {
             const artist_t * a = artists_get(i);
@@ -1249,7 +1282,7 @@ static void load_library(const char * keep)
             else if(i == one) for(int k = 0; k < a->nalbums; k++) entries_add(a->albums[k].src, ENTRY_ALBUM, a->albums[k].album, -1, NULL, NULL, NULL);
         }
     }
-    for(int s = 0; s < libs_count() && entries && !by_artist; s++) {
+    for(int s = 0; s < libs_count() && entries && !by_artist && scope != GRID_SCOPE_COLLECTION; s++) {
         const library_t * lib = &libs_get(s)->lib;
         if(scope == GRID_SCOPE_ALBUMS) {
             for(int a = 0; a < lib->nalbums; a++) {
@@ -1274,7 +1307,7 @@ static void load_library(const char * keep)
     if(keep) { int e = find_key(keep); if(e >= 0) sel = e; }
     fprintf(stderr, "simpleton-ui: grid: %s%s%s: %d tiles from %d card%s, %s, %d labels\n",
             view_id(), scope == GRID_SCOPE_FOLDER || scope == GRID_SCOPE_ARTIST ? " " : "", scope == GRID_SCOPE_FOLDER || scope == GRID_SCOPE_ARTIST ? scope_folder : "",
-            nentries, libs_count(), libs_count() == 1 ? "" : "s", library_sort_name(sort_kind), view_opts.label_count);
+            nentries, libs_count(), libs_count() == 1 ? "" : "s", sort_kind == SORT_AS_ADDED ? "as added" : library_sort_name(sort_kind), view_opts.label_count);
 }
 
 static const char * entry_key(int e)
@@ -1304,7 +1337,7 @@ static char * keep_key(void)
  * scope, follows the picker's size. */
 static ui_size_t fit_size(void)
 {
-    if((scope != GRID_SCOPE_FOLDER && scope != GRID_SCOPE_ARTIST) || nentries == 0) return view_opts.size;
+    if((scope != GRID_SCOPE_FOLDER && scope != GRID_SCOPE_ARTIST && scope != GRID_SCOPE_COLLECTION) || nentries == 0) return view_opts.size;
     for(ui_size_t s = UI_SIZE_XXL; s <= UI_SIZE_L; s++) {
         ui_grid_t t;
         ui_grid_metrics(s, &t);
@@ -1364,7 +1397,7 @@ static void rebuild(void)
     if(first_row < 0) first_row = 0;
     lv_obj_scroll_to_y(field, first_row * g.cell, LV_ANIM_OFF);
     if(nentries == 0) {
-        lv_label_set_text(msg, T(libs_loaded() ? (scope == GRID_SCOPE_TRACKS ? S_LIST_EMPTY : scope == GRID_SCOPE_ARTISTS ? S_ARTISTS_EMPTY : S_GRID_EMPTY) : S_BROWSER_STARTING));
+        lv_label_set_text(msg, T(libs_loaded() ? (scope == GRID_SCOPE_TRACKS ? S_LIST_EMPTY : scope == GRID_SCOPE_ARTISTS ? S_ARTISTS_EMPTY : scope == GRID_SCOPE_COLLECTION ? S_LIST_COLLECTION_EMPTY : S_GRID_EMPTY) : S_BROWSER_STARTING));
         lv_obj_remove_flag(msg, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(namebar, LV_OBJ_FLAG_HIDDEN);
         power_indicator_yield(false);
@@ -1460,7 +1493,7 @@ static void index_timer_cb(lv_timer_t * tm)
 {
     (void)tm;
     if(!shown) return;
-    if(libs_refresh() || lib_gen != libs_generation()) {
+    if(libs_refresh() || lib_gen != libs_generation() || (scope == GRID_SCOPE_COLLECTION && cur_gen != curation_generation())) {
         char * keep = keep_key();
         load_library(keep);
         free(keep);
@@ -1522,7 +1555,7 @@ void grid_create(void (*on_open)(const library_t *, int, const char *, const til
 
 void grid_show(bool fresh)
 {
-    static unsigned seeds[GRID_SCOPE_ARTIST + 1];     /* each scope's last deal: coming back from a deeper view wears the same colours (0.20) */
+    static unsigned seeds[GRID_SCOPE_COLLECTION + 1]; /* each scope's last deal: coming back from a deeper view wears the same colours (0.20) */
     shown = true;
     if(fresh) visit_seed = (unsigned)time(NULL) ^ (unsigned)lv_tick_get() ^ (unsigned)rand();
     else if(seeds[scope]) visit_seed = seeds[scope];
@@ -1533,7 +1566,7 @@ void grid_show(bool fresh)
     picker_attach(scr, &plm);
     lv_timer_resume(poll_timer);
     lv_timer_resume(index_timer);
-    if(libs_refresh() || lib_gen != libs_generation() || scope_changed) {
+    if(libs_refresh() || lib_gen != libs_generation() || scope_changed || (scope == GRID_SCOPE_COLLECTION && cur_gen != curation_generation())) {
         char * keep = scope_changed ? NULL : keep_key();
         load_library(keep);
         free(keep);
@@ -1624,6 +1657,30 @@ static void select_entry(int e)
     }
 }
 
+/* A held (0.21): the object menu for the tile under the cursor - a track,
+ * or an album (and its tracks). */
+static void menu_entry(int e)
+{
+    if(e < 0 || e >= nentries) return;
+    if(entries[e].kind == ENTRY_TRACK) { objmenu_open_track(track_of(e)->uri, entry_title(e), entry_artist(e), 0, -1); return; }
+    if(entries[e].kind != ENTRY_ALBUM) return;
+    const lib_album_t * a = album_of(e);
+    const library_t * lib = lib_of(e);
+    const char ** uris = calloc((size_t)a->track_count + 1, sizeof(char *));
+    int n = 0;
+    for(int k = a->first_track; uris && k < lib->ntracks && n < a->track_count; k++) if(lib->tracks[k].album == entries[e].album) uris[n++] = lib->tracks[k].uri;
+    const char * coll = scope == GRID_SCOPE_COLLECTION ? scope_folder : NULL;
+    int uid = coll ? curation_find_key(coll) : 0, pos = -1;
+    if(uid) { const cur_list_t * l = curation_by_uid(uid); for(int k = 0; l && k < l->n && pos < 0; k++) if(strcmp(l->uris[k], a->folder) == 0 && (!l->titles[k][0] || strcmp(l->titles[k], a->title) == 0)) pos = k; }
+    objmenu_open_album(a->folder, a->title, a->various ? T(S_VARIOUS_ARTISTS) : a->artist, uris, n, uid, pos);
+    free(uris);
+}
+
+void grid_curation_changed(void)
+{
+    if(shown && scope == GRID_SCOPE_COLLECTION && cur_gen != curation_generation()) lv_timer_ready(index_timer);
+}
+
 void grid_set_scope(grid_scope_t sc, const char * folder)
 {
     const char * f = folder ? folder : "";
@@ -1638,6 +1695,7 @@ void grid_set_scope(grid_scope_t sc, const char * folder)
 grid_scope_t grid_scope(void) { return scope; }
 const char * grid_scope_folder(void) { return scope == GRID_SCOPE_FOLDER ? scope_folder : NULL; }
 const char * grid_scope_artist(void) { return scope == GRID_SCOPE_ARTIST ? scope_folder : NULL; }
+const char * grid_scope_collection(void) { return scope == GRID_SCOPE_COLLECTION ? scope_folder : NULL; }
 
 void grid_set_artist_callback(void (*open_artist)(int artist)) { open_artist_cb = open_artist; }
 
@@ -1739,6 +1797,9 @@ void grid_handle_action(ui_action_t a)
             break;
         case ACT_SELECT:
             select_entry(sel);
+            break;
+        case ACT_MENU:
+            menu_entry(sel);
             break;
         case ACT_BACK:
             if(view_opts.strip && grid_is_long()) open_strip();

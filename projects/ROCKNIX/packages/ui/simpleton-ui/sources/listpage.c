@@ -19,10 +19,13 @@
 #include "artists.h"
 #include "cache.h"
 #include "config.h"
+#include "curation.h"
 #include "history.h"
+#include "home.h"
 #include "libs.h"
 #include "library.h"
 #include "mpdc.h"
+#include "objmenu.h"
 #include "picker.h"
 #include "placeholder.h"
 #include "playthrough.h"
@@ -59,13 +62,13 @@
 
 /* ---- the items ---- */
 
-typedef enum { ITEM_TRACK, ITEM_ALBUM, ITEM_FOLDER, ITEM_ARTIST, ITEM_HEADER } item_kind_t;   /* ITEM_HEADER (0.20a): an album's title over its tracks, not selectable */
+typedef enum { ITEM_TRACK, ITEM_ALBUM, ITEM_FOLDER, ITEM_ARTIST, ITEM_HEADER, ITEM_LIST } item_kind_t;   /* ITEM_HEADER (0.20a): an album's title over its tracks, not selectable; ITEM_LIST (0.21): a mixtape or collection row */
 
 typedef struct {
     int         src;
     item_kind_t kind;
     int         track, album, folder;   /* indexes into the source's arrays; -1 where not that */
-    int         artist;                 /* ITEM_ARTIST: the artists.h index; LIST_ARTIST_TRACKS: the track's album's place in the artist's list (0.20) */
+    int         artist;                 /* ITEM_ARTIST: the artists.h index; LIST_ARTIST_TRACKS: the track's album's place in the artist's list (0.20); ITEM_LIST: the uid (curation.h); LIST_MIXTAPE: the track's place on the tape (0.21) */
     int         section;
     char *      pic;                    /* ITEM_FOLDER / ITEM_ARTIST: an own picture, or NULL */
     int         count;                  /* ITEM_FOLDER / ITEM_ARTIST: albums under it */
@@ -80,7 +83,8 @@ static int         artist_idx = -1;     /* LIST_ARTIST_TRACKS: the artist (artis
 static int         sort_override = -1;  /* LIST_ARTIST_TRACKS: the sort the opener asked for, until the picker changes it */
 static item_t *    items;
 static int         nitems;
-static unsigned    lib_gen, hist_gen;
+static unsigned    lib_gen, hist_gen, cur_gen;
+static int         list_uid;            /* LIST_MIXTAPE: the mixtape (curation.h) */
 static bool        hist_dirty;
 
 /* ---- sections (the jump stops) ---- */
@@ -91,13 +95,15 @@ static int         nsections;
 
 /* ---- options ---- */
 
-enum { STYLE_TILES, STYLE_LIST, STYLE_GRID, STYLE_COVERS, STYLE_ROWS };
+enum { STYLE_TILES, STYLE_LIST, STYLE_GRID, STYLE_COVERS, STYLE_ROWS, STYLE_SHELF };   /* STYLE_SHELF (0.21a): the Mixtapes as a shelf of tapes */
 static picker_opts_t view_opts;
 static int  style_ids[PICKER_MAX_CHOICES];      /* the STYLE_* behind each picker style */
 static int  sort_kind;                          /* LIB_SORT_* or SORT_FILE / SORT_PLAYED / SORT_ALBUMS */
 #define SORT_FILE   100
 #define SORT_PLAYED 101
 #define SORT_ALBUMS 102                         /* an artist's tracks album by album (year order), then track order (0.20) */
+#define SORT_ADDED  103                         /* a favourites' / mixtape's own order (0.21) */
+#define SORT_CHANGED 104                        /* mixtapes / collections: the last changed first (0.21) */
 static int  opens;                              /* LIST_ARTISTS: what an artist row opens as (the Sort row's place) */
 static int  sort_ids[PICKER_MAX_CHOICES];
 static bool visited, visited_before_open, suppress_overlay;
@@ -112,7 +118,9 @@ static void (*style_cb)(const char *);
 static void (*open_album_cb)(const library_t *, int, const char *, const tile_style_t *);
 static void (*open_folder_cb)(const char *);
 static void (*open_artist_cb)(int);
-static bool shown, tv, tiles, gridstyle, show_jump;
+static void (*open_list_cb)(int);
+static bool shown, tv, tiles, gridstyle, show_jump, shelfstyle;
+static lv_obj_t * shelf;          /* the Mixtapes shelf (0.21a), NULL otherwise */
 static unsigned seed;
 static int  sel;                 /* -1 = the jump row */
 static int  playing;             /* item index, -1 none */
@@ -136,7 +144,7 @@ static int  gen;                 /* thumbs request generation */
 
 typedef struct {
     int        item;             /* -2 = free */
-    lv_obj_t * obj, * tile, * img, * title, * artist, * mark;
+    lv_obj_t * obj, * tile, * img, * title, * artist, * mark, * heart;   /* heart (0.21a): a favourite's, else NULL */
     uint8_t *  px;
     lv_image_dsc_t dsc;
     int        px_side;
@@ -174,6 +182,46 @@ static const lib_album_t * album_of(int i) { return items[i].album >= 0 ? &lib_o
 static const lib_folder_t * folder_of(int i) { return items[i].kind == ITEM_FOLDER ? &lib_of(i)->folders[items[i].folder] : NULL; }
 static const artist_t * artist_of(int i) { return items[i].kind == ITEM_ARTIST ? artists_get(items[i].artist) : NULL; }
 static const char * card_of(int i) { return libs_get(items[i].src)->card; }
+static const cur_list_t * list_of(int i) { return items[i].kind == ITEM_LIST ? curation_by_uid(items[i].artist) : NULL; }
+
+/* The track a URI names, on any mounted card (favourites, mixtapes). */
+static bool find_track(const char * uri, int * src, int * track)
+{
+    for(int s = 0; s < libs_count(); s++) {
+        const library_t * lib = &libs_get(s)->lib;
+        if(strncmp(uri, libs_get(s)->card, strlen(libs_get(s)->card)) != 0) continue;
+        for(int t = 0; t < lib->ntracks; t++) if(strcmp(lib->tracks[t].uri, uri) == 0) { *src = s; *track = t; return true; }
+    }
+    return false;
+}
+
+/* An album a collection names: its folder, and its title where two
+ * releases share the folder's parent (library.h). */
+static bool find_album(const char * folder, const char * title, int * src, int * album)
+{
+    int best_s = -1, best_a = -1;
+    for(int s = 0; s < libs_count(); s++) {
+        const library_t * lib = &libs_get(s)->lib;
+        if(strncmp(folder, libs_get(s)->card, strlen(libs_get(s)->card)) != 0) continue;
+        for(int a = 0; a < lib->nalbums; a++) {
+            if(strcmp(lib->albums[a].folder, folder) != 0) continue;
+            if(title && title[0] && strcmp(lib->albums[a].title, title) == 0) { *src = s; *album = a; return true; }
+            if(best_a < 0) { best_s = s; best_a = a; }
+        }
+    }
+    if(best_a < 0) return false;
+    *src = best_s; *album = best_a;
+    return true;
+}
+
+/* The albums a collection row holds that are on a mounted card. */
+static int list_albums(int i, int * srcs, int * albums, int max)
+{
+    const cur_list_t * l = list_of(i);
+    int n = 0;
+    for(int k = 0; l && k < l->n && n < max; k++) if(find_album(l->uris[k], l->titles[k], &srcs[n], &albums[n])) n++;
+    return n;
+}
 
 static const char * base_name(const char * uri)
 {
@@ -201,6 +249,8 @@ static const char * item_title(int i)
     if(f) return base_name(f->uri);
     const artist_t * ar = artist_of(i);
     if(ar) return ar->name;
+    const cur_list_t * l = list_of(i);
+    if(l) return l->name ? l->name : "";
     return album_of(i) ? album_of(i)->title : "";
 }
 
@@ -217,9 +267,16 @@ static const char * item_artist(int i)
         const lib_album_t * a = album_of(i);
         return a ? album_artist_text(a) : "";
     }
-    if(folder_of(i) || artist_of(i)) {
+    if(folder_of(i) || artist_of(i) || list_of(i)) {
         static char buf[64], n[16];
+        const cur_list_t * l = list_of(i);
         if(items[i].count <= 0) return "";
+        if(l && l->kind == CUR_MIXTAPE) {
+            if(items[i].count == 1) return T(S_LIST_TRACK_ONE);
+            snprintf(n, sizeof(n), "%d", items[i].count);
+            ui_strf(buf, sizeof(buf), S_LIST_TRACKS_COUNT, "n", n, NULL);
+            return buf;
+        }
         if(items[i].count == 1) return T(S_LIST_ALBUM_ONE);
         snprintf(n, sizeof(n), "%d", items[i].count);
         ui_strf(buf, sizeof(buf), S_LIST_ALBUMS_COUNT, "n", n, NULL);
@@ -262,7 +319,7 @@ static const char * item_subline(int i)
 
 static bool item_has_art(int i)
 {
-    if(items[i].kind == ITEM_HEADER) return false;
+    if(items[i].kind == ITEM_HEADER || items[i].kind == ITEM_LIST) return false;
     if(items[i].kind == ITEM_FOLDER) return items[i].pic != NULL;
     if(items[i].kind == ITEM_ARTIST) { char p[1024]; return artist_art_path(i, 192, p, sizeof(p)); }
     const lib_album_t * a = album_of(i);
@@ -288,6 +345,7 @@ static const char * item_uri(int i)
     if(f) return f->uri;
     const artist_t * ar = artist_of(i);
     if(ar) return ar->name;
+    if(items[i].kind == ITEM_LIST) { static char key[300]; curation_key(items[i].artist, key, sizeof(key)); return key; }
     return album_of(i) ? album_of(i)->folder : "";
 }
 
@@ -295,7 +353,10 @@ static const char * view_id(void)
 {
     switch(kind) {
         case LIST_RECENT: return "recent";
-        case LIST_FOLDER: case LIST_ALBUM: return "mixtape";
+        case LIST_FAVORITES: return "favorites";
+        case LIST_MIXTAPES: return "mixtapes";
+        case LIST_COLLECTIONS: return "collections";
+        case LIST_FOLDER: case LIST_ALBUM: case LIST_MIXTAPE: return "mixtape";
         case LIST_ALBUMS: return "folder";
         case LIST_ARTISTS: return "artists";             /* shared with rows.c and the grid: one style key */
         case LIST_ARTIST_TRACKS: return "artist-tracks";
@@ -336,7 +397,7 @@ static int item_cmp(const void * pa, const void * pb)
     int ia = (int)(a - items), ib = (int)(b - items);
     int c = 0;
     if(sort_kind == SORT_FILE) c = track_order_cmp(ia, ib);
-    else if(sort_kind == SORT_PLAYED) c = 0;
+    else if(sort_kind == SORT_PLAYED || sort_kind == SORT_ADDED || sort_kind == SORT_CHANGED) c = 0;
     else if(sort_kind == SORT_ALBUMS) {
         /* the artist's albums in their (year) order, each in disc / track order */
         c = a->artist - b->artist;
@@ -459,7 +520,7 @@ static void build_sections(void)
 {
     sections_free();
     if(nitems == 0) return;
-    if(sort_kind == LIB_SORT_NEWEST || sort_kind == SORT_FILE || sort_kind == SORT_PLAYED) {
+    if(sort_kind == LIB_SORT_NEWEST || sort_kind == SORT_FILE || sort_kind == SORT_PLAYED || sort_kind == SORT_ADDED || sort_kind == SORT_CHANGED) {
         section_add("\xE2\x80\xA2", 0);      /* one section, a dot: nothing to jump by */
         sections_renumber();
         sections[0].group = 0;
@@ -622,17 +683,18 @@ static void read_options(void)
     char key[64], v[24];
     view_opts.style_count = 0;
     if(kind == LIST_ARTISTS) add_style(STYLE_ROWS, S_STYLE_ROWS);           /* the artists' other faces: rows.c and the grid */
+    if(kind == LIST_MIXTAPES) add_style(STYLE_SHELF, S_STYLE_SHELF);        /* the mixtapes as tapes on a shelf (0.21a) */
     if(kind == LIST_ALBUMS || kind == LIST_ARTISTS) add_style(STYLE_COVERS, S_STYLE_GRID);   /* the folder grid: this page's other face */
     if(!tv) add_style(STYLE_TILES, S_STYLE_TILES);
     add_style(STYLE_LIST, S_STYLE_LIST);
     if(kind == LIST_TRACKS || kind == LIST_ARTIST_TRACKS) add_style(STYLE_GRID, S_STYLE_GRID);
     view_key("style", key, sizeof(key));
-    config_read(key, v, sizeof(v), tv ? "list" : "tiles");
+    config_read(key, v, sizeof(v), kind == LIST_MIXTAPES ? "shelf" : tv ? "list" : "tiles");
     view_opts.style = -1;
     for(int i = 0; i < view_opts.style_count; i++) {
         int id = style_ids[i];
         if((id == STYLE_TILES && strcmp(v, "tiles") == 0) || (id == STYLE_LIST && strcmp(v, "list") == 0) ||
-           ((id == STYLE_GRID || id == STYLE_COVERS) && strcmp(v, "grid") == 0) || (id == STYLE_ROWS && strcmp(v, "rows") == 0)) view_opts.style = i;
+           ((id == STYLE_GRID || id == STYLE_COVERS) && strcmp(v, "grid") == 0) || (id == STYLE_ROWS && strcmp(v, "rows") == 0) || (id == STYLE_SHELF && strcmp(v, "shelf") == 0)) view_opts.style = i;
     }
     /* a folder's "grid" (an artist's "rows") belongs elsewhere: here it reads as the rows */
     if(view_opts.style < 0 || style_ids[view_opts.style] == STYLE_COVERS || style_ids[view_opts.style] == STYLE_ROWS) {
@@ -641,6 +703,7 @@ static void read_options(void)
     }
     tiles = !tv && style_ids[view_opts.style] == STYLE_TILES;
     gridstyle = style_ids[view_opts.style] == STYLE_GRID;
+    shelfstyle = style_ids[view_opts.style] == STYLE_SHELF;
 
     view_key("size", key, sizeof(key));
     config_read(key, v, sizeof(v), ui_size_name(UI_SIZE_DEFAULT));
@@ -651,6 +714,9 @@ static void read_options(void)
     view_opts.sort_name = NULL;
     switch(kind) {
         case LIST_RECENT: add_sort(SORT_PLAYED, S_SORT_LAST_PLAYED); break;
+        case LIST_FAVORITES: add_sort(SORT_ADDED, S_SORT_ADDED); add_sort(LIB_SORT_TITLE, S_SORT_TITLE); add_sort(LIB_SORT_ARTIST_TITLE, S_SORT_ARTIST_TITLE); break;
+        case LIST_MIXTAPE: add_sort(SORT_ADDED, S_SORT_ADDED); add_sort(LIB_SORT_TITLE, S_SORT_TITLE); add_sort(LIB_SORT_ARTIST_TITLE, S_SORT_ARTIST_TITLE); break;
+        case LIST_MIXTAPES: case LIST_COLLECTIONS: add_sort(SORT_CHANGED, S_SORT_CHANGED); add_sort(LIB_SORT_TITLE, S_SORT_NAME); break;
         case LIST_FOLDER: add_sort(SORT_FILE, S_SORT_FILE_ORDER); add_sort(LIB_SORT_TITLE, S_SORT_TITLE); add_sort(LIB_SORT_ARTIST_TITLE, S_SORT_ARTIST_TITLE); break;
         case LIST_ALBUM:  add_sort(SORT_FILE, S_SORT_TRACK_ORDER); add_sort(LIB_SORT_TITLE, S_SORT_TITLE); add_sort(LIB_SORT_ARTIST_TITLE, S_SORT_ARTIST_TITLE); break;
         case LIST_ALBUMS: add_sort(LIB_SORT_TITLE, S_SORT_NAME); add_sort(LIB_SORT_NEWEST, S_SORT_NEWEST); break;
@@ -662,10 +728,10 @@ static void read_options(void)
             break;
     }
     view_key("sort", key, sizeof(key));
-    config_read(key, v, sizeof(v), kind == LIST_FOLDER || kind == LIST_ALBUM ? "file" : kind == LIST_RECENT ? "played" : "title");
+    config_read(key, v, sizeof(v), kind == LIST_FOLDER || kind == LIST_ALBUM ? "file" : kind == LIST_RECENT ? "played" : kind == LIST_FAVORITES || kind == LIST_MIXTAPE ? "added" : kind == LIST_MIXTAPES || kind == LIST_COLLECTIONS ? "changed" : "title");
     view_opts.sort = 0;
     for(int i = 0; i < view_opts.sort_count; i++) {
-        const char * name = sort_ids[i] == SORT_FILE ? "file" : sort_ids[i] == SORT_PLAYED ? "played" : sort_ids[i] == SORT_ALBUMS ? "albums" : library_sort_name((lib_sort_t)sort_ids[i]);
+        const char * name = sort_ids[i] == SORT_FILE ? "file" : sort_ids[i] == SORT_PLAYED ? "played" : sort_ids[i] == SORT_ALBUMS ? "albums" : sort_ids[i] == SORT_ADDED ? "added" : sort_ids[i] == SORT_CHANGED ? "changed" : library_sort_name((lib_sort_t)sort_ids[i]);
         if(strcmp(name, v) == 0) view_opts.sort = i;
     }
     if(kind == LIST_ARTIST_TRACKS && sort_override >= 0)
@@ -688,7 +754,7 @@ static void read_options(void)
 
     view_key("jump", key, sizeof(key));
     view_opts.strip = config_read_bool(key, true);
-    view_opts.jump_row = sort_kind != SORT_FILE && sort_kind != SORT_PLAYED && sort_kind != LIB_SORT_NEWEST;
+    view_opts.jump_row = sort_kind != SORT_FILE && sort_kind != SORT_PLAYED && sort_kind != LIB_SORT_NEWEST && sort_kind != SORT_ADDED && sort_kind != SORT_CHANGED;
     view_opts.names_row = false;
     view_key("visited", key, sizeof(key));
     visited = config_read_bool(key, false);
@@ -699,11 +765,11 @@ static void write_options(void)
     char key[64];
     int id = style_ids[view_opts.style];
     view_key("style", key, sizeof(key));
-    config_write(key, id == STYLE_TILES ? "tiles" : id == STYLE_LIST ? "list" : id == STYLE_ROWS ? "rows" : "grid");
+    config_write(key, id == STYLE_TILES ? "tiles" : id == STYLE_LIST ? "list" : id == STYLE_ROWS ? "rows" : id == STYLE_SHELF ? "shelf" : "grid");
     view_key("size", key, sizeof(key));
     config_write(key, ui_size_name(view_opts.size));
     if(kind == LIST_ARTISTS) { view_key("opens", key, sizeof(key)); config_write(key, opens == 1 ? "tracks" : opens == 2 ? "tracks-album" : "albums"); }
-    else { view_key("sort", key, sizeof(key)); config_write(key, sort_kind == SORT_FILE ? "file" : sort_kind == SORT_PLAYED ? "played" : sort_kind == SORT_ALBUMS ? "albums" : library_sort_name((lib_sort_t)sort_kind)); }
+    else { view_key("sort", key, sizeof(key)); config_write(key, sort_kind == SORT_FILE ? "file" : sort_kind == SORT_PLAYED ? "played" : sort_kind == SORT_ALBUMS ? "albums" : sort_kind == SORT_ADDED ? "added" : sort_kind == SORT_CHANGED ? "changed" : library_sort_name((lib_sort_t)sort_kind)); }
     view_key("jump", key, sizeof(key));
     config_write(key, view_opts.strip ? "1" : "0");
 }
@@ -923,6 +989,13 @@ static void row_delete(row_t * r)
     r->item = -2;
 }
 
+/* The heart's colour: Simpleton's red, or the page's ink on a red page (0.21a). */
+static uint32_t heart_colour(void)
+{
+    int rr = (c_bg >> 16) & 255, gg = (c_bg >> 8) & 255, bb = c_bg & 255;
+    return (rr > gg + 60 && rr > bb + 60) ? c_ink : 0xE0242C;
+}
+
 static void row_style(row_t * r)
 {
     if(!r || r->item < 0) return;
@@ -952,6 +1025,17 @@ static void row_style(row_t * r)
     }
     lv_obj_set_style_text_font(r->title, jost(is_sel ? f_title_px * GROW_PCT / 100 : f_title_px), 0);
     lv_obj_set_style_text_color(r->title, lv_color_hex(col), 0);
+    if(r->heart) {
+        const lv_font_t * ft = jost(is_sel ? f_title_px * GROW_PCT / 100 : f_title_px);
+        int hr = f_title_px * 26 / 100;
+        int tw = text_w(ft, item_title(r->item));
+        int maxw = col_w - 2 * hr - f_title_px * 55 / 100;             /* the title's width with a heart */
+        if(tw > maxw) tw = maxw;
+        int th = lv_font_get_line_height(jost(f_title_px * GROW_PCT / 100)), ah = lv_font_get_line_height(jost(f_artist_px));
+        int y0 = (rh - (th + ah - rh / 24)) / 2;
+        lv_obj_set_pos(r->heart, col_x + tw + f_title_px * 30 / 100, y0 + (th - 2 * hr - 2) / 2);
+        lv_obj_move_foreground(r->heart);
+    }
     lv_obj_set_style_text_color(r->artist, lv_color_hex(c_ink), 0);
     lv_obj_set_style_text_opa(r->artist, is_sel ? LV_OPA_COVER : LV_OPA_70, 0);
     if(r->mark) { if(is_play) lv_obj_remove_flag(r->mark, LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(r->mark, LV_OBJ_FLAG_HIDDEN); }
@@ -977,7 +1061,7 @@ static void row_want_art(void);
  * tile wherever that album shows. */
 static void companion_style(int item, tile_style_t * out)
 {
-    unsigned k = (unsigned)(items[item].album >= 0 ? items[item].album + 1 : items[item].kind == ITEM_ARTIST ? 100000 + items[item].artist : -(items[item].folder + 2)) * 7919u;
+    unsigned k = (unsigned)(items[item].album >= 0 ? items[item].album + 1 : items[item].kind == ITEM_ARTIST ? 100000 + items[item].artist : items[item].kind == ITEM_LIST ? 200000 + items[item].artist : -(items[item].folder + 2)) * 7919u;
     tilestyle_companion(seed + k, &sections[items[item].section].style, out);
 }
 
@@ -1067,6 +1151,12 @@ static row_t * row_create(int item)
         lv_obj_set_style_radius(r->mark, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_opa(r->mark, LV_OPA_COVER, 0);
         lv_obj_add_flag(r->mark, LV_OBJ_FLAG_HIDDEN);
+        if(track_of(item) && curation_is_favorite(track_of(item)->uri)) {
+            /* the heart: the top-left corner (the playing disc has the right) */
+            int hr = g_artist_px * 4 / 10;
+            r->heart = curation_heart(r->obj, hr, cell_st ? ((cell_st[item].bg >> 16 & 255) > (cell_st[item].bg >> 8 & 255) + 60 ? cell_st[item].ink : 0xE0242C) : 0xE0242C);
+            if(r->heart) lv_obj_set_pos(r->heart, cell_pad / 2, cell_pad / 2);
+        }
         row_style(r);
         return r;
     }
@@ -1143,6 +1233,13 @@ static row_t * row_create(int item)
     lv_obj_set_pos(r->title, col_x, y0);
     lv_obj_set_size(r->artist, col_w, ah);
     lv_obj_set_pos(r->artist, col_x, y0 + th - rh / 24);
+    if(track_of(item) && curation_is_favorite(track_of(item)->uri)) {
+        /* the heart after the title (0.21a): the title gives up its room so
+         * a long one's dots stop before it; row_style places it */
+        int hr = f_title_px * 26 / 100;
+        r->heart = curation_heart(r->obj, hr, heart_colour());
+        if(r->heart) lv_obj_set_size(r->title, col_w - 2 * hr - f_title_px * 55 / 100, th);
+    }
     /* the playing mark: a small disc before the title */
     r->mark = lv_obj_create(r->obj);
     lv_obj_remove_style_all(r->mark);
@@ -1384,11 +1481,15 @@ static void mosaic_show(int item)
     if(!square) return;
     if(mosaic && mosaic_item == item) { lv_obj_remove_flag(mosaic, LV_OBJ_FLAG_HIDDEN); lv_obj_move_foreground(mosaic); return; }
     mosaic_drop();
+    /* the albums: an artist's, or a collection's that are on a card (0.21) */
     const artist_t * ar = artist_of(item);
-    if(!ar) return;
+    int srcs[MOSAIC_MAX], albums[MOSAIC_MAX], nalb = 0;
+    if(ar) { for(int k = 0; k < ar->nalbums && nalb < MOSAIC_MAX; k++) { srcs[nalb] = ar->albums[k].src; albums[nalb] = ar->albums[k].album; nalb++; } }
+    else if(list_of(item)) nalb = list_albums(item, srcs, albums, MOSAIC_MAX);
+    else return;
     int stage = ui_screen.stage;
     int n = 1;
-    while(n < 5 && n * n < ar->nalbums) n++;
+    while(n < 5 && n * n < nalb) n++;
     int gap = n > 1 ? (stage / 180 < 2 ? 2 : stage / 180) : 0;
     int cell = (stage - gap * (n - 1)) / n;
     int x0 = (stage - (cell * n + gap * (n - 1))) / 2;
@@ -1414,12 +1515,12 @@ static void mosaic_show(int item)
         lv_obj_set_size(c, cell, cell);
         lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
         mcell[k].obj = c;
-        if(k >= ar->nalbums) {
+        if(k >= nalb) {
             /* a spare cell: the section's colours, turn and turn about */
             lv_obj_set_style_bg_color(c, lv_color_hex((k & 1) ? shell : label), 0);
             continue;
         }
-        int src = ar->albums[k].src, album = ar->albums[k].album;
+        int src = srcs[k], album = albums[k];
         const lib_album_t * a = &libs_get(src)->lib.albums[album];
         if(a->has_art) {
             lv_obj_set_style_bg_color(c, lv_color_hex(a->colour ? a->colour : 0x333333), 0);
@@ -1521,6 +1622,7 @@ static void pic_render(const char * design, int key, const char * l1, const char
     const tile_font_t * f = st->font != TILE_FONT_NONE ? tilestyle_font(st->font) : NULL;
     snprintf(j->font, sizeof(j->font), "%s", f ? f->file : "");
     j->caps = f ? f->caps : false;
+    if(kind == LIST_MIXTAPE && key == -1) { snprintf(j->font, sizeof(j->font), "*PermanentMarker-Regular.ttf"); j->caps = false; }   /* a mixtape's own tape: the marker's hand (Ian, 15 Oct) */
     pthread_t th;
     if(pthread_create(&th, NULL, pic_thread, j) != 0) { free(j); return; }
     pthread_detach(th);
@@ -1574,7 +1676,7 @@ static void square_update(void)
 {
     if(!tv || !square) return;
     if(sel < 0 || nitems == 0) return;
-    if(items[sel].kind == ITEM_ARTIST) {
+    if(items[sel].kind == ITEM_ARTIST || (list_of(sel) && list_of(sel)->kind == CUR_COLLECTION)) {
         if(art_img) lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN);
         if(pic_img) lv_obj_add_flag(pic_img, LV_OBJ_FLAG_HIDDEN);
         notile_drop();
@@ -1582,6 +1684,22 @@ static void square_update(void)
         return;
     }
     if(mosaic) lv_obj_add_flag(mosaic, LV_OBJ_FLAG_HIDDEN);
+    if(list_of(sel)) {
+        /* a mixtape row: its own cassette, its name on the label (0.21) */
+        if(art_img) lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN);
+        const cur_list_t * l = list_of(sel);
+        char n[16], count[64];
+        snprintf(n, sizeof(n), "%d", l->n);
+        if(l->n == 1) snprintf(count, sizeof(count), "%s", T(S_LIST_TRACK_ONE)); else ui_strf(count, sizeof(count), S_LIST_TRACKS_COUNT, "n", n, NULL);
+        int key = 300000 + l->uid;
+        if(pic_is(placeholder_main_design(), key)) { notile_drop(); lv_obj_remove_flag(pic_img, LV_OBJ_FLAG_HIDDEN); return; }
+        if(pic_img) lv_obj_add_flag(pic_img, LV_OBJ_FLAG_HIDDEN);
+        if(placeholder_has_design(placeholder_main_design())) { pic_render(placeholder_main_design(), key, l->name, count, ""); return; }
+        tile_style_t st;
+        companion_style(sel, &st);
+        notile_make(l->name, count, &st);
+        return;
+    }
     if(item_has_art(sel)) {
         if(art_is_sel()) { square_show_art(); return; }
         /* another cover: the one up stays until the new one lands (no tape
@@ -1599,13 +1717,14 @@ static void square_update(void)
     }
     if(art_img) lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN);
     const lib_album_t * a = album_of(sel);
-    if(kind == LIST_FOLDER || kind == LIST_ALBUM) {
-        /* the mixtape: the folder's (album's) name, the track count and
-         * the genres most of its tracks carry on the label's three lines */
+    if(kind == LIST_FOLDER || kind == LIST_ALBUM || kind == LIST_MIXTAPE) {
+        /* the mixtape: the folder's (album's, tape's) name, the track count
+         * and the genres most of its tracks carry on the label's three lines */
         char n[16], count[64], genres[64];
         snprintf(n, sizeof(n), "%d", nitems);
         ui_strf(count, sizeof(count), S_LIST_TRACKS_COUNT, "n", n, NULL);
-        const char * name = kind == LIST_ALBUM && a ? a->title : base_name(folder);
+        const cur_list_t * tape = kind == LIST_MIXTAPE ? curation_by_uid(list_uid) : NULL;
+        const char * name = tape ? (tape->name ? tape->name : "") : kind == LIST_ALBUM && a ? a->title : base_name(folder);
         if(pic_is(placeholder_main_design(), -1)) { notile_drop(); lv_obj_remove_flag(pic_img, LV_OBJ_FLAG_HIDDEN); return; }
         if(pic_img) lv_obj_add_flag(pic_img, LV_OBJ_FLAG_HIDDEN);
         top_genres(-1, -1, 3, genres, 30);
@@ -1835,9 +1954,30 @@ static void select_item(void)
         case ITEM_ARTIST:
             if(open_artist_cb) open_artist_cb(items[sel].artist);
             break;
+        case ITEM_LIST:
+            if(open_list_cb && list_of(sel)) open_list_cb(items[sel].artist);
+            break;
         case ITEM_HEADER:
             break;
     }
+}
+
+/* A held: the object menu for the row under the cursor (0.21). */
+static void menu_item(void)
+{
+    if(sel < 0 || nitems == 0) return;
+    const lib_track_t * t = track_of(sel);
+    const lib_album_t * a = album_of(sel);
+    if(t) objmenu_open_track(t->uri, item_title(sel), item_artist(sel), kind == LIST_MIXTAPE ? list_uid : 0, kind == LIST_MIXTAPE ? items[sel].artist : -1);
+    else if(items[sel].kind == ITEM_ALBUM && a) {
+        const library_t * lib = lib_of(sel);
+        const char ** uris = calloc((size_t)a->track_count + 1, sizeof(char *));
+        int n = 0;
+        for(int k = a->first_track; uris && k < lib->ntracks && n < a->track_count; k++) if(lib->tracks[k].album == items[sel].album) uris[n++] = lib->tracks[k].uri;
+        objmenu_open_album(a->folder, a->title, album_artist_text(a), uris, n, 0, -1);
+        free(uris);
+    }
+    else if(items[sel].kind == ITEM_LIST) objmenu_open_list(items[sel].artist);
 }
 
 /* ------------------------------------------------------------ build */
@@ -1907,9 +2047,14 @@ static void load(const char * keep_uri)
     lib_gen = libs_generation();
     hist_gen = history_generation();
     hist_dirty = false;
+    cur_gen = curation_generation();
     int total = 0;
     for(int s = 0; s < libs_count(); s++) total += kind == LIST_ALBUMS ? libs_get(s)->lib.nfolders : libs_get(s)->lib.ntracks;
     if(kind == LIST_RECENT && history_count() < total) total = history_count();
+    if(kind == LIST_FAVORITES) total = curation_favorite_count();
+    if(kind == LIST_MIXTAPES) total = curation_count(CUR_MIXTAPE);
+    if(kind == LIST_COLLECTIONS) total = curation_count(CUR_COLLECTION);
+    if(kind == LIST_MIXTAPE) { const cur_list_t * l = curation_by_uid(list_uid); total = l ? l->n : 0; }
     if(kind == LIST_ARTISTS || kind == LIST_ARTIST_TRACKS) {
         artists_refresh();
         const artist_t * ar = artists_get(artist_idx);
@@ -1940,6 +2085,32 @@ static void load(const char * keep_uri)
             }
         }
     }
+    else if(kind == LIST_FAVORITES && items) {
+        for(int h = 0; h < curation_favorite_count() && nitems < total; h++) {
+            int s, t;
+            if(find_track(curation_favorite(h), &s, &t)) item_add(s, ITEM_TRACK, t, libs_get(s)->lib.tracks[t].album, -1);
+        }
+    }
+    else if(kind == LIST_MIXTAPE && items) {
+        const cur_list_t * l = curation_by_uid(list_uid);
+        for(int h = 0; l && h < l->n && nitems < total; h++) {
+            int s, t;
+            if(!find_track(l->uris[h], &s, &t)) continue;      /* a track on a card that is out: not shown */
+            item_add(s, ITEM_TRACK, t, libs_get(s)->lib.tracks[t].album, -1);
+            items[nitems - 1].artist = h;                       /* its place on the tape, for "Remove from" */
+        }
+    }
+    else if((kind == LIST_MIXTAPES || kind == LIST_COLLECTIONS) && items) {
+        cur_kind_t ck = kind == LIST_MIXTAPES ? CUR_MIXTAPE : CUR_COLLECTION;
+        for(int h = 0; h < curation_count(ck) && nitems < total; h++) {
+            const cur_list_t * l = curation_get(ck, h);
+            int s = -1;
+            for(int k = 0; k < libs_count() && s < 0; k++) if(strcmp(libs_get(k)->card, l->card) == 0) s = k;
+            item_add(s < 0 ? 0 : s, ITEM_LIST, -1, -1, -1);
+            items[nitems - 1].artist = l->uid;
+            items[nitems - 1].count = l->n;
+        }
+    }
     else if(kind == LIST_RECENT && items) {
         for(int h = 0; h < history_count() && nitems < total; h++) {
             const char * uri = history_get(h);
@@ -1964,13 +2135,13 @@ static void load(const char * keep_uri)
             item_add(s, ITEM_TRACK, t, lib->tracks[t].album, -1);
         }
     }
-    if(nitems > 1 && sort_kind != SORT_PLAYED && kind != LIST_ARTISTS) qsort(items, (size_t)nitems, sizeof(item_t), item_cmp);   /* artists come in their own order, Various Artists last */
+    if(nitems > 1 && sort_kind != SORT_PLAYED && sort_kind != SORT_ADDED && sort_kind != SORT_CHANGED && kind != LIST_ARTISTS) qsort(items, (size_t)nitems, sizeof(item_t), item_cmp);   /* artists come in their own order, Various Artists last */
     build_sections();
     sel = nitems ? 0 : -1;
     if(keep_uri) for(int i = 0; i < nitems; i++) if(items[i].kind != ITEM_HEADER && strcmp(item_uri(i), keep_uri) == 0) { sel = i; break; }
     while(sel >= 0 && sel < nitems - 1 && items[sel].kind == ITEM_HEADER) sel++;
     fprintf(stderr, "simpleton-ui: list: %s%s%s: %d rows, %s, %d stops\n", view_id(), folder[0] ? " " : "", folder,
-            nitems, sort_kind == SORT_FILE ? "file order" : sort_kind == SORT_PLAYED ? "last played" : sort_kind == SORT_ALBUMS ? "album order" : library_sort_name((lib_sort_t)sort_kind), nsections);
+            nitems, sort_kind == SORT_FILE ? "file order" : sort_kind == SORT_PLAYED ? "last played" : sort_kind == SORT_ALBUMS ? "album order" : sort_kind == SORT_ADDED ? "order added" : sort_kind == SORT_CHANGED ? "last changed" : library_sort_name((lib_sort_t)sort_kind), nsections);
 }
 
 static char * keep_key(void)
@@ -2030,15 +2201,55 @@ static int empty_string(void)
     if(!libs_loaded()) return S_BROWSER_STARTING;
     switch(kind) {
         case LIST_RECENT: return S_LIST_RECENT_EMPTY;
+        case LIST_FAVORITES: return S_LIST_FAVORITES_EMPTY;
+        case LIST_MIXTAPES: return S_LIST_MIXTAPES_EMPTY;
+        case LIST_COLLECTIONS: return S_LIST_COLLECTIONS_EMPTY;
+        case LIST_MIXTAPE: return S_LIST_MIXTAPE_EMPTY;
         case LIST_ALBUMS: return S_LIST_ALBUMS_EMPTY;
         case LIST_ARTISTS: return S_ARTISTS_EMPTY;
         default: return S_LIST_EMPTY;
     }
 }
 
+/* The Mixtapes as a shelf of tapes (0.21a, Ian's 5 Oct idea): each
+ * mixtape a tape in the theme's Mixtapes tile with its name on the spine in
+ * the tape's own face; the shelf wraps and slides as Home's does. Falls
+ * back to the rows when the theme has no shelf. */
+static void shelf_drop(void)
+{
+    if(shelf) { lv_obj_delete(shelf); shelf = NULL; }
+}
+
+static bool shelf_build(void)
+{
+    shelf_drop();
+    if(!shelfstyle || kind != LIST_MIXTAPES || nitems == 0) return false;
+    shelf_style_t st;
+    shelf_item_t tapes[16];
+    int ntapes = home_shelf_tapes(&st, tapes, 16);
+    if(ntapes <= 0) return false;
+    shelf_item_t * its = calloc((size_t)nitems, sizeof(shelf_item_t));
+    if(!its) return false;
+    /* a different tape for each mixtape, round the theme's collection
+     * (Ian, 15 Oct), every one in the marker's face; dealt from the
+     * visit's seed so neighbours differ */
+    for(int i = 0; i < nitems; i++) { its[i] = tapes[(int)((seed / 7 + (unsigned)i) % (unsigned)ntapes)]; its[i].label = item_title(i); }
+    shelf = shelf_create(scr, &st);
+    bool ok = shelf && shelf_set_items(shelf, its, nitems, sel < 0 ? 0 : sel);
+    free(its);
+    if(!ok) { shelf_drop(); return false; }
+    lv_obj_add_flag(field, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(jump_row, LV_OBJ_FLAG_HIDDEN);
+    if(square) lv_obj_add_flag(square, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(shelf);
+    return true;
+}
+
 static void rebuild(void)
 {
     rows_clear();
+    shelf_drop();
+    lv_obj_remove_flag(field, LV_OBJ_FLAG_HIDDEN);
     measure();
     build_sections();
     measure();                                     /* show_jump depends on the stops */
@@ -2090,6 +2301,7 @@ static void rebuild(void)
     ui_list_metrics(UI_SIZE_DEFAULT, &plm);
     plm.x = fx; plm.y = top_y + jump_h; plm.w = fw; plm.h = field_hh();
     picker_relayout(&plm);
+    if(shelf_build()) return;
     square_update();
 }
 
@@ -2117,7 +2329,7 @@ static void on_change(const picker_opts_t * o, void * ctx)
     if(restyle && style_ids[view_opts.style] == STYLE_ROWS) { if(style_cb) style_cb("rows"); return; }
     if(resort) {
         sort_kind = sort_ids[view_opts.sort];
-        view_opts.jump_row = sort_kind != SORT_FILE && sort_kind != SORT_PLAYED && sort_kind != LIB_SORT_NEWEST;
+        view_opts.jump_row = sort_kind != SORT_FILE && sort_kind != SORT_PLAYED && sort_kind != LIB_SORT_NEWEST && sort_kind != SORT_ADDED && sort_kind != SORT_CHANGED;
             char * keep = keep_key();
         load(keep);
         free(keep);
@@ -2168,6 +2380,7 @@ static void index_timer_cb(lv_timer_t * t)
     if(!shown) return;
     if(libs_refresh() || lib_gen != libs_generation()) reload(false);
     else if(kind == LIST_RECENT && hist_dirty && nitems == 0) reload(true);
+    else if(cur_gen != curation_generation()) reload(false);      /* a heart came or went, a tape changed: the rows follow (0.21a: every kind) */
 }
 
 void listpage_create(void (*on_exit)(void), void (*on_play)(void), void (*on_style)(const char * style))
@@ -2218,6 +2431,7 @@ void listpage_set_callbacks(void (*open_album)(const library_t *, int, const cha
 }
 
 void listpage_set_artist_callback(void (*open_artist)(int)) { open_artist_cb = open_artist; }
+void listpage_set_list_callback(void (*open_list)(int uid)) { open_list_cb = open_list; }
 
 static void reset_for(list_kind_t k, const char * f)
 {
@@ -2236,7 +2450,7 @@ bool listpage_open(list_kind_t k, const char * f)
         if(!libs_find_folder(f, &fo)) return false;
     }
     else f = NULL;
-    if(k == LIST_ALBUM || k == LIST_ARTIST_TRACKS) return false;    /* listpage_open_album() / listpage_open_artist_tracks() */
+    if(k == LIST_ALBUM || k == LIST_ARTIST_TRACKS || k == LIST_MIXTAPE) return false;    /* listpage_open_album() / listpage_open_artist_tracks() / listpage_open_mixtape() */
     album_src = album_idx = -1;
     artist_idx = -1;
     sort_override = -1;
@@ -2260,6 +2474,23 @@ bool listpage_open_artist_tracks(int artist, bool by_album)
 }
 
 int listpage_artist(void) { return kind == LIST_ARTIST_TRACKS ? artist_idx : -1; }
+
+bool listpage_open_mixtape(int uid)
+{
+    const cur_list_t * l = curation_by_uid(uid);
+    if(!l || l->kind != CUR_MIXTAPE) return false;
+    bool same = kind == LIST_MIXTAPE && uid == list_uid;
+    album_src = album_idx = -1;
+    artist_idx = -1;
+    sort_override = -1;
+    list_uid = uid;
+    kind = LIST_MIXTAPE;
+    curation_key(uid, folder, sizeof(folder));
+    if(!same) { items_free(); sections_free(); sel = -1; lib_gen = 0; pic_drop(); art_free(); }
+    return true;
+}
+
+int listpage_mixtape(void) { return kind == LIST_MIXTAPE ? list_uid : 0; }
 
 bool listpage_open_album(const char * card, int album)
 {
@@ -2285,11 +2516,11 @@ bool listpage_focus_key(const char * key)
     for(int i = 0; i < nitems; i++) if(strcmp(item_uri(i), key) == 0) { if(shown) set_sel(i, false); else sel = i; return true; }
     return false;
 }
-const char * listpage_folder(void) { return (kind == LIST_FOLDER || kind == LIST_ALBUMS || kind == LIST_ALBUM) ? folder : NULL; }
+const char * listpage_folder(void) { return (kind == LIST_FOLDER || kind == LIST_ALBUMS || kind == LIST_ALBUM || kind == LIST_MIXTAPE) ? folder : NULL; }
 
 void listpage_show(bool fresh)
 {
-    static unsigned seeds[LIST_ARTIST_TRACKS + 1];     /* each kind's last deal: coming back wears the same colours (0.20) */
+    static unsigned seeds[LIST_KIND_COUNT];            /* each kind's last deal: coming back wears the same colours (0.20) */
     shown = true;
     tv = ui_screen.kind == UI_SCREEN_TV;
     if(fresh) seed = (unsigned)time(NULL) ^ (unsigned)lv_tick_get() ^ (unsigned)rand();
@@ -2317,7 +2548,9 @@ void listpage_show(bool fresh)
         artist_idx = i;
         lib_gen = 0;
     }
-    if(libs_refresh() || lib_gen != libs_generation() || !items || (kind == LIST_RECENT && (hist_dirty || hist_gen != history_generation()))) {
+    if(kind == LIST_MIXTAPE && !curation_by_uid(list_uid)) { if(exit_cb) exit_cb(); return; }      /* its card went */
+    bool cur_stale = (kind == LIST_FAVORITES || kind == LIST_MIXTAPES || kind == LIST_COLLECTIONS || kind == LIST_MIXTAPE) && cur_gen != curation_generation();
+    if(libs_refresh() || lib_gen != libs_generation() || !items || cur_stale || (kind == LIST_RECENT && (hist_dirty || hist_gen != history_generation()))) {
         char * keep = fresh ? NULL : keep_key();
         load(keep);
         free(keep);
@@ -2340,6 +2573,7 @@ void listpage_hide(void)
     lv_timer_pause(index_timer);
     thumbs_want(NULL, 0);
     rows_clear();
+    shelf_drop();
     pic_drop();
     art_free();
     notile_drop();
@@ -2429,6 +2663,14 @@ void listpage_handle_action(ui_action_t a)
     static bool up_run;
     if(picker_mode() != PICKER_NONE) { picker_handle_action(a); return; }
     if(nitems == 0) { if(a == ACT_BACK && exit_cb) exit_cb(); return; }
+    if(shelf) {
+        /* the Mixtapes shelf: the tapes take the D-pad */
+        if(shelf_handle_action(shelf, a)) { sel = shelf_selected(shelf); return; }
+        if(a == ACT_SELECT) { sel = shelf_selected(shelf); select_item(); }
+        else if(a == ACT_MENU) { sel = shelf_selected(shelf); menu_item(); }
+        else if(a == ACT_BACK && exit_cb) exit_cb();
+        return;
+    }
     int c = ncols;
     if(a != ACT_UP) up_run = false;
     switch(a) {
@@ -2474,6 +2716,14 @@ void listpage_handle_action(ui_action_t a)
         case ACT_BACK:
             if(exit_cb) exit_cb();
             break;
+        case ACT_MENU:
+            if(sel >= 0) menu_item();
+            break;
         default: break;
     }
+}
+
+void listpage_curation_changed(void)
+{
+    if(shown && cur_gen != curation_generation()) lv_timer_ready(index_timer);
 }

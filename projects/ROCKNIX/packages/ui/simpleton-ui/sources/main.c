@@ -42,6 +42,10 @@
 #include "browser.h"
 #include "cec.h"
 #include "config.h"
+#include "curation.h"
+#include "dacpower.h"
+#include "keyboard.h"
+#include "objmenu.h"
 #include "display.h"
 #include "fonts.h"
 #include "grid.h"
@@ -209,6 +213,44 @@ static void open_recent_view(void)
     list_return = SCR_HOME;
     listpage_open(LIST_RECENT, NULL);
     show_list(true);
+}
+
+/* Favorites, Mixtapes and Collections from Home (0.21): lists; a mixtape
+ * opens as its list, a collection as a grid of its albums. */
+static void open_curation_view(list_kind_t k)
+{
+    folder_stack_clear();
+    list_return = SCR_HOME;
+    listpage_open(k, NULL);
+    show_list(true);
+}
+
+static void open_list(int uid)
+{
+    const cur_list_t * l = curation_by_uid(uid);
+    if(!l) return;
+    if(l->kind == CUR_MIXTAPE) { if(listpage_open_mixtape(uid)) show_list(true); }
+    else { char key[300]; curation_key(uid, key, sizeof(key)); grid_set_scope(GRID_SCOPE_COLLECTION, key); show_albums(true); }
+}
+
+/* Back out of a mixtape or a collection: the list it was chosen from, on it. */
+static void curation_view_exited(const char * key)
+{
+    char * k = key ? strdup(key) : NULL;
+    listpage_open(cur == SCR_ALBUMS ? LIST_COLLECTIONS : LIST_MIXTAPES, NULL);
+    show_list(false);
+    if(k) listpage_focus_key(k);
+    free(k);
+}
+
+/* A favourite, mixtape or collection changed (0.21): every screen that
+ * shows them follows. */
+static void curation_changed(void)
+{
+    albumpage_curation_changed();
+    listpage_curation_changed();
+    grid_curation_changed();
+    nowplaying_curation_changed();
 }
 
 /* The Artists view from Home (0.20): rows, the grid or the list, as the
@@ -411,6 +453,7 @@ static void grid_exited(void)
 {
     if(grid_scope() == GRID_SCOPE_FOLDER) { folder_view_exited(grid_scope_folder()); return; }
     if(grid_scope() == GRID_SCOPE_ARTIST) { artist_view_exited(); return; }
+    if(grid_scope() == GRID_SCOPE_COLLECTION) { curation_view_exited(grid_scope_collection()); return; }
     show_home();
 }
 
@@ -423,6 +466,7 @@ static void list_exited(void)
         case LIST_FOLDER: case LIST_ALBUMS: folder_view_exited(listpage_folder()); return;
         case LIST_ALBUM: albumpage_exited(); return;        /* an album's list leaves like its page (from an artist too) */
         case LIST_ARTIST_TRACKS: artist_view_exited(); return;
+        case LIST_MIXTAPE: curation_view_exited(listpage_folder()); return;
         default: show_home(); return;
     }
 }
@@ -603,6 +647,9 @@ static void open_view(home_view_t v)
         case HOME_ARTISTS:     open_artists_view(); break;
         case HOME_TRACKS:      open_tracks_view(); break;
         case HOME_RECENT:      open_recent_view(); break;
+        case HOME_FAVORITES:   open_curation_view(LIST_FAVORITES); break;
+        case HOME_PLAYLISTS:   open_curation_view(LIST_MIXTAPES); break;
+        case HOME_COLLECTIONS: open_curation_view(LIST_COLLECTIONS); break;
         case HOME_NOW_PLAYING: enter_nowplaying(); break;
         case HOME_SETTINGS:    enter_settings("hub", false); break;
         default: {
@@ -661,6 +708,9 @@ static void dispatch(ui_action_t a)
 {
     /* the power menu takes everything while it is up */
     if(power_menu_active()) { power_activity(a); power_menu_handle_action(a); return; }
+    /* so do the keyboard and the object menu (0.21) */
+    if(keyboard_active()) { if(power_activity(a)) return; keyboard_handle_action(a); return; }
+    if(objmenu_active()) { if(power_activity(a)) return; objmenu_handle_action(a); return; }
     /* a button in the dark: X and Y act (pause, skip), anything else only
      * lights the screen and is spent on that (0.18) */
     if(power_activity(a)) return;
@@ -674,6 +724,9 @@ static void dispatch(ui_action_t a)
         case ACT_PAUSE:     mpd_pause();        return;
         case ACT_HOME:
             if(cur == SCR_NOWPLAYING) go_back(); else enter_nowplaying();
+            return;
+        case ACT_HOMEPAGE:                      /* the F button (0.21a): Home from anywhere */
+            if(cur != SCR_HOME) { folder_stack_clear(); back_to = SCR_HOME; show_home(); }
             return;
         case ACT_SETTINGS:
             switch(cur) {
@@ -753,12 +806,17 @@ static void restart_ui(void)
     else if(cur == SCR_ALBUMS && grid_scope() == GRID_SCOPE_TRACKS) args[n++] = "--tracksgrid";
     else if(cur == SCR_ALBUMS && grid_scope() == GRID_SCOPE_ARTISTS) args[n++] = "--artistsgrid";
     else if(cur == SCR_ALBUMS && grid_scope() == GRID_SCOPE_ARTIST) { args[n++] = "--artist"; args[n++] = (char *)grid_scope_artist(); }
+    else if(cur == SCR_ALBUMS && grid_scope() == GRID_SCOPE_COLLECTION) { args[n++] = "--collection"; args[n++] = (char *)grid_scope_collection(); }
     else if(cur == SCR_ALBUMS) args[n++] = "--albums";
     else if(cur == SCR_LIST && listpage_kind() == LIST_FOLDER) { args[n++] = "--folderlist"; args[n++] = (char *)listpage_folder(); }
     else if(cur == SCR_LIST && listpage_kind() == LIST_ALBUMS) { args[n++] = "--folderalbums"; args[n++] = (char *)listpage_folder(); }
     else if(cur == SCR_LIST && listpage_kind() == LIST_ALBUM) { args[n++] = "--albumlist"; args[n++] = (char *)listpage_folder(); }
     else if(cur == SCR_LIST && listpage_kind() == LIST_ARTISTS) args[n++] = "--artistslist";
     else if(cur == SCR_LIST && listpage_kind() == LIST_ARTIST_TRACKS && artists_get(listpage_artist())) { args[n++] = "--artisttracks"; args[n++] = artists_get(listpage_artist())->name; }
+    else if(cur == SCR_LIST && listpage_kind() == LIST_MIXTAPE) { args[n++] = "--mixtape"; args[n++] = (char *)listpage_folder(); }
+    else if(cur == SCR_LIST && listpage_kind() == LIST_FAVORITES) args[n++] = "--favorites";
+    else if(cur == SCR_LIST && listpage_kind() == LIST_MIXTAPES) args[n++] = "--mixtapes";
+    else if(cur == SCR_LIST && listpage_kind() == LIST_COLLECTIONS) args[n++] = "--collections";
     else if(cur == SCR_LIST) args[n++] = listpage_kind() == LIST_RECENT ? "--recent" : "--tracks";
     else if(cur == SCR_ALBUMPAGE && albumpage_folder()) { args[n++] = albumpage_by_folder() ? "--folderpage" : "--album"; args[n++] = (char *)albumpage_folder(); }
     if(restart_page[0]) { args[n++] = "--settings"; args[n++] = restart_page; }
@@ -790,7 +848,7 @@ static void mpd_changed(unsigned what)
     if(what & (MPD_CHANGED_DATABASE | MPD_CHANGED_UPDATE))
         browser_library_changed(what & MPD_CHANGED_DATABASE);
     if(what & MPD_CHANGED_DATABASE) { grid_library_changed(); listpage_library_changed(); rows_library_changed(); }
-    if(what & MPD_CHANGED_PLAYER) { albumpage_mpd_changed(); listpage_mpd_changed(); history_mpd_changed(); }
+    if(what & MPD_CHANGED_PLAYER) { albumpage_mpd_changed(); listpage_mpd_changed(); history_mpd_changed(); dacpower_mpd_changed(); }
     if(what & (MPD_CHANGED_PLAYER | MPD_CHANGED_MIXER | MPD_CHANGED_OPTIONS |
                MPD_CHANGED_PLAYLIST | MPD_CHANGED_OUTPUT))
         nowplaying_mpd_changed();
@@ -867,7 +925,8 @@ int main(int argc, char ** argv)
     crash_handler_install();
     const char * resume_folder = NULL, * resume_settings = NULL, * resume_album = NULL, * resume_folderpage = NULL;
     const char * resume_foldergrid = NULL, * resume_folderlist = NULL, * resume_folderalbums = NULL, * resume_albumlist = NULL;
-    const char * resume_artist = NULL, * resume_artisttracks = NULL;
+    const char * resume_artist = NULL, * resume_artisttracks = NULL, * resume_mixtape = NULL, * resume_collection = NULL;
+    bool resume_favorites = false, resume_mixtapes = false, resume_collections = false;
     bool resume_nowplaying = false, resume_browser = false, resume_albums = false, resume_tracks = false, resume_tracksgrid = false, resume_recent = false;
     bool resume_artists = false, resume_artistsgrid = false, resume_artistslist = false;
     argv0 = argv[0];
@@ -890,6 +949,11 @@ int main(int argc, char ** argv)
         else if(strcmp(argv[i], "--artistslist") == 0) resume_artistslist = true;
         else if(strcmp(argv[i], "--artist") == 0 && i + 1 < argc) resume_artist = argv[++i];
         else if(strcmp(argv[i], "--artisttracks") == 0 && i + 1 < argc) resume_artisttracks = argv[++i];
+        else if(strcmp(argv[i], "--favorites") == 0) resume_favorites = true;
+        else if(strcmp(argv[i], "--mixtapes") == 0) resume_mixtapes = true;
+        else if(strcmp(argv[i], "--collections") == 0) resume_collections = true;
+        else if(strcmp(argv[i], "--mixtape") == 0 && i + 1 < argc) resume_mixtape = argv[++i];
+        else if(strcmp(argv[i], "--collection") == 0 && i + 1 < argc) resume_collection = argv[++i];
         else if(strcmp(argv[i], "--settings") == 0 && i + 1 < argc) resume_settings = argv[++i];
         /* the built-in English table as a language file: the master copy of
          * share/lang/en.txt and the template for a new language */
@@ -936,7 +1000,9 @@ int main(int argc, char ** argv)
     power_init(after_resume, before_poweroff);   /* battery, screen, sleep, the power key (0.18) */
 
     mpd_connect();   /* may fail: browser shows "Starting library" and retries */
-    mpd_idle_start();/* change notices; retried with the connection if MPD isn't up */
+    mpd_idle_start();
+    dacpower_init();                         /* wake the DAC on play, let it sleep when idle (0.21c) */
+    dacpower_mpd_changed();/* change notices; retried with the connection if MPD isn't up */
     browser_scr = lv_screen_active();
     browser_create(browser_scr, grp, on_play, browser_exited, resume_folder);
     grid_create(open_album, grid_exited);
@@ -945,6 +1011,10 @@ int main(int argc, char ** argv)
     listpage_set_callbacks(open_album, grid_open_folder_tile);
     grid_set_artist_callback(open_artist);
     listpage_set_artist_callback(open_artist);
+    listpage_set_list_callback(open_list);
+    objmenu_create(curation_changed);
+    keyboard_create();                               /* naming mixtapes and collections (0.21a) */                /* A held: Favorite / Add to mixtape / Add to collection (0.21) */
+    nowplaying_set_curation_callback(curation_changed);
     rows_create(open_artist, open_album, rows_exited, view_style_changed);   /* the Artists rows (0.20) */
     history_init(listpage_history_changed);          /* what was played, for Recent (0.19a) */
     albumpage_create(albumpage_exited, albumpage_played);
@@ -967,6 +1037,11 @@ int main(int argc, char ** argv)
     if(resume_artists) show_rows(false);
     if(resume_artistsgrid) { grid_set_scope(GRID_SCOPE_ARTISTS, NULL); show_albums(false); }
     if(resume_artistslist) { listpage_open(LIST_ARTISTS, NULL); show_list(false); }
+    if(resume_favorites) { listpage_open(LIST_FAVORITES, NULL); show_list(false); }
+    if(resume_mixtapes) { listpage_open(LIST_MIXTAPES, NULL); show_list(false); }
+    if(resume_collections) { listpage_open(LIST_COLLECTIONS, NULL); show_list(false); }
+    if(resume_mixtape) { libs_refresh(); int uid = curation_find_key(resume_mixtape); if(uid && listpage_open_mixtape(uid)) show_list(false); else fprintf(stderr, "simpleton-ui: --mixtape %s: not here now\n", resume_mixtape); }
+    if(resume_collection) { libs_refresh(); if(curation_find_key(resume_collection)) { grid_set_scope(GRID_SCOPE_COLLECTION, resume_collection); show_albums(false); } else fprintf(stderr, "simpleton-ui: --collection %s: not here now\n", resume_collection); }
     if(resume_artist || resume_artisttracks) {
         /* an artist's albums or tracks: Back goes to the artists view the style setting names */
         const char * st = artists_style();
@@ -1011,6 +1086,7 @@ int main(int argc, char ** argv)
         input_poll();
         cec_poll();                             /* TV remote keys join the same queue */
         power_poll();                           /* the power key: press, hold, countdown */
+        dacpower_poll();                        /* the DAC's sleep, the validity probe (0.21c) */
         if(pfd[3].fd >= 0 && (pfd[3].revents & (POLLIN | POLLHUP | POLLERR))) {
             unsigned what = mpd_idle_poll();
             if(what & MPD_IDLE_LOST) fprintf(stderr, "simpleton-ui: mpd[idle]: connection lost, reconnecting\n");

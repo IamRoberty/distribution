@@ -84,4 +84,9 @@ bool nowplaying_art_ready(void);
  * even for a single image, so the viewer knows the cover is selected. */
 void nowplaying_browse(void);
 
+/* 0.21: the Favorite button toggled the playing track's heart (main.c
+ * tells the other screens); a heart changed elsewhere (the button follows). */
+void nowplaying_set_curation_callback(void (*on_changed)(void));
+void nowplaying_curation_changed(void);
+
 #endif

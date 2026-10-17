@@ -61,6 +61,11 @@ typedef enum {
     LIST_ALBUMS,      /* a folder's albums and subfolders, as rows         */
     LIST_ARTISTS,     /* 0.20: every artist (artists.h); on a TV the square is a mosaic of their albums */
     LIST_ARTIST_TRACKS, /* 0.20: one artist's tracks, by title or in album order */
+    LIST_FAVORITES,   /* 0.21: the favourite tracks of every card, in the order added */
+    LIST_MIXTAPES,    /* 0.21: every mixtape, a row each (a tape on the TV square) */
+    LIST_MIXTAPE,     /* 0.21: one mixtape's tracks (mixtape-style) */
+    LIST_COLLECTIONS, /* 0.21: every collection, a row each (a mosaic on the TV square); one opens as the grid */
+    LIST_KIND_COUNT
 } list_kind_t;
 
 /* `on_exit`: Back. `on_play`: a track was started (the handheld shows
@@ -75,6 +80,9 @@ void listpage_set_callbacks(void (*open_album)(const library_t *, int album, con
                             void (*open_folder)(const char * uri));
 /* An artist row (LIST_ARTISTS) opens what the "Opens as" row says (main.c). */
 void listpage_set_artist_callback(void (*open_artist)(int artist));
+/* A mixtape or collection row (0.21) opens it: main.c shows the mixtape's
+ * list or the collection's grid. */
+void listpage_set_list_callback(void (*open_list)(int uid));
 
 /* Set what the page lists; `folder` for LIST_FOLDER and LIST_ALBUMS. The
  * rows are built from the mounted cards' indexes (libs.h) at show. False
@@ -89,6 +97,10 @@ bool listpage_open_album(const char * card, int album);
  * row can change it after. The artist is the artists.h index. */
 bool listpage_open_artist_tracks(int artist, bool by_album);
 int  listpage_artist(void);                  /* LIST_ARTIST_TRACKS: the artist; -1 otherwise */
+
+/* One mixtape's tracks (LIST_MIXTAPE, 0.21): the curation.h uid. */
+bool listpage_open_mixtape(int uid);
+int  listpage_mixtape(void);                 /* LIST_MIXTAPE: the uid; 0 otherwise */
 
 list_kind_t  listpage_kind(void);
 /* Put the cursor on the row whose key this is (a track's URI, an album's
@@ -109,10 +121,12 @@ void listpage_show_picker_style(void);
 void listpage_reload_options(void);
 void listpage_library_changed(void);
 void listpage_history_changed(void);
+void listpage_curation_changed(void);        /* a favourite, mixtape or collection changed (0.21) */
 void listpage_mpd_changed(void);
 
 /* The settings id the page keeps its options under ("tracks", "recent",
- * "mixtape", "folder", "artists", "artist-tracks"). */
+ * "mixtape", "folder", "artists", "artist-tracks", "favorites", "mixtapes",
+ * "collections"). */
 const char * listpage_view_id(void);
 
 #endif

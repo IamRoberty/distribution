@@ -26,6 +26,7 @@ track.numbered = Track {n}
 np.nothing_playing = Nothing playing
 np.pick_a_track = Pick a track in the browser
 np.favorite = Favorite
+np.favorited = Favorited
 np.info = Info
 np.more = More
 
@@ -128,6 +129,7 @@ list.recent_empty = Nothing played yet
 settings.names = Names over the covers
 
 style.rows = Rows
+style.shelf = Shelf
 
 picker.opens = Opens as
 
@@ -171,6 +173,7 @@ settings.battery = Battery
 settings.screen_off = Screen off after
 settings.screen_dim = Dim before the screen goes off
 settings.idle_sleep = Sleep when nothing is playing
+settings.sleep_off = Turn off after sleeping
 settings.sleep_timer = Sleep timer
 settings.long_skip = Long tracks: skip 30 seconds
 settings.long_from = A track is long from
@@ -182,5 +185,54 @@ settings.always = Always
 settings.never = Never
 settings.seconds = {n} s
 settings.minutes = {n} min
+settings.hours = {n} hr
+settings.dac_wake = Wake the DAC on Play
+settings.dac_sleep = Let the DAC sleep after
 
 lang.name = English
+
+menu.favorite = Favorite
+menu.unfavorite = Remove from Favorites
+menu.add_mixtape = Add to mixtape…
+menu.add_collection = Add to collection…
+menu.new_mixtape = + New mixtape
+menu.new_collection = + New collection
+menu.remove_from = Remove from {name}
+menu.delete = Delete {name}
+menu.cancel = Cancel
+menu.pick_mixtape = Which mixtape?
+menu.pick_collection = Which collection?
+
+name.mixtape = Mixtape {n}
+name.collection = Collection {n}
+
+toast.favorite = Added to Favorites
+toast.unfavorite = Removed from Favorites
+toast.added = Added to {name}
+toast.added_n = {n} tracks added to {name}
+toast.already = Already on {name}
+toast.removed = Removed from {name}
+toast.deleted = {name} deleted
+toast.not_saved = Couldn't save to the card
+toast.no_card = That track's card isn't in
+
+list.favorites_empty = No favorites yet
+list.mixtapes_empty = No mixtapes yet
+list.collections_empty = No collections yet
+list.mixtape_empty = This mixtape is empty
+list.collection_empty = This collection is empty
+
+sort.added = Order added
+sort.changed = Last changed
+
+menu.rename = Rename…
+
+toast.renamed = Renamed to {name}
+
+kb.shift = Shift
+kb.shift_lock = SHIFT
+kb.space = Space
+kb.delete = Delete
+kb.done = Done
+kb.name_mixtape = Name the mixtape
+kb.name_collection = Name the collection

@@ -10,7 +10,9 @@
 #include "art.h"
 #include "cache.h"
 #include "config.h"
+#include "curation.h"
 #include "mpdc.h"
+#include "objmenu.h"
 #include "nowplaying.h"
 #include "palette.h"
 #include "placeholder.h"
@@ -209,6 +211,7 @@ static bool add_track(const lib_track_t * t)
 static bool open_finish(void)
 {
     int last_disc = -1;
+    for(int i = 0; i < alb.n; i++) alb.tr[i].fav = curation_is_favorite(alb.tr[i].uri);   /* the hearts (0.21) */
     alb.discs = 0;
     for(int i = 0; i < alb.n; i++) if(alb.tr[i].disc != last_disc) { alb.discs++; last_disc = alb.tr[i].disc; }
     /* an untitled track shows its number (the browser's rule) */
@@ -929,8 +932,15 @@ static void row_style(int i)
     int tx = is_sel ? t->tx1 : t->tx0, tw = is_sel ? t->tw1 : t->tw0;
     int cy = t->y + lh / 2;
     if(t->heart) {
+        /* after the title's first line; a long title (dots) keeps it inside
+         * the column, over the dots' tail, never past the column's edge
+         * where the field clips it (Ian, 15 Oct) */
         int r = lsize * 26 / 100;
-        lv_obj_set_pos(t->heart, lead + gutter + tx + tw + lsize * 55 / 100 - r - 1, cy - r - 1);
+        int hx = tx + tw + lsize * 55 / 100 - r - 1;
+        int col_w_s = col_w[t->side];
+        if(hx + 2 * r + 2 > col_w_s) hx = col_w_s - 2 * r - 2;
+        lv_obj_set_pos(t->heart, lead + gutter + hx, cy - r - 1);
+        lv_obj_move_foreground(t->heart);
     }
     if(is_play && mark) {
         int r = lsize * 25 / 100;
@@ -1299,6 +1309,27 @@ static void set_focus(focus_t f)
     row_style(sel);
 }
 
+/* A held on a track (0.21): the object menu - Favorite, Add to mixtape. */
+static void menu_track(int i)
+{
+    if(i < 0 || i >= alb.n) return;
+    objmenu_open_track(alb.tr[i].uri, alb.tr[i].title, alb.artist, 0, -1);
+}
+
+/* A heart came or went (0.21): the row's heart follows. */
+void albumpage_curation_changed(void)
+{
+    if(!opened) return;
+    for(int i = 0; i < alb.n; i++) {
+        bool fav = curation_is_favorite(alb.tr[i].uri);
+        if(fav == alb.tr[i].fav) continue;
+        alb.tr[i].fav = fav;
+        if(!shown || !alb.tr[i].lab) continue;
+        if(!fav && alb.tr[i].heart) { lv_obj_delete(alb.tr[i].heart); alb.tr[i].heart = NULL; }
+        else if(fav && !alb.tr[i].heart) { alb.tr[i].heart = make_heart(lv_obj_get_parent(alb.tr[i].lab), lsize * 26 / 100, FAV_RED); row_style(i); }
+    }
+}
+
 static void tv_handle(ui_action_t a)
 {
     /* the controls are up: Back takes them down from anywhere; on the
@@ -1345,6 +1376,7 @@ static void tv_handle(ui_action_t a)
             if(art_is_towards(a, side_of(sel))) set_focus(FOCUS_ART);
             return;
         case ACT_SELECT: play_from(sel); return;
+        case ACT_MENU:   menu_track(sel); return;
         case ACT_BACK:   if(exit_cb) exit_cb(); return;
         default: return;
     }
@@ -1392,6 +1424,7 @@ static void hh_handle(ui_action_t a)
         case ACT_LEFT:
         case ACT_RIGHT:  flip(true); return;                                 /* turn the album over */
         case ACT_SELECT: play_from(sel); return;
+        case ACT_MENU:   menu_track(sel); return;
         case ACT_BACK:   if(exit_cb) exit_cb(); return;
         default:         return;
     }

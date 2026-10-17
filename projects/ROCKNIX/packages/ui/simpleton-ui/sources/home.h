@@ -45,6 +45,12 @@ void home_create(void (*on_open)(home_view_t view));
  * sort straight from Home). */
 void home_set_menu_callback(void (*on_menu)(home_view_t));
 
+/* 0.21a/b: the theme's shelf style and every tape of its collection (tile
+ * and ink) with the Mixtapes tape's face, for the Mixtapes view
+ * (listpage.c) to draw mixtapes as a shelf of tapes. 0 = no shelf. */
+#include "shelf.h"
+int home_shelf_tapes(shelf_style_t * st, shelf_item_t * tapes, int max);
+
 void home_show(void);
 void home_hide(void);
 

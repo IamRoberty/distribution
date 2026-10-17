@@ -464,9 +464,15 @@ bool mpd_lsinfo_expanded(const char * uri, mpd_listing_t * out)
 
 /* ------------------------------------------------------------- queue */
 
+/* 0.21c: called before any command that starts playback (dacpower.c wakes
+ * a sleeping DAC first). */
+static void (*before_play)(void);
+void mpd_set_before_play(void (*cb)(void)) { before_play = cb; }
+
 bool mpd_play_uris(char * const * uris, int count, int start_index)
 {
     if(!mpd_connect() || count <= 0) return false;
+    if(before_play) before_play();
     if(!send_raw(&ui, "command_list_begin\nclear\n")) return false;
     for(int i = 0; i < count; i++) {
         char cmd[2048] = "add";
@@ -497,13 +503,14 @@ bool mpd_toggle_pause(void)
     mpd_status_t st;
     if(!mpd_status(&st)) return false;
     if(strcmp(st.state, "play") == 0)  return simple_command("pause 1");
+    if(before_play) before_play();
     if(strcmp(st.state, "pause") == 0) return simple_command("pause 0");
     return simple_command("play");          /* stopped: start the queue */
 }
 
 /* "play" with no argument resumes from pause or starts a stopped queue;
  * "pause 1" while stopped does nothing. Neither needs a status round trip. */
-bool mpd_resume(void) { return simple_command("play"); }
+bool mpd_resume(void) { if(before_play) before_play(); return simple_command("play"); }
 bool mpd_pause(void)  { return simple_command("pause 1"); }
 
 /* ------------------------------------------------- idle notifications */

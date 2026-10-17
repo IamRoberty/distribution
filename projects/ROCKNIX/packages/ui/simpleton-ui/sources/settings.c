@@ -149,17 +149,22 @@ static void power_choices(const char * key)
     static const int idle_sleep[] = { 300, 600, 1800, 0 };
     static const int sleep_timer[] = { 0, 15, 30, 60, 90 };
     static const int long_min[] = { 20, 30, 60 };
+    static const int dac_sleep[] = { 60, 300, 900, 1800, 0 };
+    static const int sleep_off[] = { 900, 3600, 14400, 0 };
     const int * v; int n; bool minutes;
     if(strcmp(key, "screen_off") == 0)      { v = screen_off;  n = 5; minutes = false; }
     else if(strcmp(key, "idle_sleep") == 0) { v = idle_sleep;  n = 4; minutes = false; }
     else if(strcmp(key, "sleep_timer") == 0){ v = sleep_timer; n = 5; minutes = true;  }
+    else if(strcmp(key, "dac_sleep") == 0)  { v = dac_sleep;   n = 5; minutes = false; }
+    else if(strcmp(key, "sleep_off") == 0)  { v = sleep_off;   n = 4; minutes = false; }
     else                                    { v = long_min;    n = 3; minutes = true;  }
     choice_count = n;
     for(int i = 0; i < n; i++) {
         snprintf(choices[i].code, sizeof(choices[i].code), "%d", v[i]);
         if(v[i] == 0) { snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(strcmp(key, "sleep_timer") == 0 ? S_SET_OFF : S_SET_NEVER)); continue; }
         char num[16];
-        if(!minutes && v[i] >= 60 && v[i] % 60 == 0) { snprintf(num, sizeof(num), "%d", v[i] / 60); ui_strf(choices[i].name, sizeof(choices[i].name), S_SET_MINUTES, "n", num, NULL); }
+        if(!minutes && v[i] >= 3600 && v[i] % 3600 == 0) { snprintf(num, sizeof(num), "%d", v[i] / 3600); ui_strf(choices[i].name, sizeof(choices[i].name), S_SET_HOURS, "n", num, NULL); }
+        else if(!minutes && v[i] >= 60 && v[i] % 60 == 0) { snprintf(num, sizeof(num), "%d", v[i] / 60); ui_strf(choices[i].name, sizeof(choices[i].name), S_SET_MINUTES, "n", num, NULL); }
         else if(!minutes) { snprintf(num, sizeof(num), "%d", v[i]); ui_strf(choices[i].name, sizeof(choices[i].name), S_SET_SECONDS, "n", num, NULL); }
         else { snprintf(num, sizeof(num), "%d", v[i]); ui_strf(choices[i].name, sizeof(choices[i].name), S_SET_MINUTES, "n", num, NULL); }
     }
@@ -169,7 +174,8 @@ static bool is_power_key(const char * key)
 {
     return strcmp(key, "screen_off") == 0 || strcmp(key, "screen_dim") == 0 || strcmp(key, "idle_sleep") == 0 ||
            strcmp(key, "sleep_timer") == 0 || strcmp(key, "long_track_skip") == 0 || strcmp(key, "long_track_min") == 0 ||
-           strcmp(key, "leds") == 0 || strcmp(key, "keep_on_plugged") == 0 || strcmp(key, "battery_show") == 0;
+           strcmp(key, "leds") == 0 || strcmp(key, "keep_on_plugged") == 0 || strcmp(key, "battery_show") == 0 ||
+           strcmp(key, "dac_wake") == 0 || strcmp(key, "dac_sleep") == 0 || strcmp(key, "sleep_off") == 0;
 }
 
 static void add_choice(const char * label, const char * key, choice_kind_t ck, const char * current);
@@ -352,10 +358,13 @@ static void build_rows(void)
         add_toggle(T(S_SET_SCREEN_DIM), "screen_dim", true);
         add_toggle(T(S_SET_KEEP_ON_PLUGGED), "keep_on_plugged", true);
         add_power_choice(S_SET_IDLE_SLEEP, "idle_sleep", "600");
+        add_power_choice(S_SET_SLEEP_OFF, "sleep_off", "3600");
         add_power_choice(S_SET_SLEEP_TIMER, "sleep_timer", "0");
         add_toggle(T(S_SET_LONG_SKIP), "long_track_skip", true);
         add_power_choice(S_SET_LONG_FROM, "long_track_min", "20");
         add_toggle(T(S_SET_LEDS), "leds", true);
+        add_toggle(T(S_SET_DAC_WAKE), "dac_wake", true);
+        add_power_choice(S_SET_DAC_SLEEP, "dac_sleep", "300");
     }
     else if(strcmp(page, "system") == 0) {
         row_t * r = add_row(ROW_TEXT, T(S_SET_VERSION));

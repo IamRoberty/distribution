@@ -56,6 +56,7 @@ static bool   notified10, notified5, shutting_down;
 static int  set_screen_off_s = 60;
 static bool set_dim = true;
 static int  set_idle_sleep_s = 600;
+static int  set_sleep_off_s = 3600;      /* asleep this long -> a clean power-off (0.22; 0 = never) */
 static int  set_sleep_timer_min;
 static bool set_long_skip = true;
 static int  set_long_min = 20;
@@ -155,6 +156,7 @@ void power_reload_settings(void)
     set_screen_off_s    = read_setting_int("screen_off", 60);
     set_dim             = config_read_bool("screen_dim", true);
     set_idle_sleep_s    = read_setting_int("idle_sleep", 600);
+    set_sleep_off_s     = read_setting_int("sleep_off", 3600);
     set_long_skip       = config_read_bool("long_track_skip", true);
     set_long_min        = read_setting_int("long_track_min", 20);
     set_leds            = config_read_bool("leds", true);
@@ -168,8 +170,8 @@ void power_reload_settings(void)
         sleep_timer_end_ms = timer > 0 ? now_ms() + (uint32_t)timer * 60000u : 0;
         if(timer > 0) fprintf(stderr, "simpleton-ui: power: sleep timer %d min\n", timer);
     }
-    fprintf(stderr, "simpleton-ui: power: screen off %d s%s, idle sleep %d s, long tracks %s from %d min, lights %s, plugged keeps the screen %s, indicator %s\n",
-            set_screen_off_s, set_dim ? " (dims first)" : "", set_idle_sleep_s,
+    fprintf(stderr, "simpleton-ui: power: screen off %d s%s, idle sleep %d s, off after %d s asleep, long tracks %s from %d min, lights %s, plugged keeps the screen %s, indicator %s\n",
+            set_screen_off_s, set_dim ? " (dims first)" : "", set_idle_sleep_s, set_sleep_off_s,
             set_long_skip ? "skip 30 s" : "skip whole", set_long_min, set_leds ? "on" : "off",
             set_keep_on_plugged ? "on" : "off", set_battery_show >= 2 ? "always" : set_battery_show == 1 ? "after a button" : "never");
 }
@@ -495,6 +497,34 @@ static void drain_key(void)
     while(read(key_fd, ev, sizeof(ev)) > 0) {}
 }
 
+/* ------------------------------------------------ sleep, then off (0.22) */
+
+/* Ian, 16 Oct: a unit asleep looks off, and asleep it lost 35 % in 17.5 h -
+ * people would find it dead. So every sleep (the key, the menu, the idle
+ * sleep, the sleep timer) sets the PMIC's clock (rk808-rtc) to wake the
+ * unit after sleep_off seconds; woken by that alarm rather than a button,
+ * it powers off cleanly, in the dark, with the music paused. */
+static long boottime_s(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_BOOTTIME, &ts);         /* counts the time asleep, unlike MONOTONIC */
+    return (long)ts.tv_sec;
+}
+
+static bool alarm_set(int seconds)
+{
+    write_str("class/rtc/rtc0/device/power/wakeup", "enabled");   /* the RTC may wake us */
+    write_str("class/rtc/rtc0/wakealarm", "0");                     /* a new one needs the old cleared */
+    char v[24];
+    snprintf(v, sizeof(v), "+%d", seconds);
+    bool ok = write_str("class/rtc/rtc0/wakealarm", v);
+    if(ok) fprintf(stderr, "simpleton-ui: power: off in %d s unless woken\n", seconds);
+    else fprintf(stderr, "simpleton-ui: power: couldn't set the wake alarm (%s): this sleep won't turn into off\n", strerror(errno));
+    return ok;
+}
+
+static bool quiet_off;                    /* power off without lighting the screen */
+
 void power_sleep(void)
 {
     if(menu_shown) { lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN); menu_shown = false; }
@@ -502,10 +532,31 @@ void power_sleep(void)
     /* "Sleeping..." on a lit screen; a dark one stays dark (the idle sleep) */
     if(!screen_off) { screen_undim(); overlay_show(T(S_POWER_SLEEPING)); }
     fprintf(stderr, "simpleton-ui: power: sleeping\n");
+    bool alarm = set_sleep_off_s > 0 && alarm_set(set_sleep_off_s);
+    long t0 = boottime_s();
     /* deep suspend: this write returns when the unit wakes */
     if(!write_str("power/state", "mem")) fprintf(stderr, "simpleton-ui: power: suspend failed: %s\n", strerror(errno));
     resumed_ms = now_ms();
     drain_key();
+    long slept = boottime_s() - t0;
+    const char * test_slept = getenv("SIMPLETON_TEST_SLEPT_S");   /* the rig: "the unit slept this long" */
+    if(test_slept && test_slept[0]) slept += atol(test_slept);
+    if(alarm) {
+        /* the alarm fired (the RTC clears it) or the time is up: off */
+        char left[32];
+        bool fired = read_line("class/rtc/rtc0/wakealarm", left, sizeof(left)) && left[0] == 0;
+        if(fired || slept >= set_sleep_off_s - 5) {
+            fprintf(stderr, "simpleton-ui: power: asleep %ld s: off\n", slept);
+            mpd_pause();                  /* the next start comes up paused where it was */
+            overlay_hide();
+            screen_set_off(true);         /* the panel woke with the unit: dark again */
+            quiet_off = true;
+            power_poweroff();
+            if(shutting_down) return;     /* systemd is taking it down */
+            quiet_off = false;            /* the rig's stand-in command: carry on awake */
+        }
+        else write_str("class/rtc/rtc0/wakealarm", "0");   /* woken by a button: no alarm left behind */
+    }
     overlay_hide();
     screen_set_off(false);
     fprintf(stderr, "simpleton-ui: power: awake\n");
@@ -524,9 +575,11 @@ void power_poweroff(void)
     shutting_down = true;
     key_down = false;
     if(menu_shown) { lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN); menu_shown = false; }
-    screen_undim();
-    screen_set_off(false);
-    overlay_show(T(S_POWER_SHUTTING_DOWN));
+    if(!quiet_off) {                           /* off from a sleep stays dark */
+        screen_undim();
+        screen_set_off(false);
+        overlay_show(T(S_POWER_SHUTTING_DOWN));
+    }
     fprintf(stderr, "simpleton-ui: power: powering off\n");
     if(poweroff_cb) poweroff_cb();
     const char * cmd = getenv("SIMPLETON_POWEROFF_CMD");

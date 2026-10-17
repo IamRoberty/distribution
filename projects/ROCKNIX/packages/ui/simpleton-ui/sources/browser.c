@@ -26,6 +26,8 @@
  */
 #include "browser.h"
 #include "config.h"
+#include "libs.h"
+#include "objmenu.h"
 #include "mpdc.h"
 #include "picker.h"
 #include "strings.h"
@@ -752,8 +754,25 @@ void browser_handle_action(ui_action_t a)
             break;
         case ACT_LEFT:  page(-1); break;
         case ACT_RIGHT: page(+1); break;
-        case ACT_MENU:
-            break;   /* object menu: later */
+        case ACT_MENU: {
+            /* the object menu (0.21): a file is a track; a folder that is an
+             * album (the index knows) is that album */
+            lv_obj_t * f = lv_group_get_focused(grp);
+            int i = f ? (int)(intptr_t)lv_obj_get_user_data(f) : -1;
+            if(i < 0 || i >= cur.count) break;
+            const mpd_entry_t * e = &cur.items[i];
+            if(e->kind == MPD_ENTRY_FILE) { objmenu_open_track(e->uri, e->display, "", 0, -1); break; }
+            const lib_folder_t * fo;
+            const lib_source_t * src = libs_find_folder(e->uri, &fo);
+            if(!src || fo->type != FOLDER_ALBUM || fo->album < 0) break;
+            const lib_album_t * a = &src->lib.albums[fo->album];
+            const char ** uris = calloc((size_t)a->track_count + 1, sizeof(char *));
+            int n = 0;
+            for(int k = a->first_track; uris && k < src->lib.ntracks && n < a->track_count; k++) if(src->lib.tracks[k].album == fo->album) uris[n++] = src->lib.tracks[k].uri;
+            objmenu_open_album(a->folder, a->title, a->various ? T(S_VARIOUS_ARTISTS) : a->artist, uris, n, 0, -1);
+            free(uris);
+            break;
+        }
         default:
             break;
     }

@@ -72,7 +72,7 @@ int          placeholder_design_lines(const char * name);   /* its text lines (0
 /* Render `design` (NULL = the theme's) in given colours: zones named in
  * `tints` take their colour, the rest `fallback`; text in `ink`, the album
  * line in `album_font` (NULL = the theme's line-2 font) set in caps when
- * asked. Caller frees. */
+ * asked; "*<file>" puts that face on every line (0.21b). Caller frees. */
 uint8_t * placeholder_render_design(const char * design, const placeholder_tint_t * tints, int ntints, uint32_t fallback,
                                     uint32_t ink, const char * album_font, bool album_caps,
                                     const char * artist, const char * album, const char * title, int * w, int * h);

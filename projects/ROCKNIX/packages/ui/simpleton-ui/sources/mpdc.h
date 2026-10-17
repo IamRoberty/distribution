@@ -166,4 +166,7 @@ bool mpd_status(mpd_status_t * out);
  * has no embedded picture or MPD is unreachable. */
 bool mpd_readpicture(const char * uri, uint8_t ** data, size_t * len);
 
+/* 0.21c: a hook run before any command that starts playback (dacpower.c). */
+void mpd_set_before_play(void (*cb)(void));
+
 #endif

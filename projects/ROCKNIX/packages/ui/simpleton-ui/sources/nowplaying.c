@@ -39,6 +39,8 @@
 #include "power.h"
 #include "art.h"
 #include "mpdc.h"
+#include "curation.h"
+#include "objmenu.h"
 #include "strings.h"
 #include "theme.h"
 
@@ -92,6 +94,8 @@ static char expected_file[1024];      /* the current song as far as we or the ho
 static bool host_stale_ok;            /* hosted: art of an earlier track of the same album may stay up */
 static bool art_is_placeholder;       /* the art on screen is the themed placeholder, not a cover (11 Oct) */
 static int  row = ROW_TRANSPORT, tr_cur = TR_PLAY, bt_cur = BT_FAV;
+static void (*fav_cb)(void);
+void nowplaying_set_curation_callback(void (*on_changed)(void)) { fav_cb = on_changed; }
 
 static mpd_status_t st;
 static bool     status_dirty = true;  /* MPD said something changed: fetch status */
@@ -328,6 +332,16 @@ static void update_transport_icon(void)
     lv_label_set_text(tr_lbl[TR_PLAY], strcmp(st.state, "play") == 0 ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
 }
 
+/* The Favorite button reads the playing track's heart (0.21). */
+static void update_fav(void)
+{
+    if(!bt_btn[BT_FAV]) return;
+    lv_obj_t * l = lv_obj_get_child(bt_btn[BT_FAV], 0);
+    if(l) lv_label_set_text(l, T(st.file[0] && curation_is_favorite(st.file) ? S_NP_FAVORITED : S_NP_FAVORITE));
+}
+
+void nowplaying_curation_changed(void) { update_fav(); }
+
 static void update_text(void)
 {
     if(!st.file[0]) {
@@ -336,6 +350,7 @@ static void update_text(void)
         return;
     }
     lv_label_set_text(title_lbl, st.title);
+    update_fav();
     char sub[600];
     if(st.artist[0] && st.album[0]) snprintf(sub, sizeof(sub), "%s  \xE2\x80\xA2  %s", st.artist, st.album);
     else snprintf(sub, sizeof(sub), "%s", st.artist[0] ? st.artist : st.album);
@@ -1076,7 +1091,16 @@ np_result_t nowplaying_handle_action(ui_action_t a)
         case ACT_SELECT:
             if(row == ROW_TRANSPORT) transport_act();
             else if(row == ROW_SCRUB) { mpd_toggle_pause(); request_status(); }
-            /* ROW_BOTTOM: favorites / info / options arrive with curation */
+            else if(row == ROW_BOTTOM && bt_cur == BT_FAV && st.file[0]) {
+                /* the heart on the playing track (0.21) */
+                bool on = !curation_is_favorite(st.file);
+                bool ok = curation_set_favorite(st.file, on);
+                if(!ok && !curation_is_favorite(st.file)) objmenu_toast(T(S_TOAST_NO_CARD));
+                else objmenu_toast(T(ok ? (on ? S_TOAST_FAVORITE : S_TOAST_UNFAVORITE) : S_TOAST_NOT_SAVED));
+                update_fav();
+                if(fav_cb) fav_cb();
+            }
+            else if(row == ROW_BOTTOM && bt_cur == BT_MORE && st.file[0]) objmenu_open_track(st.file, st.title, st.artist, 0, -1);
             break;
         case ACT_BACK:
             hide_controls();

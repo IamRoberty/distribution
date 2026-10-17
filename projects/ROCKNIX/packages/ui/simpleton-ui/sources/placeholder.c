@@ -814,18 +814,18 @@ static void render_area(uint32_t * out, const design_t * d, int item, int fi, bo
     }
 }
 
-static void render_lines(uint32_t * out, const design_t * d, const char * const * texts, uint32_t ink, int album_font, bool album_caps)
+static void render_lines(uint32_t * out, const design_t * d, const char * const * texts, uint32_t ink, int album_font, bool album_caps, bool all_lines)
 {
     for(int l = 0; l < d->line_count; l++) {
         int fi = line_font[l];
         bool caps = line_caps[l];
-        if(l == 1 && album_font >= 0) { fi = album_font; caps = album_caps; }   /* line 2 is the album's */
+        if((l == 1 || all_lines) && album_font >= 0) { fi = album_font; caps = album_caps; }   /* line 2 is the album's; or every line (a mixtape's hand, 0.21b) */
         render_line(out, &d->lines[l], fi, caps, texts[l], ink);
     }
     for(int item = 0; item < 3 && d->area_count > 0; item++) {
         int fi = line_font[item];
         bool caps = line_caps[item];
-        if(item == 1 && album_font >= 0) { fi = album_font; caps = album_caps; }
+        if((item == 1 || all_lines) && album_font >= 0) { fi = album_font; caps = album_caps; }
         render_area(out, d, item, fi, caps, texts[item], ink);
     }
 }
@@ -843,8 +843,10 @@ uint8_t * placeholder_render_design(const char * design, const placeholder_tint_
     tints_to_zones(d, tints, ntints, fallback, zone_rgb);
     tint(out, d, zone_rgb);
     const char * texts[MAX_LINES] = { artist ? artist : "", album ? album : "", title ? title : "", "" };
+    bool all = album_font && album_font[0] == '*';                       /* "*<file>": that face on every line */
+    if(all) album_font++;
     int af = album_font && album_font[0] ? font_index(album_font) : -1;
-    render_lines(out, d, texts, ink, af, album_caps);
+    render_lines(out, d, texts, ink, af, album_caps, all);
     *w = *h = box;
     return (uint8_t *)out;
 }
@@ -908,7 +910,7 @@ uint8_t * placeholder_render(const char * uri, const char * artist, const char *
         bool caps = prefer_caps;
         pthread_mutex_unlock(&prefer_lock);
         tint(out, main_design, zone_rgb);
-        render_lines(out, main_design, texts, ink, font[0] ? font_index(font) : -1, caps);
+        render_lines(out, main_design, texts, ink, font[0] ? font_index(font) : -1, caps, false);
         *w = *h = box;
         return (uint8_t *)out;
     }
@@ -921,7 +923,7 @@ uint8_t * placeholder_render(const char * uri, const char * artist, const char *
     const colourway_t * way = &ways[i];
 
     tint(out, main_design, way->zone_rgb);
-    render_lines(out, main_design, texts, way->ink, -1, false);
+    render_lines(out, main_design, texts, way->ink, -1, false, false);
 
     *w = *h = box;
     return (uint8_t *)out;

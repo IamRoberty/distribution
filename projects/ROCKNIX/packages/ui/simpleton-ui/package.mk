@@ -375,9 +375,22 @@
 # draw size, even with overflow visible): each row now claims room for a
 # grown cover and its shadow. An artist's albums share their lines evenly
 # (7 in rows of 5 as 4 + 3, 6 as 3 + 3).
+# 0.21 (15 Oct 2026): favourites, mixtapes and collections, kept on the
+# music card (.simpleton/curation/: favorites.m3u8, mixtapes/*.m3u8,
+# collections/*.txt - plain playlists any player reads; safe writes, a copy
+# on the unit that comes back when a card is wiped). A held (the remote's
+# Options key, or OK held on a TV that reports the release) opens the
+# object menu on a track or an album: Favorite, Add to mixtape..., Add to
+# collection...; a new one is named "Mixtape 1" at once. Now-playing's
+# Favorite button works; the album page's hearts show. Favorites, Mixtapes
+# and Collections open from Home: lists; a mixtape is the mixtape-style
+# list, a collection a grid of its albums (a mosaic on the TV list). Recent
+# stays on the unit (Ian). CEC: a key trace setting (cec-trace) and the
+# TV's vendor id in the log.
 # Source layout (all in sources/, copied into ${PKG_BUILD} by scripts/unpack):
 #   main.c        - theme/indev setup, screen switch, action dispatch
 #   power.c/h     - battery indicator, screen off, sleep, power key, lights
+#                   0.22: every sleep sets the RTC alarm (sleep_off, default 1 h); woken by it -> a clean, dark power-off
 #   display.c/h   - DRM/KMS output choice, modeset, page flips, hotplug
 #   theme.c       - the square stage behind theme.h
 #   layout.c/h    - real screen, sizes XXL..S, grid and list measurements
@@ -388,6 +401,11 @@
 #   fonts.c/h     - FreeType fonts with a Noto fallback chain per size
 #   input.c/h     - evdev joypad + volume rocker -> ui_action_t queue, auto-repeat
 #   cec.c/h       - HDMI-CEC: TV remote keys -> same ui_action_t queue
+#   curation.c/h  - favourites, mixtapes, collections on the music card (0.21)
+#   objmenu.c/h   - the object menu (A held) and the toast (0.21)
+#   keyboard.c/h  - the small on-unit keyboard for naming (0.21a)
+#   dacpower.c/h  - wake the USB DAC on play, let it sleep when idle (0.21c)
+#                   0.21d: the link held down 0.75 s before the resume (an instant one did not wake the DX5 II)
 #   mpdc.c/h      - minimal MPD text-protocol client (no libmpdclient)
 #   playthrough.c/h - play through folders, driven by MPD notices
 #   browser.c/h   - folder browser screen
@@ -433,7 +451,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.20d"
+PKG_VERSION="0.22"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk alsa-lib"
@@ -470,7 +488,7 @@ make_target() {
     ${PKG_BUILD}/grid.c ${PKG_BUILD}/thumbs.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/tilestyle.c ${PKG_BUILD}/palette.c \
     ${PKG_BUILD}/textfit.c ${PKG_BUILD}/tiletext.c ${PKG_BUILD}/albumpage.c ${PKG_BUILD}/hdmisilence.c ${PKG_BUILD}/power.c \
     ${PKG_BUILD}/libs.c ${PKG_BUILD}/listpage.c ${PKG_BUILD}/history.c \
-    ${PKG_BUILD}/artists.c ${PKG_BUILD}/rows.c \
+    ${PKG_BUILD}/artists.c ${PKG_BUILD}/rows.c ${PKG_BUILD}/curation.c ${PKG_BUILD}/objmenu.c ${PKG_BUILD}/keyboard.c ${PKG_BUILD}/dacpower.c \
     ${TARGET_LDFLAGS} -rdynamic \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \

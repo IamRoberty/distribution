@@ -35,10 +35,32 @@
  * resend only confirms the key is still down, and Released stops it. Scroll
  * speed is then the same on every TV, and the same as the D-pad.
  *
+ * OK held (0.21, 15 Oct 2026): Ian - "long hold on both of my TVs works
+ * on apps on my TV. It's a part of the interface." Media players say long
+ * press can't pass over CEC, but that is their software (Kodi turns every
+ * CEC message into its own press); the bus carries enough. A TV sends
+ * User Control Pressed when OK goes down, resends it while it is held (the
+ * spec: within 550 ms of the last), and sends Released when it comes up -
+ * a tap is Pressed ... Released a couple of hundred ms later, a hold keeps
+ * going. So once a TV has shown it sends Released for OK, OK acts on its
+ * release like the handheld's A: up before OK_HOLD_MS = Select, still down
+ * at OK_HOLD_MS = the object menu (ACT_MENU), at once, without waiting for
+ * the release. Until then (a fresh start, a new TV), and for a TV that
+ * never sends Released, OK selects on press as before and the remote's
+ * Options key stays the way to the menu. A TV that drops Released for OK
+ * (another key's Pressed arrives while OK is down) is trusted no longer.
+ * TVs that send Pressed and Released together for every press get Select
+ * from a hold, as before.
+ *
+ * Key trace (0.21): with the setting cec-trace = 1, every key message is
+ * logged with its time since the key went down, and the TV's vendor is
+ * asked for and logged - the field research for TVs we don't own.
+ *
  * Messages are built by hand (header byte, opcode, operands) rather than with
  * linux/cec-funcs.h, to depend on nothing beyond linux/cec.h.
  */
 #include "cec.h"
+#include "config.h"
 #include "input.h"
 
 #include <errno.h>
@@ -99,6 +121,17 @@ static int claim_tries;
 /* Key repeat tracking: a held remote key arrives as repeated "pressed"
  * messages with no "released" in between. */
 static int held_code = -1;
+
+/* OK held = the object menu (see header). */
+#define OK_HOLD_MS   600
+#define OK_QUIET_MS  2500                /* a press with no news this long is over */
+static bool ok_releases;                 /* this TV has sent Released after OK */
+static bool ok_down, ok_acted;           /* OK is down; its action has been sent */
+static uint32_t ok_down_ms, ok_news_ms;
+
+/* The key trace (cec-trace = 1). */
+static bool trace;
+static uint32_t trace_down_ms;
 
 int cec_fd(void) { return fd; }
 
@@ -199,6 +232,8 @@ bool cec_init(void)
     /* Non-blocking from here on: claims happen in the background (they need
      * the TV), and we hear about them as state-change events. */
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    trace = config_read_bool("cec-trace", false);
+    if(trace) fprintf(stderr, "simpleton-ui: cec: key trace on\n");
 
     struct cec_log_addrs la;
     memset(&la, 0, sizeof(la));
@@ -232,20 +267,69 @@ static void on_state_change(const struct cec_event * ev)
 
     bool newly_claimed = la != 0xF && pa != CEC_PHYS_ADDR_INVALID &&
                          (la != my_la || pa != my_pa);
+    if(pa != my_pa) ok_releases = false;    /* another TV: learn it again */
     my_la = la;
     my_pa = pa;
     held_code = -1;
+    ok_down = false;
     input_hold_end();
     if(la == 0xF) active = false;
     if(newly_claimed && ANNOUNCE_ON_CLAIM) send_active_source();
+    if(newly_claimed) {
+        /* ask the TV who made it (one line in the log; the key trace and
+         * any TV-specific quirk need to know) */
+        uint8_t b[] = { CEC_MSG_GIVE_DEVICE_VENDOR_ID };
+        transmit(CEC_LOG_ADDR_TV, b, sizeof(b));
+    }
 }
 
 /* ---- remote keys ---- */
 
+static void trace_key(const char * what, int code, bool repeat)
+{
+    if(!trace) return;
+    uint32_t t = now_ms();
+    if(!repeat && code >= 0) trace_down_ms = t;
+    if(code >= 0) fprintf(stderr, "simpleton-ui: cec: key 0x%02x %s +%u ms\n", code, what, (unsigned)(t - trace_down_ms));
+    else fprintf(stderr, "simpleton-ui: cec: key %s +%u ms\n", what, (unsigned)(t - trace_down_ms));
+}
+
+/* OK went down (or is still down: `repeat`). */
+static void ok_pressed(bool repeat)
+{
+    uint32_t t = now_ms();
+    if(repeat) { ok_news_ms = t; return; }
+    ok_down = true;
+    ok_down_ms = ok_news_ms = t;
+    ok_acted = !ok_releases;
+    if(!ok_releases) input_push(ACT_SELECT);   /* a TV not yet known to send Released: act now */
+}
+
+/* Released while OK was down. */
+static void ok_released(void)
+{
+    if(!ok_down) return;
+    ok_down = false;
+    if(!ok_releases) {
+        ok_releases = true;
+        fprintf(stderr, "simpleton-ui: cec: the TV sends Released for OK: holding OK opens the menu\n");
+    }
+    if(!ok_acted) input_push(now_ms() - ok_down_ms >= OK_HOLD_MS ? ACT_MENU : ACT_SELECT);
+}
+
 static void on_key_pressed(uint8_t code)
 {
     bool repeat = (code == held_code);
+    trace_key(repeat ? "pressed again" : "pressed", code, repeat);
+    if(ok_down && code != UC_SELECT) {
+        /* another key while OK was down: the TV dropped OK's Released */
+        if(ok_releases) fprintf(stderr, "simpleton-ui: cec: no Released for OK: OK selects on press again\n");
+        ok_releases = false;
+        if(!ok_acted) input_push(ACT_SELECT);
+        ok_down = false;
+    }
     held_code = code;
+    if(code == UC_SELECT) { ok_pressed(repeat); return; }
 
     ui_action_t a = ACT_NONE;
     bool repeats = false;                /* only navigation auto-repeats */
@@ -254,7 +338,6 @@ static void on_key_pressed(uint8_t code)
         case UC_DOWN:          a = ACT_DOWN;  repeats = true; break;
         case UC_LEFT:          a = ACT_LEFT;  repeats = true; break;
         case UC_RIGHT:         a = ACT_RIGHT; repeats = true; break;
-        case UC_SELECT:        a = ACT_SELECT;    break;
         case UC_EXIT:          a = ACT_BACK;      break;
         case UC_ROOT_MENU:     a = ACT_HOME;      break;   /* TVs often keep Home for themselves */
         case UC_SETUP_MENU:
@@ -298,8 +381,14 @@ static void on_message(const struct cec_msg * m)
             if(m->len >= 3) on_key_pressed(m->msg[2]);
             return;
         case CEC_MSG_USER_CONTROL_RELEASED:
+            trace_key("released", -1, true);
+            if(held_code == UC_SELECT) ok_released();
             held_code = -1;
             input_hold_end();
+            return;
+        case CEC_MSG_DEVICE_VENDOR_ID:              /* broadcast; we asked the TV after claiming */
+            if(from == CEC_LOG_ADDR_TV && m->len >= 5)
+                fprintf(stderr, "simpleton-ui: cec: TV vendor id %02x%02x%02x\n", m->msg[2], m->msg[3], m->msg[4]);
             return;
 
         case CEC_MSG_REQUEST_ACTIVE_SOURCE:         /* "who's on screen?" */
@@ -369,6 +458,14 @@ void cec_poll(void)
             continue;
         }
         on_message(&m);
+    }
+
+    /* OK still down at OK_HOLD_MS on a TV that sends Released: the menu,
+     * now, not at the release; a press that goes quiet is over */
+    if(ok_down) {
+        uint32_t t = now_ms();
+        if(!ok_acted && t - ok_down_ms >= OK_HOLD_MS) { ok_acted = true; input_push(ACT_MENU); }
+        if(t - ok_news_ms >= OK_QUIET_MS && t - ok_down_ms >= OK_QUIET_MS) ok_down = false;
     }
 
     /* HDMI connected but nothing claimed (TV's CEC was off, or switched on

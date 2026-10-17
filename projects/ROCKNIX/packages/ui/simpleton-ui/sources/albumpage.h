@@ -84,6 +84,7 @@ void albumpage_handle_action(ui_action_t a);
 
 /* MPD's player changed: the playing mark follows the current song. */
 void albumpage_mpd_changed(void);
+void albumpage_curation_changed(void);       /* a favourite came or went (0.21): the hearts follow */
 
 /* The open album's folder (for the restart line), or NULL. */
 const char * albumpage_folder(void);

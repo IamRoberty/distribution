@@ -55,12 +55,15 @@ typedef enum {
     GRID_SCOPE_FOLDER,
     GRID_SCOPE_TRACKS,
     GRID_SCOPE_ARTISTS,        /* 0.20: every artist (artists.h) - a picture or a name tile each */
-    GRID_SCOPE_ARTIST          /* 0.20: one artist's albums, `folder` = the artist's name       */
+    GRID_SCOPE_ARTIST,         /* 0.20: one artist's albums, `folder` = the artist's name       */
+    GRID_SCOPE_COLLECTION      /* 0.21: one collection's albums, `folder` = its key (curation.h) */
 } grid_scope_t;
 void         grid_set_scope(grid_scope_t scope, const char * folder);
 grid_scope_t grid_scope(void);
 const char * grid_scope_folder(void);          /* NULL unless GRID_SCOPE_FOLDER */
 const char * grid_scope_artist(void);          /* NULL unless GRID_SCOPE_ARTIST: the artist's name */
+const char * grid_scope_collection(void);      /* NULL unless GRID_SCOPE_COLLECTION: the collection's key */
+void         grid_curation_changed(void);      /* a collection changed (0.21) */
 
 /* `open_folder`: Select on a folder tile (main.c opens that folder's own
  * view); `on_play`: a track was started from the Tracks grid (main.c shows
