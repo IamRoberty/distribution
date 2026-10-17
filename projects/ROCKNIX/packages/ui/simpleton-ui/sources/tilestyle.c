@@ -3,6 +3,7 @@
  * See tilestyle.h.
  */
 #include "tilestyle.h"
+#include "placeholder.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -825,4 +826,19 @@ void tilestyle_page_accents(unsigned seed, uint32_t bg, uint32_t ink, uint32_t *
         *sel = cand[i].c;
         break;
     }
+}
+
+void tilestyle_prefer_track(const char * uri, const tile_style_t * tile, unsigned seed)
+{
+    if(!uri || !tile) return;
+    uint32_t label, shell, dark;
+    tilestyle_picture_colours(seed, tile, &label, &shell, &dark);
+    unsigned x = seed ^ 0x9E3779B9u;
+    for(const char * p = uri; *p; p++) x = (x ^ (unsigned char)*p) * 16777619u;
+    bool black = x % 5 == 0;                            /* coloured vinyl most times, black one in five */
+    uint32_t disc = black ? dark : shell;
+    placeholder_tint_t tints[8] = { {"background", tile->bg}, {"label", label}, {"shell", shell}, {"sleeve", shell},
+                                    {"centre", label}, {"disc", disc}, {"groove", disc}, {"spindle", label} };
+    const tile_font_t * f = tile->font != TILE_FONT_NONE ? tilestyle_font(tile->font) : NULL;
+    placeholder_prefer_track(uri, tints, 8, tile->bg, tile->ink, f ? f->file : NULL, f ? f->caps : false);
 }

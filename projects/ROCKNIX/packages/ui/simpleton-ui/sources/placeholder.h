@@ -86,4 +86,14 @@ void placeholder_prefer(const char * const * uris, int nuris, const char * artis
                         const placeholder_tint_t * tints, int ntints, uint32_t fallback,
                         uint32_t ink, const char * album_font, bool album_caps);
 
+/* 0.23e (Ian, 17 Oct): the view a track was played from hands over the
+ * colours it showed that track in, track by track - the Tracks grid's cell,
+ * the list's section, the rows' tile - so now-playing's tape or record
+ * wears them. placeholder_prefer_tracks_begin() clears the table (a new
+ * queue); placeholder_prefer_track() files one track (the first 512). A
+ * track in this table wins over the album-level placeholder_prefer(). */
+void placeholder_prefer_tracks_begin(void);
+void placeholder_prefer_track(const char * uri, const placeholder_tint_t * tints, int ntints, uint32_t fallback,
+                              uint32_t ink, const char * album_font, bool album_caps);
+
 #endif

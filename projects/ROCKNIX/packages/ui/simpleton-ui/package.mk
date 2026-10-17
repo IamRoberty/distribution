@@ -404,6 +404,7 @@
 #   curation.c/h  - favourites, mixtapes, collections on the music card (0.21)
 #   objmenu.c/h   - the object menu (A held) and the toast (0.21)
 #   keyboard.c/h  - the small on-unit keyboard for naming (0.21a)
+#   npicons.c/h   - the now-playing icons, drawn at any size and colour (0.23)
 #   dacpower.c/h  - wake the USB DAC on play, let it sleep when idle (0.21c)
 #                   0.21d: the link held down 0.75 s before the resume (an instant one did not wake the DX5 II)
 #   mpdc.c/h      - minimal MPD text-protocol client (no libmpdclient)
@@ -451,7 +452,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.22"
+PKG_VERSION="0.23g"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk alsa-lib"
@@ -488,7 +489,7 @@ make_target() {
     ${PKG_BUILD}/grid.c ${PKG_BUILD}/thumbs.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/tilestyle.c ${PKG_BUILD}/palette.c \
     ${PKG_BUILD}/textfit.c ${PKG_BUILD}/tiletext.c ${PKG_BUILD}/albumpage.c ${PKG_BUILD}/hdmisilence.c ${PKG_BUILD}/power.c \
     ${PKG_BUILD}/libs.c ${PKG_BUILD}/listpage.c ${PKG_BUILD}/history.c \
-    ${PKG_BUILD}/artists.c ${PKG_BUILD}/rows.c ${PKG_BUILD}/curation.c ${PKG_BUILD}/objmenu.c ${PKG_BUILD}/keyboard.c ${PKG_BUILD}/dacpower.c \
+    ${PKG_BUILD}/artists.c ${PKG_BUILD}/rows.c ${PKG_BUILD}/curation.c ${PKG_BUILD}/objmenu.c ${PKG_BUILD}/keyboard.c ${PKG_BUILD}/dacpower.c ${PKG_BUILD}/npicons.c \
     ${TARGET_LDFLAGS} -rdynamic \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \

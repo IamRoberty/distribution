@@ -128,6 +128,9 @@ static int  lsize, lh, row_gap, gutter, lead;   /* lead: room left of the gutter
 static const lv_font_t * f_list, * f_grown;
 static int  col_x[2], col_w[2], col_y, col_h;   /* each side's title column on the screen */
 static int  scroll_y[2], total_h[2];
+static int  saved_scroll[2];              /* where the list was left (0.23c, Ian: back from a track "the selected track is always at the bottom") */
+static char saved_album[1024];
+static bool returning;
 
 static lv_draw_buf_t * mark_bufs[MARK_BUFS];
 static int nmark_bufs;
@@ -823,7 +826,10 @@ static int build_name(const char * text_in, const tile_font_t * face, int start_
  * page, nothing changes size): one name big - the layout's choice, fitted
  * down the ladder into three lines and two fifths of the stage - the other
  * small; returns the y the list starts at. */
-static int build_header(int x, int y, int w)
+/* `budget`: the most height the header may take (0 = no limit) - Ian,
+ * 17 Oct: a page showing fewer than six tracks "feels lopsided", so the
+ * names give way until six rows fit (the titles can still be large). */
+static int build_header(int x, int y, int w, int budget)
 {
     const tile_font_t * fa = cover_face(lay->artist, tst[1].font);
     const tile_font_t * fb = alb.has_tile ? cover_face("", tst[0].font) : cover_face(lay->album, tst[0].font);   /* the tile's face carries over */
@@ -838,11 +844,20 @@ static int build_header(int x, int y, int w)
     }
     int big_px = lay->header == PAGE_HEADER_ARTIST_BIG ? PX(110) : lay->header == PAGE_HEADER_ALBUM_BIG ? PX(100) : PX(88);
     int gap = PX(12);
+    int small_maxh = PX(100), big_maxh = ui_screen.stage * 40 / 100;
+    if(budget > 0) {
+        int fixed = gap * 2 + PX(6) + (alb.release[0] ? PX(26) + gap : 0);
+        int room = budget - fixed;
+        if(room < PX(120)) room = PX(120);
+        if(small_maxh > room / 3) small_maxh = room / 3;
+        bool two = line[0].text[0] && line[1].text[0];
+        if(big_maxh > room - (two ? small_maxh : 0)) big_maxh = room - (two ? small_maxh : 0);
+    }
     for(int k = 0; k < 2; k++) {
         if(!line[k].text[0]) continue;
         int px, maxh, max_lines;
-        if(line[k].big) { px = big_px; maxh = ui_screen.stage * 40 / 100; max_lines = MAX_LINES; }
-        else            { px = PX(40); maxh = PX(100); max_lines = 2; }
+        if(line[k].big) { px = big_px; maxh = big_maxh; max_lines = MAX_LINES; }
+        else            { px = PX(40); maxh = small_maxh; max_lines = 2; }
         int h = build_name(line[k].text, line[k].face, px, maxh, max_lines, centred, x, y, w);
         y += h + gap;
     }
@@ -1042,6 +1057,17 @@ static void build_list(void)
     mark = make_triangle(content[side_of(playing >= 0 ? playing : 0)] ? content[side_of(playing >= 0 ? playing : 0)] : scr, lsize * 25 / 100, c_play);
     if(mark) lv_obj_add_flag(mark, LV_OBJ_FLAG_HIDDEN);
     for(int i = 0; i < alb.n; i++) row_style(i);
+    if(returning && strcmp(saved_album, alb.folder) == 0) {
+        /* the same album coming back: each side's list where it was, as
+         * long as the selected track is still on screen that way */
+        for(int s = 0; s < 2; s++) {
+            if(side_count(s) <= 0) continue;
+            const track_t * t = &alb.tr[sel];
+            bool ok = t->side != s || (t->y - row_gap >= saved_scroll[s] && t->y + t->h + row_gap <= saved_scroll[s] + col_h);
+            if(ok) scroll_side(s, saved_scroll[s], false);
+        }
+    }
+    returning = false;
     ensure_visible(false);
 }
 
@@ -1105,7 +1131,9 @@ static void build(void)
         col_x[0] = ui_screen.stage_x + margin + gut;
         col_w[0] = ui_screen.stage - 2 * margin - gut;
         col_x[1] = col_x[0]; col_w[1] = col_w[0];
-        int y = build_header(col_x[0], ui_screen.stage_y + PX(40), col_w[0]);
+        int rows = alb.n < 6 ? alb.n : 6;                      /* six rows must fit under the names (Ian, 17 Oct) */
+        int budget = ui_screen.stage - PX(40) - PX(20) - rows * (lh + row_gap);
+        int y = build_header(col_x[0], ui_screen.stage_y + PX(40), col_w[0], budget);
         col_y = y;
         col_h = ui_screen.stage_y + ui_screen.stage - PX(20) - y;
         if(col_h < lh) col_h = lh;
@@ -1146,15 +1174,6 @@ static void apply_focus(void)
     else lv_obj_add_flag(frame, LV_OBJ_FLAG_HIDDEN);
 }
 
-/* The page's own picture gives way when now-playing shows its (the full
- * cover of the playing track, this album's); behind a cover that isn't
- * square now-playing paints the page's colour, not the page's picture. */
-static bool album_has_uri(const char * uri)
-{
-    if(!uri || !uri[0]) return false;
-    for(int i = 0; i < alb.n; i++) if(strcmp(alb.tr[i].uri, uri) == 0) return true;
-    return false;
-}
 
 static void page_art_mode(void)
 {
@@ -1163,27 +1182,32 @@ static void page_art_mode(void)
      * track's is decoded - no flash of the previous cover (Ian) */
     /* an album without art keeps its own picture: now-playing's cassette
      * never comes over it (Ian, 10 Oct 20:49) */
-    if(nowplaying_embedded()) nowplaying_embed_art(alb.has_art, c_bg, album_has_uri(nowplaying_art_file()));
+    if(nowplaying_embedded()) nowplaying_embed_art(alb.has_art, c_bg);
     bool np_up = nowplaying_art_ready();            /* its picture is actually up: ours gives way */
     if(art_img) { if(np_up) lv_obj_add_flag(art_img, LV_OBJ_FLAG_HIDDEN); else if(art_px) lv_obj_remove_flag(art_img, LV_OBJ_FLAG_HIDDEN); }
 }
 
-/* TV: now-playing lives in the cover square while the page is up. Its own
- * art shows there when the playing track is this album's (the full cover,
- * pageable); otherwise the page's picture stays and only the controls
- * come over it. */
+/* The cover square is now-playing's stage while the page is up - for its
+ * art alone since 0.23 (Ian, 16 Oct: the page showed the playing album's
+ * art and its controls, and a track starting elsewhere changed the
+ * picture): the stage decodes this album's own cover, the whole set, and
+ * turns its pages; it never follows playback here. */
 static void np_host(void)
 {
     if(!shown) return;
     if(tv) nowplaying_embed(scr, sq_x, ui_screen.stage_y, alb.has_art, c_bg);
     else if(front_obj) nowplaying_embed(front_obj, 0, 0, alb.has_art, c_bg);
     else return;
+    /* the strip, when it pops up: the picture's own ground - the tape's /
+     * record's / tile's background for an album without art (its colours as
+     * the page drew them), the cover's dark colour for one with (the stage
+     * decodes that cover itself and colours as the now-playing screen does) */
+    if(tv) nowplaying_embed_colours(alb.has_art ? c_bg : (square_design ? sq_tints[0].rgb : tst[0].bg), c_sel, alb.has_art);
     if(frame) lv_obj_move_foreground(frame);
     /* the album's own cover from the start (Ian, 11 Oct: its pages could
      * only be turned once a track of it played): now-playing decodes the
      * first track's art as a preview, the full set, placed by its rules */
-    if(alb.has_art && alb.n > 0 && !album_has_uri(nowplaying_art_file()))
-        nowplaying_preview(alb.tr[0].uri, alb.artist, alb.title, alb.tr[0].title);
+    if(alb.has_art && alb.n > 0) nowplaying_preview(alb.tr[0].uri, alb.artist, alb.title, alb.tr[0].title);
     page_art_mode();
 }
 
@@ -1219,7 +1243,6 @@ static void find_playing(bool * started)
     if(!got) fprintf(stderr, "simpleton-ui: album page: no MPD status\n");
     if(started) *started = play && strcmp(st.file, last_song) != 0;
     snprintf(last_song, sizeof(last_song), "%s", got ? st.file : "");
-    if(tv && got) nowplaying_expect_file(st.file);
     if(!shown) return;
     if(was != playing) {
         if(mark && playing < 0) lv_obj_add_flag(mark, LV_OBJ_FLAG_HIDDEN);
@@ -1242,6 +1265,7 @@ void albumpage_show(bool fresh)
     focus = FOCUS_LIST;
     art_paged = false;
     front = false;
+    returning = !fresh;
     lv_screen_load(scr);
     lv_timer_resume(poll_timer);
     playing = -1;
@@ -1253,6 +1277,9 @@ void albumpage_show(bool fresh)
 void albumpage_hide(void)
 {
     shown = false;
+    saved_scroll[0] = scroll_y[0];
+    saved_scroll[1] = scroll_y[1];
+    snprintf(saved_album, sizeof(saved_album), "%s", alb.folder);
     focus = FOCUS_LIST;
     nowplaying_unembed();
     lv_timer_pause(poll_timer);
@@ -1267,6 +1294,7 @@ static void play_from(int index)
     char ** uris = calloc((size_t)alb.n, sizeof(char *));
     if(!uris) return;
     for(int i = 0; i < alb.n; i++) uris[i] = alb.tr[i].uri;
+    placeholder_prefer_tracks_begin();            /* the page's own colours apply (0.23e: a grid's per-track ones no longer) */
     bool ok = mpd_play_uris(uris, alb.n, index);
     free(uris);
     if(!ok) return;
@@ -1274,8 +1302,8 @@ static void play_from(int index)
     for(int i = 0; i < alb.n; i++) row_style(i);
     snprintf(last_song, sizeof(last_song), "%s", alb.tr[index].uri);
     square_retitle();
-    if(tv) { nowplaying_expect_file(alb.tr[index].uri); page_art_mode(); nowplaying_poke(); }    /* the controls pop up over the cover and fade; the list keeps the D-pad */
-    else if(play_cb) play_cb();                                    /* the handheld goes to now-playing, as the browser does */
+    if(!tv && play_cb) play_cb();                                  /* the handheld goes to now-playing, as the browser does */
+    else if(tv) nowplaying_poke();                                 /* the TV: the controls pop up over the cover, selected, and fade (0.23e) */
 }
 
 static void set_sel(int i)
@@ -1332,17 +1360,21 @@ void albumpage_curation_changed(void)
 
 static void tv_handle(ui_action_t a)
 {
-    /* the controls are up: Back takes them down from anywhere; on the
-     * cover they have the D-pad */
+    /* the controls are up over the cover (a track just started here, or
+     * Up/Down asked on the cover): they have the D-pad; Back takes them
+     * down and leaves the list where it was (0.23e) */
     if(nowplaying_controls_visible()) {
         if(a == ACT_BACK) { nowplaying_hide_controls(); return; }
-        if(focus == FOCUS_ART) { nowplaying_handle_action(a); return; }
+        nowplaying_handle_action(a);
+        return;
     }
+    /* on the cover: Select turns its pages, Up/Down bring the controls
+     * up, Left/Right and Back go back to the list */
     if(focus == FOCUS_ART) {
         switch(a) {
             case ACT_UP:
             case ACT_DOWN:
-                nowplaying_poke();                    /* the controls come up; from now on they have the D-pad */
+                nowplaying_poke();
                 return;
             case ACT_SELECT:
                 if(alb.has_art) {                     /* turn the cover's pages (the album's own, since 11 Oct) */
@@ -1390,11 +1422,9 @@ static void flip(bool to_front)
     if(front) {
         lv_obj_remove_flag(front_obj, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
-        nowplaying_hide_controls();                 /* quiet until Up/Down asks */
         if(alb.has_art) nowplaying_show_badge();     /* "1 / 1", "1 / 9": how many pictures there are */
     }
     else {
-        nowplaying_hide_controls();
         lv_obj_add_flag(front_obj, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(page, LV_OBJ_FLAG_HIDDEN);
     }
@@ -1403,14 +1433,11 @@ static void flip(bool to_front)
 static void hh_handle(ui_action_t a)
 {
     if(front) {
-        if(nowplaying_controls_visible()) {
-            if(a == ACT_BACK) { nowplaying_hide_controls(); return; }
-            nowplaying_handle_action(a);            /* the controls have the D-pad */
-            return;
-        }
+        /* the album's front: the art alone - Select turns its pages, as the
+         * now-playing screen's does (Ian, 16 Oct: the two must agree) */
         switch(a) {
             case ACT_UP:
-            case ACT_DOWN:   nowplaying_poke(); return;                     /* the controls come up */
+            case ACT_DOWN:   return;
             case ACT_SELECT: if(alb.has_art) nowplaying_browse(); return;   /* the next picture */
             case ACT_LEFT:
             case ACT_RIGHT:
@@ -1441,6 +1468,5 @@ void albumpage_mpd_changed(void)
 {
     if(!shown) return;
     bool started = false;
-    find_playing(&started);
-    if(started && (tv || front)) nowplaying_poke();      /* a track started: the controls pop up over the cover and fade */
+    find_playing(&started);                       /* the playing mark moves; the picture never does (0.23) */
 }

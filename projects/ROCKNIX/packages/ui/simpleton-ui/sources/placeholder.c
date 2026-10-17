@@ -120,6 +120,41 @@ static bool     prefer_set[MAX_ZONES];
 static uint32_t prefer_ink;
 static char     prefer_font[64];           /* the album line's face, "" = the theme's */
 static bool     prefer_caps, have_prefer;
+static placeholder_tint_t prefer_tints[8];   /* the page's tints by name, for the record too (0.23b) */
+static int      prefer_ntints;
+static uint32_t prefer_fallback;
+
+/* per-track colours (0.23e): the view's own, for each track of the queue */
+#define TRACK_PREFS 512
+typedef struct { char uri[400]; placeholder_tint_t tints[8]; char zones[8][16]; int ntints; uint32_t fallback, ink; char font[64]; bool caps; } track_pref_t;
+static track_pref_t * track_prefs;
+static int track_pref_n;
+
+void placeholder_prefer_tracks_begin(void)
+{
+    pthread_mutex_lock(&prefer_lock);
+    track_pref_n = 0;
+    pthread_mutex_unlock(&prefer_lock);
+}
+
+void placeholder_prefer_track(const char * uri, const placeholder_tint_t * tints, int ntints, uint32_t fallback,
+                              uint32_t ink, const char * album_font, bool album_caps)
+{
+    if(!uri || !uri[0]) return;
+    pthread_mutex_lock(&prefer_lock);
+    if(!track_prefs) track_prefs = calloc(TRACK_PREFS, sizeof(*track_prefs));
+    if(track_prefs && track_pref_n < TRACK_PREFS) {
+        track_pref_t * t = &track_prefs[track_pref_n++];
+        snprintf(t->uri, sizeof(t->uri), "%.399s", uri);
+        t->ntints = ntints < 8 ? ntints : 8;
+        for(int i = 0; i < t->ntints; i++) { t->tints[i].rgb = tints[i].rgb; snprintf(t->zones[i], sizeof(t->zones[i]), "%s", tints[i].zone ? tints[i].zone : ""); t->tints[i].zone = t->zones[i]; }
+        t->fallback = fallback;
+        t->ink = ink;
+        snprintf(t->font, sizeof(t->font), "%s", album_font ? album_font : "");
+        t->caps = album_caps;
+    }
+    pthread_mutex_unlock(&prefer_lock);
+}
 
 /* -------------------------------------------------------------- files */
 
@@ -859,6 +894,8 @@ void placeholder_prefer(const char * const * uris, int nuris, const char * artis
     pthread_mutex_lock(&prefer_lock);
     for(int i = 0; i < prefer_nuris; i++) free(prefer_uris[i]);
     free(prefer_uris);
+    for(int i = 0; i < prefer_ntints; i++) free((char *)prefer_tints[i].zone);
+    prefer_ntints = 0;
     prefer_uris = NULL;
     prefer_nuris = 0;
     have_prefer = artist && album;
@@ -870,6 +907,9 @@ void placeholder_prefer(const char * const * uris, int nuris, const char * artis
             prefer_nuris = nuris;
         }
         tints_to_zones(main_design, tints, ntints, fallback, prefer_rgb);
+        prefer_ntints = ntints < 8 ? ntints : 8;
+        for(int i = 0; i < prefer_ntints; i++) { prefer_tints[i] = tints[i]; prefer_tints[i].zone = tints[i].zone ? strdup(tints[i].zone) : NULL; }
+        prefer_fallback = fallback;
         for(int z = 0; z < main_design->zone_count; z++) prefer_set[z] = true;
         prefer_ink = ink;
         snprintf(prefer_font, sizeof(prefer_font), "%s", album_font ? album_font : "");
@@ -896,21 +936,59 @@ uint8_t * placeholder_render(const char * uri, const char * artist, const char *
      * a track of it by path, else by its tags */
     pthread_mutex_lock(&prefer_lock);
     bool preferred = false;
-    if(have_prefer) {
+    const track_pref_t * tp = NULL;
+    if(uri && uri[0] && track_prefs) for(int i = 0; i < track_pref_n; i++) if(strcmp(track_prefs[i].uri, uri) == 0) { tp = &track_prefs[i]; break; }
+    if(tp) preferred = true;
+    else if(have_prefer) {
         if(uri && uri[0]) for(int i = 0; i < prefer_nuris && !preferred; i++) preferred = prefer_uris[i] && strcmp(prefer_uris[i], uri) == 0;
         if(!preferred && artist && album && artist[0] && album[0])
             preferred = strcasecmp(artist, prefer_artist) == 0 && strcasecmp(album, prefer_album) == 0;
     }
+    /* the tape or the record, never the same twice running (Ian, 17 Oct:
+     * the record joins the rotation, from an album's page too) */
+    static int last_kind = -1;
+    const design_t * rec = design_get("record");
+    int kind = 0;
+    if(rec) { kind = rand() % 2; if(kind == last_kind) kind ^= 1; }
+    last_kind = kind;
+
     if(preferred) {
         uint32_t zone_rgb[MAX_ZONES];
-        memcpy(zone_rgb, prefer_rgb, sizeof(zone_rgb));
-        uint32_t ink = prefer_ink;
+        placeholder_tint_t t[8];
+        char zones[8][16];
+        int nt;
+        uint32_t ink, fb;
         char font[64];
-        snprintf(font, sizeof(font), "%s", prefer_font);
-        bool caps = prefer_caps;
+        bool caps;
+        if(tp) {
+            nt = tp->ntints;
+            for(int i = 0; i < nt; i++) { t[i].rgb = tp->tints[i].rgb; snprintf(zones[i], sizeof(zones[i]), "%s", tp->zones[i]); t[i].zone = zones[i]; }
+            fb = tp->fallback; ink = tp->ink; caps = tp->caps;
+            snprintf(font, sizeof(font), "%s", tp->font);
+            tints_to_zones(main_design, t, nt, fb, zone_rgb);
+        }
+        else {
+            memcpy(zone_rgb, prefer_rgb, sizeof(zone_rgb));
+            ink = prefer_ink;
+            snprintf(font, sizeof(font), "%s", prefer_font);
+            caps = prefer_caps;
+            nt = prefer_ntints;
+            memcpy(t, prefer_tints, sizeof(t));
+            fb = prefer_fallback;
+        }
         pthread_mutex_unlock(&prefer_lock);
-        tint(out, main_design, zone_rgb);
-        render_lines(out, main_design, texts, ink, font[0] ? font_index(font) : -1, caps, false);
+        if(kind == 1) {
+            /* the page's own record colours (its disc, centre, background) */
+            uint32_t zr[MAX_ZONES];
+            tints_to_zones(rec, t, nt, fb, zr);
+            tint(out, rec, zr);
+            const char * rtexts[MAX_LINES] = { artist, title, "", "" };
+            render_lines(out, rec, rtexts, ink, -1, false, false);
+        }
+        else {
+            tint(out, main_design, zone_rgb);
+            render_lines(out, main_design, texts, ink, font[0] ? font_index(font) : -1, caps, false);
+        }
         *w = *h = box;
         return (uint8_t *)out;
     }
@@ -921,6 +999,22 @@ uint8_t * placeholder_render(const char * uri, const char * artist, const char *
     else { i = rand() % (way_count - 1); if(i >= last_way) i++; }   /* never the previous pick */
     last_way = i;
     const colourway_t * way = &ways[i];
+
+    /* the record carries the artist and the song (its two slots), its disc
+     * the tape's shell colour, black one in five */
+    if(kind == 1) {
+        int zb = zone_index(main_design, "background"), zl = zone_index(main_design, "label"), zs = zone_index(main_design, "shell");
+        uint32_t bg = zb >= 0 ? way->zone_rgb[zb] : 0x202020, label = zl >= 0 ? way->zone_rgb[zl] : way->ink, shell = zs >= 0 ? way->zone_rgb[zs] : label;
+        bool black = rand() % 5 == 0;
+        placeholder_tint_t t[6] = { {"background", bg}, {"centre", label}, {"disc", black ? 0x141414 : shell}, {"groove", black ? 0x141414 : shell}, {"spindle", label}, {"sleeve", shell} };
+        uint32_t zr[MAX_ZONES];
+        tints_to_zones(rec, t, 6, bg, zr);
+        tint(out, rec, zr);
+        const char * rtexts[MAX_LINES] = { artist, title, "", "" };
+        render_lines(out, rec, rtexts, way->ink, -1, false, false);
+        *w = *h = box;
+        return (uint8_t *)out;
+    }
 
     tint(out, main_design, way->zone_rgb);
     render_lines(out, main_design, texts, way->ink, -1, false, false);

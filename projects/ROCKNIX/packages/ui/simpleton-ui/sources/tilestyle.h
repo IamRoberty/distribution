@@ -193,6 +193,11 @@ void tilestyle_picture_colours(unsigned seed, const tile_style_t * tile, uint32_
  * saturated palette colour that reads on bg and differs from the ink) and
  * the selected colour (another such). Seeded so a visit holds them. Either
  * falls back to the ink. */
+/* 0.23e: file a track's colours for now-playing's tape or record from the
+ * tile it was shown in (placeholder_prefer_track): the tile's background,
+ * its label / shell / dark picture colours by `seed`, its ink and face. */
+void tilestyle_prefer_track(const char * uri, const tile_style_t * tile, unsigned seed);
+
 void tilestyle_page_accents(unsigned seed, uint32_t bg, uint32_t ink, uint32_t * play, uint32_t * sel);
 
 /* ---- the album page's layouts ---- */

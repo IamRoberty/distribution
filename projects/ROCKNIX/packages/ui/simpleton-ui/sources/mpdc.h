@@ -70,6 +70,7 @@ bool mpd_is_connected(void);
 bool mpd_lsinfo(const char * uri, mpd_listing_t * out);
 void mpd_listing_free(mpd_listing_t * l);
 
+
 /* The folder as the product shows it (1 Oct 2026, "transparent containers"):
  * `lsinfo`, with every container MPD expands (SACD ISO, multi-track DFF, a
  * CUE album, a FLAC with an embedded cue sheet) replaced in place by the
@@ -110,6 +111,12 @@ typedef struct {
  * unreachable or refuses. One round trip whatever the library size; the
  * reply is parsed line by line, never held whole. */
 bool mpd_listallinfo(const char * uri, bool (*cb)(const mpd_song_info_t * song, void * ctx), void * ctx);
+
+/* 0.23: the queue in order (song.track = position, song.added = id); play
+ * a queue position; the playback mode in one go. */
+bool mpd_queue(bool (*cb)(const mpd_song_info_t * song, void * ctx), void * ctx);
+bool mpd_play_pos(int pos);
+bool mpd_set_mode(bool repeat, bool single, bool random);
 
 /* Library state from `status` + `stats`: `db_update` is MPD's timestamp of
  * the last finished database update (changes every time a rescan completes),

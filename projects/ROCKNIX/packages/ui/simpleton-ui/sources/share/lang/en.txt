@@ -27,7 +27,11 @@ np.nothing_playing = Nothing playing
 np.pick_a_track = Pick a track in the browser
 np.favorite = Favorite
 np.favorited = Favorited
-np.info = Info
+np.queue = Now playing
+np.mode_through = Play through
+np.mode_repeat = Repeat album
+np.mode_repeat_one = Repeat track
+np.mode_random = Random
 np.more = More
 
 format.pcm = {rate} kHz • {bits}-bit

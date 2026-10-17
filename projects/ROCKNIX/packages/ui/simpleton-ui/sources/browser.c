@@ -25,6 +25,7 @@
  * list's children are no longer 1:1 with `cur` - look rows up by index.
  */
 #include "browser.h"
+#include "placeholder.h"
 #include "config.h"
 #include "libs.h"
 #include "objmenu.h"
@@ -479,6 +480,7 @@ static void play_from(int index)
         if(i == index) start = n;
         uris[n++] = cur.items[i].uri;
     }
+    placeholder_prefer_tracks_begin();            /* no view's colours: the theme's rotation (0.23e) */
     bool started = n && mpd_play_uris(uris, n, start);
     free(uris);
     if(started && play_cb) play_cb();

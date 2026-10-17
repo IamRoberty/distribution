@@ -28,6 +28,7 @@
 #include "objmenu.h"
 #include "picker.h"
 #include "placeholder.h"
+#include "nowplaying.h"
 #include "playthrough.h"
 #include "power.h"
 #include "strings.h"
@@ -120,6 +121,22 @@ static void (*open_folder_cb)(const char *);
 static void (*open_artist_cb)(int);
 static void (*open_list_cb)(int);
 static bool shown, tv, tiles, gridstyle, show_jump, shelfstyle;
+/* Where the list was left (0.23c, Ian, 17 Oct: every view came back
+ * centred, or with the row at the bottom, never where it was): the scroll
+ * and what the list was showing, kept across a deeper view and restored
+ * when the same list comes back with its selection still on screen. */
+typedef struct { char ctx[1400]; int scroll, sel; unsigned seed; } list_memory_t;
+static list_memory_t memories[8];         /* the last eight lists left, newest first */
+static bool returning, stored;            /* stored: this showing's place is already in the memories */
+static void context_key(char * out, size_t len);
+static void memory_store(void);
+static const list_memory_t * memory_find(void)
+{
+    char ctx[1400];
+    context_key(ctx, sizeof(ctx));
+    for(int i = 0; i < 8; i++) if(memories[i].ctx[0] && strcmp(memories[i].ctx, ctx) == 0) return &memories[i];
+    return NULL;
+}
 static lv_obj_t * shelf;          /* the Mixtapes shelf (0.21a), NULL otherwise */
 static unsigned seed;
 static int  sel;                 /* -1 = the jump row */
@@ -156,7 +173,8 @@ static row_t rows[MAX_ROWS];
 static uint8_t * art_px;
 static lv_image_dsc_t art_dsc;
 static int art_item = -1;        /* the item whose picture this is (a folder's own picture) ... */
-static int art_src = -1, art_album = -1;   /* ... or the album it is the cover of (0.19b: the same cover stays up across an album's tracks) */
+static int art_src = -1, art_album = -1;
+static uint32_t square_ground;            /* the ground the square's picture was drawn on (0.23g): the strip takes it */   /* ... or the album it is the cover of (0.19b: the same cover stays up across an album's tracks) */
 static pthread_mutex_t sq_lock = PTHREAD_MUTEX_INITIALIZER;
 static int sq_gen;
 static struct { int gen, section, key; char design[32]; uint8_t * px; int w, h; bool ready; } sq_res;
@@ -1016,6 +1034,12 @@ static void row_style(row_t * r)
         uint32_t cbg = is_sel ? ink : bg, cink = is_sel ? bg : ink;
         lv_obj_set_style_bg_color(r->obj, lv_color_hex(cbg), 0);
         lv_obj_set_style_shadow_width(r->obj, is_sel ? cell_pad * 2 : 0, 0);
+        /* ...and grows like every other selected thing (Ian, 17 Oct: a cell
+         * arriving from off screen is already flipped, so nothing says
+         * "selected" unless it also comes forward) */
+        lv_obj_set_style_transform_pivot_x(r->obj, lv_obj_get_style_width(r->obj, 0) / 2, 0);
+        lv_obj_set_style_transform_pivot_y(r->obj, lv_obj_get_style_height(r->obj, 0) / 2, 0);
+        lv_obj_set_style_transform_scale(r->obj, is_sel ? 256 * GROW_PCT / 100 : 256, 0);
         if(r->title) lv_obj_set_style_text_color(r->title, lv_color_hex(cink), 0);
         if(r->tile) lv_obj_set_style_text_color(r->tile, lv_color_hex(cink), 0);       /* the bracketed tail */
         if(r->artist) lv_obj_set_style_text_color(r->artist, lv_color_hex(cink), 0);
@@ -1591,9 +1615,13 @@ static void * pic_thread(void * arg)
 
 static bool pic_is(const char * design, int key) { return pic_px && pic_key == key && pic_section == cur_section && strcmp(pic_design, design) == 0; }
 
+/* the square's pictures are drawn on the section's ground */
+static void pic_ground(void) { if(nsections > 0 && cur_section >= 0) square_ground = sections[cur_section].style.bg; }
+
 static void pic_render(const char * design, int key, const char * l1, const char * l2, const char * l3)
 {
     if(!tv || nsections == 0 || cur_section < 0 || !placeholder_has_design(design)) return;
+    pic_ground();
     if(pic_is(design, key)) return;
     pic_job_t * j = calloc(1, sizeof(*j));
     if(!j) return;
@@ -1659,6 +1687,7 @@ static const char * companion_design(int item)
 static void notile_make(const char * title, const char * artist, const tile_style_t * st)
 {
     notile_drop();
+    square_ground = st->bg;
     notile = lv_obj_create(square);
     lv_obj_remove_style_all(notile);
     lv_obj_set_size(notile, ui_screen.stage, ui_screen.stage);
@@ -1672,6 +1701,27 @@ static void notile_make(const char * title, const char * artist, const tile_styl
 /* The square shows the selected item: its cover, else a drawn companion -
  * the folder's (album's) own cassette in a mixtape-style list, or the
  * item's album as a name tile, a cassette or a record. */
+/* The TV liner page: now-playing's strip pops up over the art square when
+ * a track is started here (Ian, 17 Oct: as on the album page), in the
+ * colours of the square's own picture - the section's cassette ground, or
+ * the cover's dark colour - selected, and Back puts the list back in
+ * charge; it fades by itself. The square's picture stays the page's. */
+static void host_strip(void)
+{
+    if(!tv || !square) return;
+    if(!nowplaying_embedded()) nowplaying_embed(scr, lv_obj_get_x(square), lv_obj_get_y(square), false, c_bg);
+    uint32_t bg = square_ground ? square_ground : c_bg;     /* the tape's, record's or text cover's own ground, not the list's */
+    bool dark = false;
+    if(art_is_sel() && sel >= 0 && items[sel].album >= 0) {
+        const lib_album_t * al = &libs_get(items[sel].src)->lib.albums[items[sel].album];
+        art_roles_t r;
+        uint32_t cream = tilestyle_cream() ? tilestyle_cream() : 0xFAEFD0;
+        if(al->palette.ndom > 0 && palette_roles(&al->palette, PAL_MODE_DOMINANT, (float)tilestyle_min_contrast(), cream, tilestyle_dark_ink(), 0, &r)) { bg = r.bg; dark = true; }
+    }
+    nowplaying_embed_colours(bg, c_sel, dark);
+    nowplaying_poke();
+}
+
 static void square_update(void)
 {
     if(!tv || !square) return;
@@ -1692,7 +1742,7 @@ static void square_update(void)
         snprintf(n, sizeof(n), "%d", l->n);
         if(l->n == 1) snprintf(count, sizeof(count), "%s", T(S_LIST_TRACK_ONE)); else ui_strf(count, sizeof(count), S_LIST_TRACKS_COUNT, "n", n, NULL);
         int key = 300000 + l->uid;
-        if(pic_is(placeholder_main_design(), key)) { notile_drop(); lv_obj_remove_flag(pic_img, LV_OBJ_FLAG_HIDDEN); return; }
+        if(pic_is(placeholder_main_design(), key)) { notile_drop(); pic_ground(); lv_obj_remove_flag(pic_img, LV_OBJ_FLAG_HIDDEN); return; }
         if(pic_img) lv_obj_add_flag(pic_img, LV_OBJ_FLAG_HIDDEN);
         if(placeholder_has_design(placeholder_main_design())) { pic_render(placeholder_main_design(), key, l->name, count, ""); return; }
         tile_style_t st;
@@ -1725,7 +1775,7 @@ static void square_update(void)
         ui_strf(count, sizeof(count), S_LIST_TRACKS_COUNT, "n", n, NULL);
         const cur_list_t * tape = kind == LIST_MIXTAPE ? curation_by_uid(list_uid) : NULL;
         const char * name = tape ? (tape->name ? tape->name : "") : kind == LIST_ALBUM && a ? a->title : base_name(folder);
-        if(pic_is(placeholder_main_design(), -1)) { notile_drop(); lv_obj_remove_flag(pic_img, LV_OBJ_FLAG_HIDDEN); return; }
+        if(pic_is(placeholder_main_design(), -1)) { notile_drop(); pic_ground(); lv_obj_remove_flag(pic_img, LV_OBJ_FLAG_HIDDEN); return; }
         if(pic_img) lv_obj_add_flag(pic_img, LV_OBJ_FLAG_HIDDEN);
         top_genres(-1, -1, 3, genres, 30);
         if(placeholder_has_design(placeholder_main_design())) { pic_render(placeholder_main_design(), -1, name, count, genres); return; }
@@ -1734,7 +1784,7 @@ static void square_update(void)
     companion_style(sel, &st);
     const char * design = items[sel].kind == ITEM_FOLDER || !a ? NULL : companion_design(sel);
     if(design) {
-        if(pic_is(design, items[sel].album)) { notile_drop(); lv_obj_remove_flag(pic_img, LV_OBJ_FLAG_HIDDEN); return; }
+        if(pic_is(design, items[sel].album)) { notile_drop(); pic_ground(); lv_obj_remove_flag(pic_img, LV_OBJ_FLAG_HIDDEN); return; }
         if(pic_img) lv_obj_add_flag(pic_img, LV_OBJ_FLAG_HIDDEN);
         char genres[48];
         top_genres(items[sel].src, items[sel].album, 2, genres, 26);
@@ -1928,7 +1978,12 @@ static void select_item(void)
             const char ** uris = calloc((size_t)nitems, sizeof(char *));
             if(!uris) return;
             int n = 0, start = 0;
-            for(int i = 0; i < nitems; i++) if(track_of(i)) { if(i == sel) start = n; uris[n++] = track_of(i)->uri; }
+            placeholder_prefer_tracks_begin();        /* the colours each track wore here go with it to now-playing (0.23e) */
+            for(int i = 0; i < nitems; i++) if(track_of(i)) {
+                if(i == sel) start = n;
+                uris[n++] = track_of(i)->uri;
+                tilestyle_prefer_track(track_of(i)->uri, gridstyle && cell_st ? &cell_st[i] : &sections[items[i].section].style, seed);
+            }
             bool started = playthrough_play_list(uris, n, start);
             free(uris);
             if(started) {
@@ -1937,6 +1992,7 @@ static void select_item(void)
                 row_t * a = row_of(was), * b = row_of(sel);
                 if(a) row_style(a);                /* the mark leaves the track played before (Ian, 13 Oct) */
                 if(b) row_style(b);
+                host_strip();                      /* the TV: now-playing's strip pops up over the square (0.23f) */
                 if(play_cb) play_cb();
             }
             break;
@@ -2160,6 +2216,7 @@ static void find_playing(void)
 static void layout_screen(void)
 {
     mosaic_drop();
+    nowplaying_unembed();
     if(square) { lv_obj_delete(square); square = NULL; art_img = pic_img = notile = NULL; }
     fx = 0;
     if(tv) {
@@ -2287,7 +2344,13 @@ static void rebuild(void)
     scroll_y = scroll_target = 0;
     lv_obj_set_y(content, 0);
     {
-        int y = item_top(sel) - (field_hh() - item_height(sel)) / 2;
+        int y = item_top(sel) - (field_hh() - item_height(sel)) / 2;      /* centred... */
+        const list_memory_t * m = returning && sel >= 0 ? memory_find() : NULL;
+        if(m) {
+            bool visible = item_top(sel) >= m->scroll && item_top(sel) + item_height(sel) <= m->scroll + field_hh();
+            if(visible) y = m->scroll;                                         /* ...unless it is the same list coming back: as it was */
+        }
+        returning = false;
         int max = list_height() - field_hh();
         if(y > max) y = max;
         if(y < 0) y = 0;
@@ -2451,6 +2514,7 @@ bool listpage_open(list_kind_t k, const char * f)
     }
     else f = NULL;
     if(k == LIST_ALBUM || k == LIST_ARTIST_TRACKS || k == LIST_MIXTAPE) return false;    /* listpage_open_album() / listpage_open_artist_tracks() / listpage_open_mixtape() */
+    if(!(k == kind && strcmp(f ? f : "", folder) == 0)) memory_store();   /* the list being left, under its own name */
     album_src = album_idx = -1;
     artist_idx = -1;
     sort_override = -1;
@@ -2464,6 +2528,7 @@ bool listpage_open_artist_tracks(int artist, bool by_album)
     const artist_t * ar = artists_get(artist);
     if(!ar) return false;
     bool same = kind == LIST_ARTIST_TRACKS && artist == artist_idx;
+    if(!same) memory_store();
     album_src = album_idx = -1;
     artist_idx = artist;
     sort_override = by_album ? SORT_ALBUMS : LIB_SORT_TITLE;
@@ -2480,6 +2545,7 @@ bool listpage_open_mixtape(int uid)
     const cur_list_t * l = curation_by_uid(uid);
     if(!l || l->kind != CUR_MIXTAPE) return false;
     bool same = kind == LIST_MIXTAPE && uid == list_uid;
+    if(!same) memory_store();
     album_src = album_idx = -1;
     artist_idx = -1;
     sort_override = -1;
@@ -2499,6 +2565,7 @@ bool listpage_open_album(const char * card, int album)
     for(int s = 0; s < libs_count(); s++) if(strcmp(libs_get(s)->card, card) == 0) { src = s; break; }
     if(src < 0 || album < 0 || album >= libs_get(src)->lib.nalbums) return false;
     bool same = kind == LIST_ALBUM && src == album_src && album == album_idx;
+    if(!same) memory_store();
     album_src = src;
     album_idx = album;
     snprintf(album_card, sizeof(album_card), "%s", card);
@@ -2523,11 +2590,15 @@ void listpage_show(bool fresh)
     static unsigned seeds[LIST_KIND_COUNT];            /* each kind's last deal: coming back wears the same colours (0.20) */
     shown = true;
     tv = ui_screen.kind == UI_SCREEN_TV;
+    suppress_overlay = !fresh;
+    returning = !fresh;
+    stored = false;
+    read_options();
+    const list_memory_t * mem = fresh ? NULL : memory_find();
     if(fresh) seed = (unsigned)time(NULL) ^ (unsigned)lv_tick_get() ^ (unsigned)rand();
+    else if(mem) seed = mem->seed;                       /* the same list again: the same colours (a child list of the same kind dealt its own) */
     else if(seeds[kind]) seed = seeds[kind];
     seeds[kind] = seed;
-    suppress_overlay = !fresh;
-    read_options();
     measure();
     lv_screen_load(scr);
     ui_list_t plm;
@@ -2556,6 +2627,7 @@ void listpage_show(bool fresh)
         free(keep);
     }
     if(fresh && kind != LIST_TRACKS) sel = nitems ? 0 : -1;    /* Tracks comes back where it was left (Ian, 23:53), as Albums does */
+    if(!fresh) { const list_memory_t * m = memory_find(); if(m && m->sel >= 0 && m->sel < nitems && (sel <= 0 || sel == m->sel)) sel = m->sel; }   /* a reloaded list: the cursor where it was */
     while(sel >= 0 && sel < nitems - 1 && items[sel].kind == ITEM_HEADER) sel++;
     if(sel < 0 && nitems) sel = 0;
     find_playing();
@@ -2563,8 +2635,31 @@ void listpage_show(bool fresh)
     after_enter();
 }
 
+static void memory_store(void)
+{
+    if(stored || !shown) return;
+    stored = true;
+    char ctx[1400];
+    context_key(ctx, sizeof(ctx));
+    int at = 7;
+    for(int i = 0; i < 8; i++) if(memories[i].ctx[0] && strcmp(memories[i].ctx, ctx) == 0) { at = i; break; }
+    for(int i = at; i > 0; i--) memories[i] = memories[i - 1];
+    snprintf(memories[0].ctx, sizeof(memories[0].ctx), "%s", ctx);
+    memories[0].scroll = scroll_target;
+    memories[0].sel = sel;
+    memories[0].seed = seed;
+}
+
+/* The list's identity for the scroll memory: its kind, source, sort and style. */
+static void context_key(char * out, size_t len)
+{
+    snprintf(out, len, "%d|%s|%d|%d|%d|%d|%d|%d|%d", (int)kind, folder, list_uid, artist_idx, album_src, album_idx, view_opts.sort, view_opts.style, (int)view_opts.size);
+}
+
 void listpage_hide(void)
 {
+    nowplaying_unembed();
+    memory_store();                            /* unless an open() for the next list already did */
     shown = false;
     if(picker_mode() != PICKER_NONE) picker_close();
     if(settle_timer) { lv_timer_delete(settle_timer); settle_timer = NULL; }
@@ -2662,6 +2757,10 @@ void listpage_handle_action(ui_action_t a)
      * at again, so the list scrolls on */
     static bool up_run;
     if(picker_mode() != PICKER_NONE) { picker_handle_action(a); return; }
+    if(nowplaying_controls_visible()) {                  /* the strip over the square has the D-pad; Back gives it back (0.23f) */
+        if(a == ACT_BACK) nowplaying_hide_controls(); else nowplaying_handle_action(a);
+        return;
+    }
     if(nitems == 0) { if(a == ACT_BACK && exit_cb) exit_cb(); return; }
     if(shelf) {
         /* the Mixtapes shelf: the tapes take the D-pad */

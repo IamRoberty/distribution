@@ -54,28 +54,29 @@ np_result_t nowplaying_handle_action(ui_action_t a);
  * is "in" now-playing; NP_EXIT hands them back. */
 void nowplaying_embed(lv_obj_t * parent, int x, int y, bool with_art, uint32_t bg);
 /* `bg`: the stage's own background behind art that isn't square (the
- * page's colour), opaque only while the stage shows its art. `stale_ok`:
- * the art up now belongs to an earlier track of the same album, so it may
- * stay up while the new track's is decoded; otherwise art that isn't the
- * expected track's is kept hidden, so the host's own picture shows instead
- * of a flash of another album's cover (Ian, 10 Oct 19:51). */
-void nowplaying_embed_art(bool with_art, uint32_t bg, bool stale_ok);
-/* The host knows a track just started (before MPD's notice reaches us):
- * art on screen for any other file counts as stale from now. */
-void nowplaying_expect_file(const char * uri);
-/* The file the art on screen belongs to ("" when none). */
-const char * nowplaying_art_file(void);
+ * page's colour), opaque only while the stage shows its art. */
+void nowplaying_embed_art(bool with_art, uint32_t bg);
 void nowplaying_unembed(void);
 /* Hosted: the album's own cover before any of it plays - the first track's
  * art set (11 Oct); and the "n / m" badge flashed on demand. */
 void nowplaying_preview(const char * uri, const char * artist, const char * album, const char * title);
 void nowplaying_show_badge(void);
-/* Pop the controls up (a track started, or the user asked) and let them
- * fade as usual; hide them now; whether they are up. */
+bool nowplaying_embedded(void);
+/* Hosted on a TV album page (0.23e, Ian: "we still want the now-playing
+ * overlay to pop up over the art when we play a new track"): the strip in
+ * the page's colours; pop it up (it fades as usual) - while it is up the
+ * page forwards actions to nowplaying_handle_action(); take it down; is
+ * it up. */
+/* `bg` is the host picture's own background (Ian, 17 Oct 16:13: "the same
+ * colour as the background of the album image, universally"): the strip
+ * takes it as it is (a placeholder's), or pushed dark (`darken`, a real
+ * cover's palette colour); the ink is chosen to read on it; `sel` is the
+ * accent when it reads, else one of the theme's. When the stage shows a
+ * cover of its own (with_art), the cover's colours win as on the screen. */
+void nowplaying_embed_colours(uint32_t bg, uint32_t sel, bool darken);
 void nowplaying_poke(void);
 void nowplaying_hide_controls(void);
 bool nowplaying_controls_visible(void);
-bool nowplaying_embedded(void);
 /* Hosted, showing its own art (decoded and up): the host may hide its own
  * picture under it. */
 bool nowplaying_art_ready(void);

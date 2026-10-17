@@ -39,7 +39,12 @@ STR(NP_NOTHING,          "np.nothing_playing",  "Nothing playing")
 STR(NP_PICK_A_TRACK,     "np.pick_a_track",     "Pick a track in the browser")
 STR(NP_FAVORITE,         "np.favorite",         "Favorite")
 STR(NP_FAVORITED,        "np.favorited",        "Favorited")
-STR(NP_INFO,             "np.info",             "Info")
+STR(NP_QUEUE,            "np.queue",            "Now playing")
+STR(NP_MODE_THROUGH,     "np.mode_through",     "Play through")
+STR(NP_MODE_REPEAT,      "np.mode_repeat",      "Repeat album")
+STR(NP_MODE_REPEAT_ONE,  "np.mode_repeat_one",  "Repeat track")
+STR(NP_MODE_RANDOM,      "np.mode_random",      "Random")
+
 STR(NP_MORE,             "np.more",             "More")
 
 /* format line: what MPD decoded */

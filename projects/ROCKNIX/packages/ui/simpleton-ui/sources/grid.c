@@ -109,6 +109,19 @@ static int           sort_rows;
 static int           opens;
 static bool          visited, visited_before_open;
 static bool          suppress_overlay;
+static bool          returning;            /* grid_show(false): back from a deeper view, the rows as they were */
+/* Where each grid was left (0.23c, Ian, 17 Oct: a folder's grid came back
+ * on the bottom row with its colours re-dealt): by scope and folder - the
+ * deal's seed, the cursor and the top row, restored when that grid comes
+ * back. The last eight. */
+typedef struct { grid_scope_t scope; char folder[1024]; unsigned seed; int sel, first_row; bool used; } grid_memory_t;
+static grid_memory_t memories[8];
+static void memory_store(void);
+static const grid_memory_t * memory_find(void)
+{
+    for(int i = 0; i < 8; i++) if(memories[i].used && memories[i].scope == scope && strcmp(memories[i].folder, scope_folder) == 0) return &memories[i];
+    return NULL;
+}
 
 /* ---- screen ---- */
 
@@ -1392,7 +1405,12 @@ static void rebuild(void)
     layout_screen();
     picker_relayout(&plm);
     if(sel > nentries - 1) sel = nentries ? nentries - 1 : 0;
-    first_row = row_of(sel) - rows_on_screen() / 2;
+    /* back from an album (Ian, 17 Oct: "I end up back in the middle row"):
+     * the cursor's row stays where it was on screen; a fresh grid, or one
+     * whose rows changed, centres it */
+    bool visible = row_of(sel) >= first_row && row_of(sel) < first_row + rows_on_screen();
+    if(!(returning && visible)) first_row = row_of(sel) - rows_on_screen() / 2;
+    returning = false;
     if(first_row > rows_total - rows_on_screen()) first_row = rows_total - rows_on_screen();
     if(first_row < 0) first_row = 0;
     lv_obj_scroll_to_y(field, first_row * g.cell, LV_ANIM_OFF);
@@ -1557,10 +1575,13 @@ void grid_show(bool fresh)
 {
     static unsigned seeds[GRID_SCOPE_COLLECTION + 1]; /* each scope's last deal: coming back from a deeper view wears the same colours (0.20) */
     shown = true;
+    const grid_memory_t * mem = fresh ? NULL : memory_find();
     if(fresh) visit_seed = (unsigned)time(NULL) ^ (unsigned)lv_tick_get() ^ (unsigned)rand();
+    else if(mem) visit_seed = mem->seed;
     else if(seeds[scope]) visit_seed = seeds[scope];
     seeds[scope] = visit_seed;
     suppress_overlay = !fresh;                 /* back from an album: no pill, the cursor on it */
+    returning = !fresh;
     read_options();
     lv_screen_load(scr);
     picker_attach(scr, &plm);
@@ -1572,13 +1593,28 @@ void grid_show(bool fresh)
         free(keep);
         scope_changed = false;
     }
+    if(mem && mem->sel >= 0 && mem->sel < nentries && (sel == 0 || sel == mem->sel)) { sel = mem->sel; first_row = mem->first_row; }   /* a reloaded grid: the cursor and the rows as they were */
     rebuild();
     after_enter();
+}
+
+static void memory_store(void)
+{
+    int at = 7;
+    for(int i = 0; i < 8; i++) if(memories[i].used && memories[i].scope == scope && strcmp(memories[i].folder, scope_folder) == 0) { at = i; break; }
+    for(int i = at; i > 0; i--) memories[i] = memories[i - 1];
+    memories[0].used = true;
+    memories[0].scope = scope;
+    snprintf(memories[0].folder, sizeof(memories[0].folder), "%s", scope_folder);
+    memories[0].seed = visit_seed;
+    memories[0].sel = sel;
+    memories[0].first_row = first_row;
 }
 
 void grid_hide(void)
 {
     shown = false;
+    if(!scope_changed) memory_store();              /* (a scope already set for the next show was stored then) */
     if(namebar_timer) { lv_timer_delete(namebar_timer); namebar_timer = NULL; }
     lv_obj_add_flag(namebar, LV_OBJ_FLAG_HIDDEN);
     power_indicator_yield(false);
@@ -1646,7 +1682,8 @@ static void select_entry(int e)
             const char ** uris = calloc((size_t)nentries, sizeof(char *));
             if(!uris) return;
             int n = 0;
-            for(int i = 0; i < nentries; i++) if(track_of(i)) uris[n++] = track_of(i)->uri;
+            placeholder_prefer_tracks_begin();        /* each tile's colours go with its track to now-playing (0.23e) */
+            for(int i = 0; i < nentries; i++) if(track_of(i)) { uris[n++] = track_of(i)->uri; if(styles && i < styles_n) tilestyle_prefer_track(track_of(i)->uri, &styles[i], visit_seed); }
             int start = 0;
             for(int i = 0; i < n; i++) if(uris[i] == track_of(e)->uri) { start = i; break; }
             bool started = playthrough_play_list(uris, n, start);
@@ -1685,6 +1722,7 @@ void grid_set_scope(grid_scope_t sc, const char * folder)
 {
     const char * f = folder ? folder : "";
     if(sc == scope && strcmp(f, scope_folder) == 0) return;
+    if(shown && !scope_changed) memory_store();      /* the grid being left, under its own name */
     scope = sc;
     snprintf(scope_folder, sizeof(scope_folder), "%s", f);
     scope_changed = true;

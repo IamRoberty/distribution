@@ -290,12 +290,42 @@ static long iso_time(const char * s)
     return (long)timegm(&tm);
 }
 
+static bool stream_songs(const char * cmd, bool (*cb)(const mpd_song_info_t * song, void * ctx), void * ctx);
+static void (*before_play)(void);
+
 bool mpd_listallinfo(const char * uri, bool (*cb)(const mpd_song_info_t * song, void * ctx), void * ctx)
 {
-    if(!mpd_connect()) return false;
     char cmd[2048] = "listallinfo";
     if(uri && uri[0]) append_quoted(cmd, sizeof(cmd), uri);
     strncat(cmd, "\n", sizeof(cmd) - strlen(cmd) - 1);
+    return stream_songs(cmd, cb, ctx);
+}
+
+/* The queue, in order (0.23: now-playing's track list); song.track is the
+ * queue position, song.added the song id. */
+bool mpd_queue(bool (*cb)(const mpd_song_info_t * song, void * ctx), void * ctx)
+{
+    return stream_songs("playlistinfo\n", cb, ctx);
+}
+
+bool mpd_play_pos(int pos)
+{
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "play %d", pos);
+    if(before_play) before_play();
+    return simple_command(cmd);
+}
+
+bool mpd_set_mode(bool repeat, bool single, bool random)
+{
+    char cmd[96];
+    snprintf(cmd, sizeof(cmd), "command_list_begin\nrepeat %d\nsingle %d\nrandom %d\ncommand_list_end", repeat ? 1 : 0, single ? 1 : 0, random ? 1 : 0);
+    return simple_command(cmd);
+}
+
+static bool stream_songs(const char * cmd, bool (*cb)(const mpd_song_info_t * song, void * ctx), void * ctx)
+{
+    if(!mpd_connect()) return false;
     if(!send_raw(&ui, cmd)) return false;
 
     static mpd_song_info_t song;        /* 3 KB: not on the stack of a UI thread */
@@ -327,6 +357,8 @@ bool mpd_listallinfo(const char * uri, bool (*cb)(const mpd_song_info_t * song, 
         else if(strcasecmp(key, "Date") == 0)          { if(!song.date[0]) snprintf(song.date, sizeof(song.date), "%s", val); }
         else if(strcasecmp(key, "OriginalDate") == 0)  { if(!song.original_date[0]) snprintf(song.original_date, sizeof(song.original_date), "%s", val); }
         else if(strcasecmp(key, "Track") == 0)         song.track = atoi(val);
+        else if(strcasecmp(key, "Pos") == 0)           song.track = atoi(val);       /* the queue: its position */
+        else if(strcasecmp(key, "Id") == 0)            song.added = atol(val);
         else if(strcasecmp(key, "Disc") == 0)          song.disc = atoi(val);
         else if(strcasecmp(key, "duration") == 0)      song.duration = (float)atof(val);
         else if(strcasecmp(key, "Time") == 0)          { if(song.duration <= 0) song.duration = (float)atoi(val); }
@@ -466,7 +498,6 @@ bool mpd_lsinfo_expanded(const char * uri, mpd_listing_t * out)
 
 /* 0.21c: called before any command that starts playback (dacpower.c wakes
  * a sleeping DAC first). */
-static void (*before_play)(void);
 void mpd_set_before_play(void (*cb)(void)) { before_play = cb; }
 
 bool mpd_play_uris(char * const * uris, int count, int start_index)

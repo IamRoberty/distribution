@@ -854,6 +854,8 @@ static int row_label(int r)
     return picker_label_of(&view_opts, artist_of(r)->name);
 }
 
+static bool returning;                    /* rows_show(false): back from a deeper view */
+
 static void rebuild(void)
 {
     rows_clear();
@@ -865,7 +867,12 @@ static void rebuild(void)
     if(sel_row > nrows - 1) sel_row = nrows ? nrows - 1 : 0;
     if(nrows && sel_k > artist_of(sel_row)->nalbums - 1) sel_k = artist_of(sel_row)->nalbums - 1;
     int line = nrows ? line_of(sel_row, sel_k) : 0;
-    first_line = line - rows_on() / 2;
+    /* back from an artist's albums (Ian, 17 Oct: "always on the 3rd row
+     * out of 4"): the lines stay where they were while the cursor's line
+     * is still on screen; otherwise centred */
+    bool visible = returning && line >= first_line && line < first_line + rows_on();
+    returning = false;
+    if(!visible) first_line = line - rows_on() / 2;
     if(first_line > total_lines - rows_on()) first_line = total_lines - rows_on();
     if(first_line < 0) first_line = 0;
     lv_obj_scroll_to_y(field, first_line * g.cell, LV_ANIM_OFF);
@@ -1038,6 +1045,7 @@ void rows_create(void (*on_artist)(int), void (*on_album)(const library_t *, int
 void rows_show(bool fresh)
 {
     shown = true;
+    returning = !fresh;
     if(fresh) seed = (unsigned)time(NULL) ^ (unsigned)lv_tick_get() ^ (unsigned)rand();
     suppress_overlay = !fresh;
     read_options();
