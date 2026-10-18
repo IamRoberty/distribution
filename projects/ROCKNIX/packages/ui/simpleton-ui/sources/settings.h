@@ -49,5 +49,7 @@ set_result_t settings_handle_action(ui_action_t a);
 
 /* MPD said the library changed: the scan row's state. */
 void settings_mpd_changed(void);
+/* Bluetooth changed (a device, a state, a message): the devices page follows (0.27). */
+void settings_bt_changed(void);
 
 #endif

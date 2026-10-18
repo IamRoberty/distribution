@@ -18,6 +18,9 @@
 #include "settings.h"
 #include "config.h"
 #include "home.h"
+#include "input.h"
+#include "btctl.h"
+#include "objmenu.h"
 #include "library.h"
 #include "mpdc.h"
 #include "power.h"
@@ -54,7 +57,7 @@ typedef struct {
     lv_obj_t *    val_label;
 } row_t;
 
-enum { ACT_SCAN = 1 };
+enum { ACT_SCAN = 1, ACT_BT_DEVICE = 2 };
 
 typedef struct { char code[32]; char name[96]; } choice_t;
 
@@ -314,7 +317,39 @@ static const char * group_title(const char * p)
     if(strcmp(p, "controls") == 0) return T(S_SET_CONTROLS);
     if(strcmp(p, "system") == 0)   return T(S_SET_SYSTEM);
     if(strcmp(p, "power") == 0)    return T(S_SET_POWER);
+    if(strcmp(p, "btdevices") == 0) return T(S_SET_BT_DEVICES);
     return NULL;
+}
+
+/* The Bluetooth devices page (0.27): the paired ones, then the ones found
+ * while the page scans; A pairs / connects / disconnects, hold A forgets. */
+static const char * bt_kind_name(const bt_device_t * d)
+{
+    switch(d->kind) {
+        case BT_KIND_GAMEPAD:  return T(S_BT_GAMEPAD);
+        case BT_KIND_KEYBOARD: return T(S_BT_KEYBOARD);
+        case BT_KIND_REMOTE:   return T(S_BT_REMOTE);
+        case BT_KIND_POINTER:  return T(S_BT_POINTER);
+        default:               return T(S_BT_OTHER);
+    }
+}
+
+static void bt_rows(void)
+{
+    if(!bt_enabled()) { add_row(ROW_TEXT, T(S_BT_OFF)); return; }
+    int n = bt_device_count(), paired = 0;
+    for(int i = 0; i < n; i++) if(bt_device(i)->paired) paired++;
+    if(paired) add_row(ROW_TEXT, T(S_BT_PAIRED_GROUP));
+    for(int i = 0; i < n; i++) {
+        const bt_device_t * d = bt_device(i);
+        if(i == paired) add_row(ROW_TEXT, T(S_BT_FOUND_GROUP));
+        row_t * r = add_row(ROW_ACTION, d->name);
+        r->action = ACT_BT_DEVICE;
+        r->index = i;
+        snprintf(r->key, sizeof(r->key), "%s", d->mac);
+        snprintf(r->value, sizeof(r->value), "%s", d->pairing ? T(S_BT_PAIRING_STATE) : d->connected ? T(S_BT_CONNECTED_STATE) : bt_kind_name(d));
+    }
+    if(n == 0 && bt_scanning()) add_row(ROW_TEXT, T(S_BT_SEARCHING));   /* only an empty page says it is looking (Ian, 18 Oct) */
 }
 
 static void build_rows(void)
@@ -352,7 +387,12 @@ static void build_rows(void)
         add_toggle(T(S_SET_HIGH_CONTRAST), "high_contrast", false);
     }
     else if(strcmp(page, "controls") == 0) {
-        add_row(ROW_TEXT, T(S_SET_EMPTY));
+        add_toggle(T(S_SET_SWAP_AB), "swap_ab", false);         /* 0.26a (Ian): A selects by its label; this flips A and B on every pad */
+        add_toggle(T(S_SET_BLUETOOTH), "bluetooth", false);     /* 0.27: the radio, off unless wanted */
+        add_page_row(T(S_SET_BT_DEVICES), "btdevices");
+    }
+    else if(strcmp(page, "btdevices") == 0) {
+        bt_rows();
     }
     else if(strcmp(page, "power") == 0) {
         row_t * r = add_row(ROW_TEXT, T(S_SET_BATTERY));
@@ -524,15 +564,36 @@ static void render(void)
     set_focus(f < row_count ? f : 0);
 
     char hints[300];
-    snprintf(hints, sizeof(hints), "A %s  B %s  " LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " %s", T(S_HINT_SELECT), T(S_HINT_BACK), T(S_HINT_CHANGE));
+    if(strcmp(page, "btdevices") == 0) snprintf(hints, sizeof(hints), "%s  B %s", T(S_BT_HINT), T(S_HINT_BACK));
+    else snprintf(hints, sizeof(hints), "A %s  B %s  " LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " %s", T(S_HINT_SELECT), T(S_HINT_BACK), T(S_HINT_CHANGE));
     lv_label_set_text(footer, hints);
 }
 
 static void open_page(const char * p)
 {
+    bool was_bt = strcmp(page, "btdevices") == 0, is_bt = strcmp(p, "btdevices") == 0;
+    if(was_bt && !is_bt) bt_scan(false);
     snprintf(page, sizeof(page), "%s", p);
     build_rows();
     render();
+    if(is_bt && !was_bt) bt_scan(true);                     /* the page scans while it is open */
+}
+
+/* The device list or a state changed (0.27): the page follows, the cursor
+ * on the same device; a message or a passkey shows as a toast. */
+void settings_bt_changed(void)
+{
+    char name[64], num[8];
+    int id = bt_take_status(name, sizeof(name));
+    if(id) { char t[200]; ui_strf(t, sizeof(t), (str_id_t)id, "name", name, NULL); if(active) objmenu_toast(t); }
+    bt_take_passkey(num, sizeof(num));
+    if(num[0] && active) { char t[200]; ui_strf(t, sizeof(t), S_BT_PASSKEY, "n", num, NULL); objmenu_toast(t); }
+    if(!active || strcmp(page, "btdevices") != 0) return;
+    char keep[18] = "";
+    if(row_count && rows[focus].kind == ROW_ACTION && rows[focus].action == ACT_BT_DEVICE) snprintf(keep, sizeof(keep), "%s", rows[focus].key);
+    build_rows();
+    render();
+    if(keep[0]) for(int i = 0; i < row_count; i++) if(rows[i].kind == ROW_ACTION && strcmp(rows[i].key, keep) == 0) { set_focus(i); break; }
 }
 
 /* --------------------------------------------------------- changes */
@@ -563,6 +624,8 @@ static void flip_toggle(row_t * r)
     refresh_value(r);
     if(is_view_key(r->key) && view_changed_cb) view_changed_cb(page);
     if(is_power_key(r->key)) power_reload_settings();
+    if(strcmp(r->key, "swap_ab") == 0) input_reload_settings();   /* at once: the next press is already swapped */
+    if(strcmp(r->key, "bluetooth") == 0) bt_set_enabled(on);        /* the service starts or stops now (0.27) */
     if(strcmp(r->key, "high_contrast") == 0) {
         /* takes effect now: the floors move, this visit is dealt again */
         tilestyle_set_high_contrast(on);
@@ -601,6 +664,15 @@ static void step_choice(row_t * r, int dir)
 
 static void run_action(row_t * r)
 {
+    if(r->action == ACT_BT_DEVICE) {
+        const bt_device_t * d = bt_find(r->key);
+        if(!d || d->pairing) return;
+        if(!d->paired) bt_pair(d->mac);
+        else if(d->connected) bt_disconnect(d->mac);
+        else bt_connect(d->mac);
+        settings_bt_changed();
+        return;
+    }
     if(r->action == ACT_SCAN) {
         if(mpd_update()) snprintf(r->value, sizeof(r->value), "%s", T(S_SET_SCANNING));
         refresh_value(r);
@@ -657,6 +729,7 @@ void settings_show(const char * p, bool fv)
 void settings_hide(void)
 {
     active = false;
+    if(strcmp(page, "btdevices") == 0) bt_scan(false);
 }
 
 void settings_mpd_changed(void)
@@ -697,6 +770,12 @@ set_result_t settings_handle_action(ui_action_t a)
                 case ROW_ACTION: run_action(r); break;
                 case ROW_HUB:    from_view = false; open_page("hub"); break;
                 default: break;
+            }
+            return SET_HANDLED;
+        case ACT_MENU:                                          /* hold A on a paired device: forget it (0.27) */
+            if(r && r->kind == ROW_ACTION && r->action == ACT_BT_DEVICE) {
+                const bt_device_t * d = bt_find(r->key);
+                if(d && d->paired) { bt_forget(d->mac); settings_bt_changed(); }
             }
             return SET_HANDLED;
         case ACT_BACK:

@@ -289,6 +289,7 @@ static void delete_last(void)
 static void finish(bool ok)
 {
     active = false;
+    input_text_mode(false);
     if(sheet) lv_obj_add_flag(sheet, LV_OBJ_FLAG_HIDDEN);
     size_t n = strlen(text);
     while(n > 0 && text[n - 1] == ' ') text[--n] = 0;
@@ -355,6 +356,14 @@ void keyboard_handle_action(ui_action_t a)
         case ACT_PLAYPAUSE: type_key(" "); break;               /* Y */
         case ACT_HOME:  finish(true); break;                    /* Start */
         case ACT_SETTINGS: do_ctrl(1); break;                   /* Select: the next alphabet */
+        case ACT_TEXT: {                                        /* typed on a real keyboard (0.26) */
+            char t[64];
+            input_take_text(t, sizeof(t));
+            size_t have = strlen(text), add = strlen(t);
+            if(have + add <= KEYBOARD_MAX) { memcpy(text + have, t, add + 1); render_field(); }
+            break;
+        }
+        case ACT_ERASE: delete_last(); break;
         default: break;
     }
 }
@@ -373,6 +382,7 @@ void keyboard_open(const char * title, const char * initial, void (*done)(const 
     shift = 0;
     row = 1; col = 0;
     active = true;
+    input_text_mode(true);                      /* a real keyboard types into the field (0.26) */
     lv_obj_remove_flag(sheet, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(sheet);
     render();

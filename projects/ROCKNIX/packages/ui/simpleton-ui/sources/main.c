@@ -44,6 +44,7 @@
 #include "config.h"
 #include "curation.h"
 #include "dacpower.h"
+#include "btctl.h"
 #include "keyboard.h"
 #include "objmenu.h"
 #include "display.h"
@@ -1002,6 +1003,7 @@ int main(int argc, char ** argv)
     mpd_connect();   /* may fail: browser shows "Starting library" and retries */
     mpd_idle_start();
     dacpower_init();                         /* wake the DAC on play, let it sleep when idle (0.21c) */
+    bt_init();                               /* the radio, when the setting says so (0.27) */
     dacpower_mpd_changed();/* change notices; retried with the connection if MPD isn't up */
     browser_scr = lv_screen_active();
     browser_create(browser_scr, grp, on_play, browser_exited, resume_folder);
@@ -1076,14 +1078,17 @@ int main(int argc, char ** argv)
         uint32_t idle_ms = lv_timer_handler();
         if(idle_ms > 20) idle_ms = 20;          /* keep hold/repeat timing tight */
 
-        struct pollfd pfd[5] = { { .fd = input_fd(), .events = POLLIN },
+        struct pollfd pfd[6] = { { .fd = input_fd(), .events = POLLIN },
                                  { .fd = display_hotplug_fd(), .events = POLLIN },
                                  { .fd = cec_fd(), .events = POLLIN | POLLPRI },
                                  { .fd = mpd_idle_fd(), .events = POLLIN },
-                                 { .fd = power_key_fd(), .events = POLLIN } };
-        poll(pfd, 5, (int)idle_ms);             /* negative fds are ignored by poll() */
+                                 { .fd = power_key_fd(), .events = POLLIN },
+                                 { .fd = bt_fd(), .events = POLLIN } };
+        poll(pfd, 6, (int)idle_ms);             /* negative fds are ignored by poll() */
 
         input_poll();
+        bt_poll();                              /* bluetoothctl's news (0.27) */
+        if(bt_changed()) settings_bt_changed();
         cec_poll();                             /* TV remote keys join the same queue */
         power_poll();                           /* the power key: press, hold, countdown */
         dacpower_poll();                        /* the DAC's sleep, the validity probe (0.21c) */
