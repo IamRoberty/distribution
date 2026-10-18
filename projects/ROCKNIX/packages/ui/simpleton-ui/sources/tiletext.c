@@ -40,6 +40,11 @@ static lv_obj_t * tile_label(lv_obj_t * box, const fit_t * ft, int w, int top)
 
 void tiletext_make(lv_obj_t * parent, int side, const char * title_in, const char * artist_in, const tile_style_t * st, tiletext_t * out)
 {
+    tiletext_make_lines(parent, side, title_in, artist_in, st, 0, out);
+}
+
+void tiletext_make_lines(lv_obj_t * parent, int side, const char * title_in, const char * artist_in, const tile_style_t * st, int title_lines, tiletext_t * out)
+{
     memset(out, 0, sizeof(*out));
     int pad = side / 10;
     int w = side - 2 * pad, avail = side - 2 * pad;
@@ -90,7 +95,7 @@ void tiletext_make(lv_obj_t * parent, int side, const char * title_in, const cha
     /* the title: the dealt cover font first, then the next faces that fit
      * its rules, and the theme's trio last (0.16i, Ian's type notes) */
     int room = avail - used_h;
-    int max_lines = big ? 5 : 4;
+    int max_lines = title_lines > 0 ? title_lines : big ? 5 : 4;
     fit_t fm = { 0 }, fb = { 0 };
     bool placed = false, done = false, show_br = false;
     int lad[LADDER_STEPS];

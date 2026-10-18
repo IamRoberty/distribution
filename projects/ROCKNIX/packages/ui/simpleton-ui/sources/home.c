@@ -233,7 +233,7 @@ static void build_list(void)
     lv_label_set_long_mode(footer, LV_LABEL_LONG_MODE_CLIP);
     list_footer = footer;
     char hints[200];
-    snprintf(hints, sizeof(hints), "A %s  Y %s  X %s  Start %s", T(S_HINT_OPEN), T(S_HINT_PLAY), T(S_HINT_NEXT), T(S_HINT_NOW_PLAYING));
+    snprintf(hints, sizeof(hints), "%s %s  Y %s  X %s  Start %s", input_letter_select(), T(S_HINT_OPEN), T(S_HINT_PLAY), T(S_HINT_NEXT), T(S_HINT_NOW_PLAYING));
     lv_label_set_text(footer, hints);
     list_focus(sel);
 }

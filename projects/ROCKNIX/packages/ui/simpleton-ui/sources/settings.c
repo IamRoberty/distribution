@@ -16,11 +16,17 @@
  * as everywhere.
  */
 #include "settings.h"
+#include "saver.h"
 #include "config.h"
 #include "home.h"
 #include "input.h"
 #include "btctl.h"
 #include "objmenu.h"
+#include "libs.h"
+#include <dirent.h>
+#include <glob.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
 #include "library.h"
 #include "mpdc.h"
 #include "power.h"
@@ -57,7 +63,7 @@ typedef struct {
     lv_obj_t *    val_label;
 } row_t;
 
-enum { ACT_SCAN = 1, ACT_BT_DEVICE = 2 };
+enum { ACT_SCAN = 1, ACT_BT_DEVICE = 2, ACT_RESET = 3, ACT_UPDATE = 4, ACT_VERSION = 5, ACT_SAVER = 6 };
 
 typedef struct { char code[32]; char name[96]; } choice_t;
 
@@ -157,6 +163,31 @@ static void power_choices(const char * key)
     static const int long_min[] = { 20, 30, 60 };
     static const int dac_sleep[] = { 60, 300, 900, 1800, 0 };
     static const int sleep_off[] = { 900, 3600, 14400, 0 };
+    if(strcmp(key, "tv_idle_do") == 0 || strcmp(key, "tv_music_do") == 0) {
+        static const char * const codes[5] = { "off", "drift", "cover", "palettes", "bounce" };
+        static const int ids[5] = { S_SET_SAVER_OFF, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE };
+        choice_count = 5;
+        for(int i = 0; i < 5; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", codes[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(ids[i])); }
+        return;
+    }
+    static const int tv_after[] = { 60, 300, 1200, 3600, 0 };
+    if(strcmp(key, "tv_idle_s") == 0 || strcmp(key, "tv_music_s") == 0) {
+        choice_count = 5;
+        for(int i = 0; i < 5; i++) {
+            snprintf(choices[i].code, sizeof(choices[i].code), "%d", tv_after[i]);
+            char num[16];
+            if(tv_after[i] == 0) snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(S_SET_NEVER));
+            else if(tv_after[i] >= 3600) { snprintf(num, sizeof(num), "%d", tv_after[i] / 3600); ui_strf(choices[i].name, sizeof(choices[i].name), S_SET_HOURS, "n", num, NULL); }
+            else { snprintf(num, sizeof(num), "%d", tv_after[i] / 60); ui_strf(choices[i].name, sizeof(choices[i].name), S_SET_MINUTES, "n", num, NULL); }
+        }
+        return;
+    }
+    if(strcmp(key, "brightness") == 0) {
+        static const int pct[] = { 20, 40, 60, 80, 100 };
+        choice_count = 5;
+        for(int i = 0; i < 5; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%d", pct[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%d%%", pct[i]); }
+        return;
+    }
     const int * v; int n; bool minutes;
     if(strcmp(key, "screen_off") == 0)      { v = screen_off;  n = 5; minutes = false; }
     else if(strcmp(key, "idle_sleep") == 0) { v = idle_sleep;  n = 4; minutes = false; }
@@ -181,10 +212,12 @@ static bool is_power_key(const char * key)
     return strcmp(key, "screen_off") == 0 || strcmp(key, "screen_dim") == 0 || strcmp(key, "idle_sleep") == 0 ||
            strcmp(key, "sleep_timer") == 0 || strcmp(key, "long_track_skip") == 0 || strcmp(key, "long_track_min") == 0 ||
            strcmp(key, "leds") == 0 || strcmp(key, "keep_on_plugged") == 0 || strcmp(key, "battery_show") == 0 ||
-           strcmp(key, "dac_wake") == 0 || strcmp(key, "dac_sleep") == 0 || strcmp(key, "sleep_off") == 0;
+           strcmp(key, "dac_wake") == 0 || strcmp(key, "dac_sleep") == 0 || strcmp(key, "sleep_off") == 0 ||
+           strcmp(key, "brightness") == 0 || strncmp(key, "tv_", 3) == 0;
 }
 
 static void add_choice(const char * label, const char * key, choice_kind_t ck, const char * current);
+static void service_set(const char * unit, bool on);
 
 static void add_power_choice(int label_id, const char * key, const char * def)
 {
@@ -318,7 +351,102 @@ static const char * group_title(const char * p)
     if(strcmp(p, "system") == 0)   return T(S_SET_SYSTEM);
     if(strcmp(p, "power") == 0)    return T(S_SET_POWER);
     if(strcmp(p, "btdevices") == 0) return T(S_SET_BT_DEVICES);
+    if(strcmp(p, "developer") == 0) return T(S_SET_DEVELOPER);
+    if(strcmp(p, "tv") == 0) return T(S_SET_TV);
+    if(strcmp(p, "savers") == 0) return T(S_HOME_VISUALIZATION);
     return NULL;
+}
+
+/* Settings → System (0.28): the cards, the system card's room, the update
+ * file (found or not; installing it comes with the image round), a reset,
+ * and the hidden Developer options behind the version row. */
+static int version_presses;              /* 8 on the version row: Developer options (Ian, 28 Sep) */
+static uint32_t reset_armed_ms;
+
+static void gb_text(char * out, size_t len, unsigned long long bytes)
+{
+    double gb = (double)bytes / 1e9;
+    if(gb >= 10) snprintf(out, len, "%.0f", gb); else snprintf(out, len, "%.1f", gb);
+}
+
+static void storage_row(const char * label, const char * path)
+{
+    struct statvfs st;
+    row_t * r = add_row(ROW_TEXT, label);
+    if(statvfs(path, &st) != 0) return;
+    char fr[16], tot[16];
+    gb_text(fr, sizeof(fr), (unsigned long long)st.f_bavail * st.f_frsize);
+    gb_text(tot, sizeof(tot), (unsigned long long)st.f_blocks * st.f_frsize);
+    ui_strf(r->value, sizeof(r->value), S_SET_FREE_OF, "free", fr, "total", tot, NULL);
+}
+
+static const char * music_dir(void)
+{
+    const char * e = getenv("SIMPLETON_MUSIC_DIR");
+    return e && e[0] ? e : "/storage/music";
+}
+
+/* The update file on a card: SimpletonOS-<version>.update at a card's root. */
+static bool find_update(char * name, size_t len)
+{
+    char pat[400];
+    snprintf(pat, sizeof(pat), "%s/card-*/SimpletonOS-*.update", music_dir());
+    glob_t g;
+    bool found = false;
+    if(glob(pat, 0, NULL, &g) == 0 && g.gl_pathc > 0) {
+        const char * slash = strrchr(g.gl_pathv[0], '/');
+        snprintf(name, len, "%s", slash ? slash + 1 : g.gl_pathv[0]);
+        found = true;
+    }
+    globfree(&g);
+    return found;
+}
+
+static void system_rows(void)
+{
+    row_t * r = add_row(ROW_ACTION, T(S_SET_VERSION));
+    r->action = ACT_VERSION;                       /* selectable: 8 presses unlock Developer options */
+    snprintf(r->value, sizeof(r->value), "%s", SIMPLETON_VERSION);
+    storage_row(T(S_SET_STORAGE), "/storage");
+    char upd[96];
+    r = add_row(ROW_ACTION, T(S_SET_UPDATE));
+    r->action = ACT_UPDATE;
+    snprintf(r->value, sizeof(r->value), "%s", find_update(upd, sizeof(upd)) ? upd : T(S_SET_NO_UPDATE));
+    r = add_row(ROW_ACTION, T(S_SET_RESET));
+    r->action = ACT_RESET;
+    if(config_read_bool("developer", false)) add_page_row(T(S_SET_DEVELOPER), "developer");
+}
+
+static void library_rows(void)
+{
+    add_toggle(T(S_SET_AUTOSCAN), "autoscan", true);
+    add_toggle(T(S_SET_CACHE_ON_CARD), "cache_on_card", true);
+    row_t * r = add_row(ROW_ACTION, T(S_SET_SCAN_NOW));
+    r->action = ACT_SCAN;
+    scan_row_value(r);
+    add_row(ROW_TEXT, T(S_SET_CARDS));
+    libs_refresh();
+    int n = libs_count();
+    if(n == 0) { add_row(ROW_TEXT, T(S_SET_NO_CARDS))->value[0] = ' '; return; }
+    for(int i = 0; i < n; i++) {
+        const lib_source_t * s = libs_get(i);
+        char label[96], path[400], al[16], tr[16];
+        /* the card by its label, when the mount is a link to it */
+        snprintf(path, sizeof(path), "%s/%s", music_dir(), s->card);
+        char target[96]; ssize_t tl = readlink(path, target, sizeof(target) - 1);
+        if(tl > 0) { target[tl] = 0; const char * slash = strrchr(target, '/'); snprintf(label, sizeof(label), "%s", slash ? slash + 1 : target); }
+        else snprintf(label, sizeof(label), "%s", s->card);
+        r = add_row(ROW_TEXT, label);
+        snprintf(al, sizeof(al), "%d", s->lib.nalbums); snprintf(tr, sizeof(tr), "%d", s->lib.ntracks);
+        ui_strf(r->value, sizeof(r->value), S_SET_CARD_INFO, "albums", al, "tracks", tr, NULL);
+    }
+}
+
+/* Developer options (hidden): SSH over the cable, for the workbench. */
+static void developer_rows(void)
+{
+    add_toggle(T(S_SET_SSH), "ssh", false);
+    add_row(ROW_TEXT, T(S_SET_DEV_NOTE))->value[0] = ' ';
 }
 
 /* The Bluetooth devices page (0.27): the paired ones, then the ones found
@@ -361,23 +489,33 @@ static void build_rows(void)
         add_page_row(T(S_SET_DISPLAY), "display");
         add_page_row(T(S_SET_CONTROLS), "controls");
         add_page_row(T(S_SET_POWER), "power");
+        add_page_row(T(S_SET_TV), "tv");
         add_page_row(T(S_SET_SYSTEM), "system");
         add_row(ROW_TEXT, T(S_SET_VIEWS));
         for(int v = 0; v < HOME_VIEW_COUNT; v++) {
-            if(v == HOME_NOW_PLAYING || v == HOME_SETTINGS) continue;
+            if(v == HOME_NOW_PLAYING || v == HOME_SETTINGS || v == HOME_VISUALIZATION) continue;   /* the Visualization tape has its own page */
             add_page_row(home_view_name((home_view_t)v), home_view_id((home_view_t)v));
         }
+        return;
+    }
+    if(strcmp(page, "savers") == 0) {
+        /* the Home shelf's Visualization tape (0.29b): the screensavers by
+         * hand, on either screen, until a press */
+        static const char * const codes[4] = { "drift", "cover", "palettes", "bounce" };
+        static const int ids[4] = { S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE };
+        for(int i = 0; i < 4; i++) {
+            row_t * r = add_row(ROW_ACTION, T(ids[i]));
+            r->action = ACT_SAVER;
+            snprintf(r->key, sizeof(r->key), "%s", codes[i]);
+        }
+        add_row(ROW_TEXT, T(S_SET_SAVERS_NOTE))->value[0] = ' ';
         return;
     }
     if(strcmp(page, "playback") == 0) {
         add_toggle(T(S_SET_PLAY_THROUGH), "play_through", true);
     }
     else if(strcmp(page, "library") == 0) {
-        add_toggle(T(S_SET_AUTOSCAN), "autoscan", true);
-        add_toggle(T(S_SET_CACHE_ON_CARD), "cache_on_card", true);
-        row_t * r = add_row(ROW_ACTION, T(S_SET_SCAN_NOW));
-        r->action = ACT_SCAN;
-        scan_row_value(r);
+        library_rows();
     }
     else if(strcmp(page, "display") == 0) {
         scan_choices("themes", ".theme", true);
@@ -385,6 +523,7 @@ static void build_rows(void)
         scan_choices("lang", ".txt", false);
         add_choice(T(S_SET_LANGUAGE), "language", CH_LANGUAGE, strings_language());
         add_toggle(T(S_SET_HIGH_CONTRAST), "high_contrast", false);
+        add_power_choice(S_SET_BRIGHTNESS, "brightness", "100");   /* 0.28: the panel's backlight */
     }
     else if(strcmp(page, "controls") == 0) {
         add_toggle(T(S_SET_SWAP_AB), "swap_ab", false);         /* 0.26a (Ian): A selects by its label; this flips A and B on every pad */
@@ -411,8 +550,19 @@ static void build_rows(void)
         add_power_choice(S_SET_DAC_SLEEP, "dac_sleep", "300");
     }
     else if(strcmp(page, "system") == 0) {
-        row_t * r = add_row(ROW_TEXT, T(S_SET_VERSION));
-        snprintf(r->value, sizeof(r->value), "%s", SIMPLETON_VERSION);
+        system_rows();
+    }
+    else if(strcmp(page, "tv") == 0) {
+        /* 0.29 (Ian, 18 Oct): two rules - nothing playing, and with music - each a time and what to show */
+        add_row(ROW_TEXT, T(S_SET_STATIONARY));
+        add_power_choice(S_SET_TV_IDLE_S, "tv_idle_s", "1200");
+        add_power_choice(S_SET_TV_IDLE_DO, "tv_idle_do", "off");
+        add_power_choice(S_SET_TV_MUSIC_S, "tv_music_s", "300");
+        add_power_choice(S_SET_TV_MUSIC_DO, "tv_music_do", "drift");
+        add_row(ROW_TEXT, T(S_SET_STATIONARY_NOTE))->value[0] = ' ';
+    }
+    else if(strcmp(page, "developer") == 0) {
+        developer_rows();
     }
     else {
         /* a view's page: the picker's rows, remembered for this screen type */
@@ -564,8 +714,9 @@ static void render(void)
     set_focus(f < row_count ? f : 0);
 
     char hints[300];
-    if(strcmp(page, "btdevices") == 0) snprintf(hints, sizeof(hints), "%s  B %s", T(S_BT_HINT), T(S_HINT_BACK));
-    else snprintf(hints, sizeof(hints), "A %s  B %s  " LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " %s", T(S_HINT_SELECT), T(S_HINT_BACK), T(S_HINT_CHANGE));
+    const char * la = input_letter_select(), * lb = input_letter_back();     /* the hints follow Swap A and B (0.28) */
+    if(strcmp(page, "btdevices") == 0) { char h[200]; ui_strf(h, sizeof(h), S_BT_HINT, "a", la, NULL); snprintf(hints, sizeof(hints), "%s  %s %s", h, lb, T(S_HINT_BACK)); }
+    else snprintf(hints, sizeof(hints), "%s %s  %s %s  " LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " %s", la, T(S_HINT_SELECT), lb, T(S_HINT_BACK), T(S_HINT_CHANGE));
     lv_label_set_text(footer, hints);
 }
 
@@ -626,6 +777,7 @@ static void flip_toggle(row_t * r)
     if(is_power_key(r->key)) power_reload_settings();
     if(strcmp(r->key, "swap_ab") == 0) input_reload_settings();   /* at once: the next press is already swapped */
     if(strcmp(r->key, "bluetooth") == 0) bt_set_enabled(on);        /* the service starts or stops now (0.27) */
+    if(strcmp(r->key, "ssh") == 0) service_set("sshd", on);          /* developer options (0.28) */
     if(strcmp(r->key, "high_contrast") == 0) {
         /* takes effect now: the floors move, this visit is dealt again */
         tilestyle_set_high_contrast(on);
@@ -662,8 +814,60 @@ static void step_choice(row_t * r, int dir)
     else if(restart_cb) restart_cb(page);
 }
 
+static void service_set(const char * unit, bool on)
+{
+    const char * cmd = getenv("SIMPLETON_BT_SERVICE");           /* the rig's stand-in for systemctl */
+    char buf[160];
+    if(cmd && cmd[0]) snprintf(buf, sizeof(buf), "%s %s %s", cmd, on ? "start" : "stop", unit);
+    else snprintf(buf, sizeof(buf), "systemctl %s %s 2>/dev/null", on ? "start" : "stop", unit);
+    int rc = system(buf);
+    fprintf(stderr, "simpleton-ui: settings: %s %s (%d)\n", unit, on ? "started" : "stopped", rc);
+}
+
+/* Reset: every setting file goes; the UI restarts on the hub with the defaults. */
+static void factory_reset(void)
+{
+    DIR * d = opendir(config_dir());
+    if(d) {
+        struct dirent * e;
+        while((e = readdir(d))) {
+            if(e->d_name[0] == '.') continue;
+            char path[512];
+            snprintf(path, sizeof(path), "%s/%s", config_dir(), e->d_name);
+            unlink(path);
+        }
+        closedir(d);
+    }
+    fprintf(stderr, "simpleton-ui: settings: reset - every setting file removed\n");
+    objmenu_toast(T(S_SET_RESET_DONE));
+    if(restart_cb) restart_cb("hub");
+}
+
 static void run_action(row_t * r)
 {
+    if(r->action == ACT_RESET) {
+        uint32_t now = lv_tick_get();
+        if(reset_armed_ms && now - reset_armed_ms < 6000) { reset_armed_ms = 0; factory_reset(); return; }
+        reset_armed_ms = now;
+        char t[200]; ui_strf(t, sizeof(t), S_SET_RESET_CONFIRM, "a", input_letter_select(), NULL);
+        objmenu_toast(t);
+        return;
+    }
+    if(r->action == ACT_VERSION) {
+        if(config_read_bool("developer", false)) return;
+        if(++version_presses >= 8) {
+            version_presses = 0;
+            config_write("developer", "1");
+            objmenu_toast(T(S_SET_DEV_UNLOCKED));
+            int keep = focus; build_rows(); render(); set_focus(keep);
+        }
+        return;
+    }
+    if(r->action == ACT_SAVER) { saver_start_manual(saver_kind_from_code(r->key)); return; }
+    if(r->action == ACT_UPDATE) {
+        objmenu_toast(T(S_SET_UPDATE_LATER));   /* installing comes with the image round (offline-updates-plan.md) */
+        return;
+    }
     if(r->action == ACT_BT_DEVICE) {
         const bt_device_t * d = bt_find(r->key);
         if(!d || d->pairing) return;

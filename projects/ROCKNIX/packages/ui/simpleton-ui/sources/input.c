@@ -163,6 +163,9 @@ ui_action_t input_next_action(void)
 int input_fd(void) { return ep_fd >= 0 ? ep_fd : joy_fd; }
 
 void input_text_mode(bool on) { text_mode = on; text_len = 0; }
+const char * input_letter_select(void) { return swap_ab ? "B" : "A"; }
+const char * input_letter_back(void)   { return swap_ab ? "A" : "B"; }
+
 void input_reload_settings(void)
 {
     swap_ab = config_read_bool("swap_ab", false);

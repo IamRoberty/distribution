@@ -653,8 +653,8 @@ void browser_create(lv_obj_t * scr, lv_group_t * group, void (*on_play)(void), v
      * table's. (When the A/B swap setting arrives, the letters come from the
      * same table as the input mapping - settings-menu.md.) */
     char hints[400];
-    snprintf(hints, sizeof(hints), "A %s  B %s  " LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " %s  Y %s  X %s  Start %s",
-             T(S_HINT_SELECT), T(S_HINT_BACK), T(S_HINT_PAGE), T(S_HINT_PLAY), T(S_HINT_NEXT), T(S_HINT_NOW_PLAYING));
+    snprintf(hints, sizeof(hints), "%s %s  %s %s  " LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " %s  Y %s  X %s  Start %s",
+             input_letter_select(), T(S_HINT_SELECT), input_letter_back(), T(S_HINT_BACK), T(S_HINT_PAGE), T(S_HINT_PLAY), T(S_HINT_NEXT), T(S_HINT_NOW_PLAYING));
     lv_label_set_text(footer, hints);
 
     picker_attach(stage, &lm);

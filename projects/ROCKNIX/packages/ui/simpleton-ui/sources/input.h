@@ -73,6 +73,10 @@ void input_text_mode(bool on);
 /* Re-read the input settings (swap_ab: A and B change places on every pad,
  * the built-in one included - 0.26a). */
 void input_reload_settings(void);
+/* The printed letters that mean select and back on the built-in pad, for
+ * the hint lines: "A" / "B", or the other way round with Swap A and B. */
+const char * input_letter_select(void);
+const char * input_letter_back(void);
 /* The text typed since the last call (UTF-8, at most len - 1 bytes). */
 void input_take_text(char * out, int len);
 

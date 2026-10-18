@@ -45,6 +45,7 @@
 #include "curation.h"
 #include "dacpower.h"
 #include "btctl.h"
+#include "saver.h"
 #include "keyboard.h"
 #include "objmenu.h"
 #include "display.h"
@@ -653,6 +654,7 @@ static void open_view(home_view_t v)
         case HOME_COLLECTIONS: open_curation_view(LIST_COLLECTIONS); break;
         case HOME_NOW_PLAYING: enter_nowplaying(); break;
         case HOME_SETTINGS:    enter_settings("hub", false); break;
+        case HOME_VISUALIZATION: enter_settings("savers", true); break;    /* the screensavers by hand (0.29b) */
         default: {
             char title[160];
             snprintf(title, sizeof(title), "%s: %s", home_view_name(v), T(S_VIEW_NOT_YET));
@@ -1004,6 +1006,7 @@ int main(int argc, char ** argv)
     mpd_idle_start();
     dacpower_init();                         /* wake the DAC on play, let it sleep when idle (0.21c) */
     bt_init();                               /* the radio, when the setting says so (0.27) */
+    saver_create();                          /* the TV's screensavers (0.29) */
     dacpower_mpd_changed();/* change notices; retried with the connection if MPD isn't up */
     browser_scr = lv_screen_active();
     browser_create(browser_scr, grp, on_play, browser_exited, resume_folder);

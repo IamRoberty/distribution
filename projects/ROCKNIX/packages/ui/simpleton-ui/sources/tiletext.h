@@ -27,5 +27,7 @@ typedef struct {
  * `side` square already coloured. `st` is the dealt style (its font and
  * colours decide the face); NULL = the theme's trio. */
 void tiletext_make(lv_obj_t * parent, int side, const char * title, const char * artist, const tile_style_t * st, tiletext_t * out);
+/* The same with the title's line limit given (0 = the tile's own: 5 on a big tile, 4 on a small). */
+void tiletext_make_lines(lv_obj_t * parent, int side, const char * title, const char * artist, const tile_style_t * st, int title_lines, tiletext_t * out);
 
 #endif

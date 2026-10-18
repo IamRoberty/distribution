@@ -43,4 +43,10 @@ void thumbs_want(const thumb_req_t * reqs, int count);
 /* UI thread: one finished decode, or false when none is ready. */
 bool thumbs_poll(thumb_res_t * out);
 
+/* The screensaver (0.29) borrows the worker: while reserved, thumbs_poll()
+ * hands nothing to the views (their timers keep polling under it), and
+ * thumbs_poll_reserved() is the only taker. */
+void thumbs_reserve(bool on);
+bool thumbs_poll_reserved(thumb_res_t * out);
+
 #endif

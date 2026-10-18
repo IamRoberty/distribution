@@ -2,6 +2,7 @@
  * SimpletonOS UI - power (implementation). See power.h.
  */
 #include "power.h"
+#include "saver.h"
 #include "config.h"
 #include "mpdc.h"
 #include "strings.h"
@@ -50,6 +51,13 @@ static bool   screen_off, dimmed;
 static unsigned awake_mask;
 static uint32_t last_activity_ms;
 static int    saved_brightness = -1;
+static int    set_brightness_pct;      /* Settings -> Display -> Brightness (0.28), 0 = as found */
+/* the TV (0.29, stationary-mode-proposal.md): after this long without a
+ * press the picture goes to a screensaver or black - one rule with nothing
+ * playing, another with music; 0 = never */
+static int    set_tv_idle_s, set_tv_music_s;
+static char   set_tv_idle_do[16], set_tv_music_do[16];
+static bool   saver_for_music;
 static bool   notified10, notified5, shutting_down;
 
 /* settings */
@@ -163,6 +171,19 @@ void power_reload_settings(void)
     set_leds            = config_read_bool("leds", true);
     set_keep_on_plugged = config_read_bool("keep_on_plugged", true);
     set_battery_show    = read_setting_int("battery_show", 1);
+    set_tv_idle_s  = read_setting_int("tv_idle_s", 1200);
+    set_tv_music_s = read_setting_int("tv_music_s", 300);
+    config_read("tv_idle_do", set_tv_idle_do, sizeof(set_tv_idle_do), "off");
+    config_read("tv_music_do", set_tv_music_do, sizeof(set_tv_music_do), "drift");
+    int pct = read_setting_int("brightness", 0);
+    if(pct > 0 && pct != set_brightness_pct) {
+        /* the panel's range is 0-255; never below a readable floor */
+        set_brightness_pct = pct;
+        int v = 255 * pct / 100; if(v < 24) v = 24;
+        saved_brightness = v;
+        if(!external && !dimmed && !screen_off) write_int("class/backlight/backlight/brightness", v);
+        config_write("screen_brightness_saved", "");
+    }
     if(indicator) indicator_refresh();
     int timer = read_setting_int("sleep_timer", 0);
     if(timer != set_sleep_timer_min) {
@@ -441,6 +462,7 @@ bool power_screen_off(void) { return screen_off; }
 static bool keep_awake(void)
 {
     if(awake_mask & ~POWER_AWAKE_PLUGGED_PLAYING) return true;
+    if(saver_active() && saver_manual()) return true;          /* a screensaver started by hand is being watched (0.29b) */
     return set_keep_on_plugged && bat.plugged && playing;
 }
 
@@ -460,6 +482,13 @@ static void activity_now(void)
 
 bool power_activity(ui_action_t a)
 {
+    if(saver_active()) {
+        /* the TV's screensaver (0.29): the press ends it; X and Y act as well, like in the dark */
+        saver_stop();
+        last_activity_ms = now_ms();
+        bool transport = a == ACT_PLAYPAUSE || a == ACT_NEXT || a == ACT_PREV || a == ACT_PLAY || a == ACT_PAUSE;
+        return !transport;
+    }
     bool was_off = screen_off;
     /* the disc comes up on the first button after a quiet minute (or on the
      * one that lights the screen), not on every press while browsing (Ian,
@@ -529,6 +558,7 @@ static bool quiet_off;                    /* power off without lighting the scre
 void power_sleep(void)
 {
     if(menu_shown) { lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN); menu_shown = false; }
+    saver_stop();
     key_down = false;
     /* "Sleeping..." on a lit screen; a dark one stays dark (the idle sleep) */
     if(!screen_off) { screen_undim(); overlay_show(T(S_POWER_SLEEPING)); }
@@ -773,8 +803,22 @@ static void tick_cb(lv_timer_t * t)
     }
     else if(keep_awake()) { screen_undim(); if(!screen_off && fading_out) blackout_end(); screen_set_off(false); }
 
-    /* idle: nothing playing, no buttons */
-    if(set_idle_sleep_s > 0 && !playing && !menu_shown && quiet >= (uint32_t)set_idle_sleep_s * 1000u) {
+    /* the TV (0.29): the picture never dims or goes off by itself; after the
+     * idle time one of the screensavers (or black) takes it, any press
+     * brings it back */
+    if(saver_active() && saver_manual()) { /* started from the Visualization page: it runs until a press, on either screen */ }
+    else if(external) {
+        if(saver_active() && saver_for_music != playing) saver_stop();      /* the music started or stopped: the other rule applies, from now */
+        int after = playing ? set_tv_music_s : set_tv_idle_s;
+        if(!saver_active() && !menu_shown && after > 0 && quiet >= (uint32_t)after * 1000u) {
+            saver_for_music = playing;
+            saver_start(saver_kind_from_code(playing ? set_tv_music_do : set_tv_idle_do));
+        }
+    }
+    else if(saver_active()) saver_stop();                                   /* the TV went: back to the panel's rules */
+
+    /* idle: nothing playing, no buttons - not while stationary (a TV and the charger: nothing ever sleeps, 0.29) */
+    if(set_idle_sleep_s > 0 && !playing && !menu_shown && !(external && bat.plugged) && !(saver_active() && saver_manual()) && quiet >= (uint32_t)set_idle_sleep_s * 1000u) {
         fprintf(stderr, "simpleton-ui: power: idle for %d s with nothing playing\n", set_idle_sleep_s);
         power_sleep();
     }

@@ -116,7 +116,14 @@ void thumbs_want(const thumb_req_t * reqs, int count)
     pthread_mutex_unlock(&lock);
 }
 
-bool thumbs_poll(thumb_res_t * out)
+static bool reserved;
+void thumbs_reserve(bool on) { reserved = on; }
+
+static bool poll_any(thumb_res_t * out);
+bool thumbs_poll(thumb_res_t * out) { return reserved ? false : poll_any(out); }
+bool thumbs_poll_reserved(thumb_res_t * out) { return poll_any(out); }
+
+static bool poll_any(thumb_res_t * out)
 {
     pthread_mutex_lock(&lock);
     bool any = done_count > 0;
