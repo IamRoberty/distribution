@@ -162,10 +162,28 @@ static void list_focus(int i)
         lv_obj_t * row = list_rows[k];
         if(!row) continue;
         bool on = (k == i);
-        lv_obj_set_style_bg_opa(row, on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_text_color(row, lv_color_hex(on ? UI_COLOR_FOCUS_FG : UI_COLOR_FG), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);                        /* the row grows and takes the accent (0.24) */
+        { ui_list_t lm; ui_list_metrics(UI_SIZE_DEFAULT, &lm);
+          const lv_font_t * f = ui_font_px(on ? lm.font_px * UI_GROW_PCT / 100 : lm.font_px);
+          lv_obj_set_style_text_font(row, f, 0);
+          lv_obj_t * l = lv_obj_get_child(row, 0);                            /* one line, centred: grows both ways (0.25a) */
+          if(l) { lv_obj_set_height(l, lv_font_get_line_height(f) + 2); lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0); } }
+        lv_obj_set_style_text_color(row, lv_color_hex(on ? ui_accent() : ui_ink()), 0);
     }
     if(list_rows[i]) lv_obj_scroll_to_view(list_rows[i], LV_ANIM_OFF);
+}
+
+/* The plain list's chrome in the visit's colours (0.25). */
+static lv_obj_t * list_header, * list_footer, * list_sign, * list_rule;
+static void list_paint(void)
+{
+    if(!list_box) return;
+    lv_obj_set_style_bg_color(scr, lv_color_hex(ui_ground()), 0);
+    if(list_header) lv_obj_set_style_text_color(list_header, lv_color_hex(ui_ink()), 0);
+    if(list_footer) lv_obj_set_style_text_color(list_footer, lv_color_hex(ui_dim()), 0);
+    ui_rule_colour(list_rule);
+    ui_sign_fit(list_sign);
+    list_focus(sel);
 }
 
 static void build_list(void)
@@ -173,19 +191,21 @@ static void build_list(void)
     ui_list_t lm;
     ui_list_metrics(UI_SIZE_DEFAULT, &lm);
     lv_obj_t * stage = ui_stage_create(scr);
+    list_sign = ui_sign(stage);                                            /* the screen is a sign (0.25) */
 
     lv_obj_t * header = lv_label_create(stage);
-    lv_obj_set_size(header, lm.w, lm.header_h);
-    lv_obj_set_pos(header, lm.x, 0);
-    lv_obj_set_style_text_font(header, ui_font_px(lm.chrome_font_px), 0);
-    lv_obj_set_style_text_color(header, lv_color_hex(UI_COLOR_DIM), 0);
-    lv_obj_set_style_pad_top(header, (lm.header_h - lm.chrome_font_px) / 2, 0);
-    lv_label_set_text(header, T(S_HOME_TITLE));
+    ui_sign_chrome_t sc; ui_sign_chrome(&lm, &sc);           /* inside the keyline, right of the battery corner (0.25) */
+    lv_obj_set_size(header, sc.header_w, sc.header_h);
+    lv_obj_set_pos(header, sc.header_x, sc.header_y);
+    lv_obj_set_style_text_font(header, ui_font_caps(lm.chrome_font_px), 0);   /* Jost Bold caps (0.25) */
+    { char caps[64]; ui_caps(T(S_HOME_TITLE), caps, sizeof(caps)); lv_label_set_text(header, caps); }
+    list_header = header;
+    list_rule = ui_rule(stage, sc.header_x, sc.rule_y, sc.header_w);
 
     list_box = lv_obj_create(stage);
     lv_obj_remove_style_all(list_box);
-    lv_obj_set_size(list_box, lm.w, lm.h);
-    lv_obj_set_pos(list_box, lm.x, lm.y);
+    lv_obj_set_size(list_box, sc.header_w + 2 * lm.margin, sc.list_h);   /* the rows' text on the header's edge (0.25a) */
+    lv_obj_set_pos(list_box, sc.header_x - lm.margin, sc.list_y);
     lv_obj_set_flex_flow(list_box, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list_box, lm.row_gap, 0);
     lv_obj_set_scrollbar_mode(list_box, LV_SCROLLBAR_MODE_OFF);
@@ -193,14 +213,13 @@ static void build_list(void)
     for(int i = 0; i < count; i++) {
         lv_obj_t * row = lv_obj_create(list_box);
         lv_obj_remove_style_all(row);
-        lv_obj_set_size(row, lm.w, lm.row_h);
-        lv_obj_set_style_radius(row, lm.row_radius, 0);
-        lv_obj_set_style_bg_color(row, lv_color_hex(UI_COLOR_FOCUS_BG), 0);
+        lv_obj_set_size(row, lv_obj_get_style_width(list_box, 0), lm.row_h);
+        lv_obj_set_style_radius(row, 0, 0);
         lv_obj_set_style_pad_hor(row, lm.margin, 0);
         lv_obj_set_style_text_font(row, ui_font_px(lm.font_px), 0);
         lv_obj_t * l = lv_label_create(row);
         lv_label_set_text(l, T(entries[i].name));
-        lv_obj_set_size(l, lm.w - 2 * lm.margin, lv_font_get_line_height(ui_font_px(lm.font_px)));
+        lv_obj_set_size(l, lv_obj_get_style_width(list_box, 0) - 2 * lm.margin, lv_font_get_line_height(ui_font_px(lm.font_px * UI_GROW_PCT / 100)) + 2);
         lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
         lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
         list_rows[i] = row;
@@ -208,11 +227,11 @@ static void build_list(void)
     }
 
     lv_obj_t * footer = lv_label_create(stage);
-    lv_obj_set_size(footer, lm.w, lm.footer_h);
-    lv_obj_set_pos(footer, lm.x, lm.y + lm.h);
+    lv_obj_set_size(footer, sc.header_w, lm.footer_h);
+    lv_obj_set_pos(footer, sc.header_x, sc.footer_y);                 /* the hints inside the sign, on the rows' edge (0.25a) */
     lv_obj_set_style_text_font(footer, ui_font_px(lm.chrome_font_px), 0);
-    lv_obj_set_style_text_color(footer, lv_color_hex(UI_COLOR_DIM), 0);
     lv_label_set_long_mode(footer, LV_LABEL_LONG_MODE_CLIP);
+    list_footer = footer;
     char hints[200];
     snprintf(hints, sizeof(hints), "A %s  Y %s  X %s  Start %s", T(S_HINT_OPEN), T(S_HINT_PLAY), T(S_HINT_NEXT), T(S_HINT_NOW_PLAYING));
     lv_label_set_text(footer, hints);
@@ -315,6 +334,8 @@ void home_create(void (*on_open)(home_view_t))
 void home_show(void)
 {
     active = true;
+    ui_colours_visit("home");                  /* a visit: three colours for the list, and for what pops up over the shelf (0.25) */
+    list_paint();
     refresh_playing();
     lv_screen_load(scr);
 }

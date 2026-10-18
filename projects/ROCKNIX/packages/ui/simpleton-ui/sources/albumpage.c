@@ -88,6 +88,7 @@ static char last_song[1024];         /* MPD's current file at the last look: a c
 typedef enum { FOCUS_LIST, FOCUS_ART } focus_t;
 static focus_t focus;
 static bool    art_paged;            /* Select has turned a page: the frame stays off until the cover is left and re-entered */
+static bool    art_browse;           /* 0.24: A held on the cover - Left/Right turn its pages, the badge stays, Back ends it */
 
 static bool     shown, opened, tv;
 static bool     front;               /* handheld: the album's front is up (the art, or the tile / cassette / record) - Ian, 11 Oct */
@@ -545,6 +546,7 @@ static void choose_for_layout(void)
             }
         }
     }
+    ui_colours_set(c_bg, c_ink, c_sel);                     /* a menu or toast over this page wears its colours (0.25) */
     fprintf(stderr, "simpleton-ui: album page: \"%s\" layout %s, colours %s bg %06x ink %06x text %06x playing %06x selected %06x, liner %s, %d tracks%s%s%s\n",
             alb.title, lay->name, from_art ? (lay->colours == PAGE_COLOURS_PAPER ? "paper" : "art") : "tile",
             c_bg, c_ink, c_text, c_play, c_sel, liner_file ? liner_file : "ui", alb.n, split < alb.n ? " split" : "",
@@ -938,7 +940,7 @@ static void row_style(int i)
     if(!t->lab) return;
     bool is_sel = i == sel && (!tv || focus == FOCUS_LIST);   /* on the cover no track is highlighted (Ian) */
     bool is_play = i == playing;
-    uint32_t col = is_play ? c_play : is_sel ? c_sel : c_text;
+    uint32_t col = is_sel ? c_sel : is_play ? c_play : c_text;   /* selected wins; the play mark says playing (0.25, Ian 17 Oct) */
     const lv_font_t * f = is_sel ? f_grown : f_list;
     lv_obj_set_style_text_font(t->lab, f, 0);
     lv_obj_set_style_text_line_space(t->lab, lh - lv_font_get_line_height(f), 0);
@@ -1264,6 +1266,7 @@ void albumpage_show(bool fresh)
     }
     focus = FOCUS_LIST;
     art_paged = false;
+    art_browse = false;
     front = false;
     returning = !fresh;
     lv_screen_load(scr);
@@ -1277,6 +1280,7 @@ void albumpage_show(bool fresh)
 void albumpage_hide(void)
 {
     shown = false;
+    if(art_browse) { art_browse = false; nowplaying_badge_hold(false); }
     saved_scroll[0] = scroll_y[0];
     saved_scroll[1] = scroll_y[1];
     snprintf(saved_album, sizeof(saved_album), "%s", alb.folder);
@@ -1333,6 +1337,7 @@ static void set_focus(focus_t f)
     if(f == focus) return;
     focus = f;
     art_paged = false;
+    if(art_browse) { art_browse = false; nowplaying_badge_hold(false); }
     apply_focus();
     row_style(sel);
 }
@@ -1369,9 +1374,23 @@ static void tv_handle(ui_action_t a)
         return;
     }
     /* on the cover: Select turns its pages, Up/Down bring the controls
-     * up, Left/Right and Back go back to the list */
+     * up, Left/Right and Back go back to the list; A held (art browse):
+     * Left/Right turn the pages until Back */
+    if(focus == FOCUS_ART && art_browse) {
+        switch(a) {
+            case ACT_LEFT:   nowplaying_browse_dir(-1); return;
+            case ACT_RIGHT:  nowplaying_browse_dir(1); return;
+            case ACT_SELECT: nowplaying_browse_dir(1); return;
+            case ACT_BACK:   art_browse = false; nowplaying_badge_hold(false); return;
+            default: return;
+        }
+    }
     if(focus == FOCUS_ART) {
         switch(a) {
+            case ACT_MENU:
+                if(alb.has_art && nowplaying_art_pages() > 1) { art_browse = true; art_paged = true; apply_focus(); nowplaying_badge_hold(true); }
+                else if(alb.has_art) nowplaying_show_badge();         /* "1 / 1": nothing to browse */
+                return;
             case ACT_UP:
             case ACT_DOWN:
                 nowplaying_poke();
@@ -1419,6 +1438,7 @@ static void flip(bool to_front)
 {
     if(front == to_front || !front_obj || !page) return;
     front = to_front;
+    if(art_browse) { art_browse = false; nowplaying_badge_hold(false); }
     if(front) {
         lv_obj_remove_flag(front_obj, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
@@ -1435,9 +1455,22 @@ static void hh_handle(ui_action_t a)
     if(front) {
         /* the album's front: the art alone - Select turns its pages, as the
          * now-playing screen's does (Ian, 16 Oct: the two must agree) */
+        if(art_browse) {
+            switch(a) {
+                case ACT_LEFT:   nowplaying_browse_dir(-1); return;
+                case ACT_RIGHT:  nowplaying_browse_dir(1); return;
+                case ACT_SELECT: nowplaying_browse_dir(1); return;
+                case ACT_BACK:   art_browse = false; nowplaying_badge_hold(false); return;
+                default: return;
+            }
+        }
         switch(a) {
             case ACT_UP:
             case ACT_DOWN:   return;
+            case ACT_MENU:
+                if(alb.has_art && nowplaying_art_pages() > 1) { art_browse = true; nowplaying_badge_hold(true); }
+                else if(alb.has_art) nowplaying_show_badge();
+                return;
             case ACT_SELECT: if(alb.has_art) nowplaying_browse(); return;   /* the next picture */
             case ACT_LEFT:
             case ACT_RIGHT:

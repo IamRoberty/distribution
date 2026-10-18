@@ -23,6 +23,7 @@
 #include "power.h"
 #include "strings.h"
 #include "theme.h"
+#include "tilestyle.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -57,7 +58,9 @@ enum { ACT_SCAN = 1 };
 
 typedef struct { char code[32]; char name[96]; } choice_t;
 
-static lv_obj_t * scr, * header, * list_box, * footer;
+static lv_obj_t * scr, * header, * list_box, * footer, * sign, * title_rule;
+static lv_obj_t * rules[MAX_ROWS];     /* the thin lines between groups (0.25) */
+static int nrules;
 static ui_list_t lm;
 static row_t rows[MAX_ROWS];
 static int row_count, focus;
@@ -346,6 +349,7 @@ static void build_rows(void)
         add_choice(T(S_SET_THEME), "theme", CH_THEME, config_theme_name());
         scan_choices("lang", ".txt", false);
         add_choice(T(S_SET_LANGUAGE), "language", CH_LANGUAGE, strings_language());
+        add_toggle(T(S_SET_HIGH_CONTRAST), "high_contrast", false);
     }
     else if(strcmp(page, "controls") == 0) {
         add_row(ROW_TEXT, T(S_SET_EMPTY));
@@ -414,6 +418,16 @@ static void build_rows(void)
 
 /* ------------------------------------------------------------ screen */
 
+/* The visit's three colours on the chrome (0.25). */
+static void paint(void)
+{
+    lv_obj_set_style_bg_color(scr, lv_color_hex(ui_ground()), 0);
+    lv_obj_set_style_text_color(header, lv_color_hex(ui_ink()), 0);
+    lv_obj_set_style_text_color(footer, lv_color_hex(ui_dim()), 0);
+    ui_rule_colour(title_rule);
+    ui_sign_fit(sign);
+}
+
 static void set_focus(int i)
 {
     if(row_count == 0) return;
@@ -424,9 +438,18 @@ static void set_focus(int i)
         row_t * r = &rows[k];
         if(!r->obj) continue;
         bool on = (k == focus) && r->kind != ROW_TEXT;
-        lv_obj_set_style_bg_opa(r->obj, on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_text_color(r->obj, lv_color_hex(on ? UI_COLOR_FOCUS_FG : (r->kind == ROW_TEXT ? UI_COLOR_DIM : UI_COLOR_FG)), 0);
-        if(r->val_label) lv_obj_set_style_text_color(r->val_label, lv_color_hex(on ? UI_COLOR_FOCUS_FG : UI_COLOR_DIM), 0);
+        /* the selected row grows and takes the theme's accent; no bar (0.24) */
+        lv_obj_set_style_bg_opa(r->obj, LV_OPA_TRANSP, 0);
+        if(r->kind == ROW_TEXT && !r->value[0]) continue;          /* a group name: small caps, painted by render() */
+        int px = lm.font_px;
+        const lv_font_t * f = ui_font_px(on ? px * UI_GROW_PCT / 100 : px);
+        lv_obj_set_style_text_font(r->obj, f, 0);
+        /* the label is one line of this font, centred in the row: the
+         * text grows up and down equally (0.25a, Ian) */
+        lv_obj_t * l = lv_obj_get_child(r->obj, 0);
+        if(l && l != r->val_label) { lv_obj_set_height(l, lv_font_get_line_height(f) + 2); lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0); }
+        lv_obj_set_style_text_color(r->obj, lv_color_hex(on ? ui_accent() : (r->kind == ROW_TEXT ? ui_dim() : ui_ink())), 0);
+        if(r->val_label) lv_obj_set_style_text_color(r->val_label, lv_color_hex(on ? ui_accent() : ui_dim()), 0);
     }
     if(rows[focus].obj) lv_obj_scroll_to_view(rows[focus].obj, LV_ANIM_OFF);
 }
@@ -442,24 +465,40 @@ static void render(void)
         ui_strf(buf, sizeof(buf), S_SET_VIEW_PAGE, "view", v < HOME_VIEW_COUNT ? home_view_name(v) : page, NULL);
         title = buf;
     }
-    lv_label_set_text(header, title);
+    { char caps[200]; ui_caps(title, caps, sizeof(caps)); lv_label_set_text(header, caps); }   /* Jost Bold caps (0.25) */
+    paint();
+    nrules = 0;
 
     for(int i = 0; i < row_count; i++) {
         row_t * r = &rows[i];
+        if(r->kind == ROW_TEXT && !r->value[0] && i > 0 && nrules < MAX_ROWS) {
+            /* a thin rule in the ink before every group but the first (0.25) */
+            lv_obj_t * line = lv_obj_create(list_box);
+            lv_obj_remove_style_all(line);
+            lv_obj_set_size(line, lv_obj_get_style_width(list_box, 0) - 2 * lm.margin, PX(2) < 1 ? 1 : PX(2));
+            lv_obj_set_style_translate_x(line, lm.margin, 0);
+            lv_obj_set_style_margin_top(line, lm.row_gap, 0);
+            lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(line, lv_color_hex(ui_ink()), 0);
+            rules[nrules++] = line;
+        }
         lv_obj_t * row = lv_obj_create(list_box);
         lv_obj_remove_style_all(row);
-        lv_obj_set_size(row, lm.w, r->kind == ROW_TEXT && !r->value[0] ? lm.row_h * 3 / 4 : lm.row_h);
-        lv_obj_set_style_radius(row, lm.row_radius, 0);
-        lv_obj_set_style_bg_color(row, lv_color_hex(UI_COLOR_FOCUS_BG), 0);
+        lv_obj_set_size(row, lv_obj_get_style_width(list_box, 0), r->kind == ROW_TEXT && !r->value[0] ? lm.row_h * 3 / 4 : lm.row_h);
+        lv_obj_set_style_radius(row, 0, 0);                        /* square (0.25) */
         lv_obj_set_style_pad_hor(row, lm.margin, 0);
-        lv_obj_set_style_text_font(row, ui_font_px(r->kind == ROW_TEXT && !r->value[0] ? lm.chrome_font_px : lm.font_px), 0);
+        bool group = r->kind == ROW_TEXT && !r->value[0];
+        lv_obj_set_style_text_font(row, group ? ui_font_caps(lm.chrome_font_px * 85 / 100) : ui_font_px(lm.font_px), 0);
+        if(group) lv_obj_set_style_text_color(row, lv_color_hex(ui_dim()), 0);   /* a group name: small caps, dimmed */
         lv_obj_t * l = lv_label_create(row);
-        lv_label_set_text(l, r->label);
+        if(group) { char caps[128]; ui_caps(r->label, caps, sizeof(caps)); lv_label_set_text(l, caps); }
+        else lv_label_set_text(l, r->label);
         lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
         /* one line tall, so a long label ends in "..." instead of wrapping */
         const lv_font_t * rf = lv_obj_get_style_text_font(row, 0);
-        lv_obj_set_size(l, r->value[0] || r->kind == ROW_TOGGLE || r->kind == ROW_CHOICE ? lm.w * 65 / 100 : lm.w - 2 * lm.margin,
-                        lv_font_get_line_height(rf));
+        int lw = lv_obj_get_style_width(list_box, 0) - 2 * lm.margin;
+        lv_obj_set_size(l, r->value[0] || r->kind == ROW_TOGGLE || r->kind == ROW_CHOICE ? lw * 65 / 100 : lw,
+                        lv_font_get_line_height(rf) * UI_GROW_PCT / 100 + 2);   /* room for the grown face when selected */
         lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
         r->obj = row;
         r->val_label = NULL;
@@ -524,6 +563,15 @@ static void flip_toggle(row_t * r)
     refresh_value(r);
     if(is_view_key(r->key) && view_changed_cb) view_changed_cb(page);
     if(is_power_key(r->key)) power_reload_settings();
+    if(strcmp(r->key, "high_contrast") == 0) {
+        /* takes effect now: the floors move, this visit is dealt again */
+        tilestyle_set_high_contrast(on);
+        ui_colours_redeal();
+        ui_colours_visit("settings");
+        int keep = focus;
+        render();
+        set_focus(keep);
+    }
 }
 
 static void step_choice(row_t * r, int dir)
@@ -570,34 +618,36 @@ void settings_create(void (*restart)(const char *), void (*view_changed)(const c
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_t * stage = ui_stage_create(scr);
     ui_list_metrics(UI_SIZE_DEFAULT, &lm);
+    sign = ui_sign(stage);                                       /* the screen is a sign (0.25) */
 
     header = lv_label_create(stage);
-    lv_obj_set_size(header, lm.w, lm.header_h);
-    lv_obj_set_pos(header, lm.x, 0);
-    lv_obj_set_style_text_font(header, ui_font_px(lm.chrome_font_px), 0);
-    lv_obj_set_style_text_color(header, lv_color_hex(UI_COLOR_DIM), 0);
-    lv_obj_set_style_pad_top(header, (lm.header_h - lm.chrome_font_px) / 2, 0);
+    ui_sign_chrome_t sc; ui_sign_chrome(&lm, &sc);           /* inside the keyline, right of the battery corner (0.25) */
+    lv_obj_set_size(header, sc.header_w, sc.header_h);
+    lv_obj_set_pos(header, sc.header_x, sc.header_y);
+    lv_obj_set_style_text_font(header, ui_font_caps(lm.chrome_font_px), 0);
     lv_label_set_long_mode(header, LV_LABEL_LONG_MODE_DOTS);
+    title_rule = ui_rule(stage, sc.header_x, sc.rule_y, sc.header_w);
 
     list_box = lv_obj_create(stage);
     lv_obj_remove_style_all(list_box);
-    lv_obj_set_size(list_box, lm.w, lm.h);
-    lv_obj_set_pos(list_box, lm.x, lm.y);
+    lv_obj_set_size(list_box, sc.header_w + 2 * lm.margin, sc.list_h);   /* the rows' text on the header's edge (0.25a) */
+    lv_obj_set_pos(list_box, sc.header_x - lm.margin, sc.list_y);
     lv_obj_set_flex_flow(list_box, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(list_box, lm.row_gap, 0);
     lv_obj_set_scrollbar_mode(list_box, LV_SCROLLBAR_MODE_OFF);
 
     footer = lv_label_create(stage);
-    lv_obj_set_size(footer, lm.w, lm.footer_h);
-    lv_obj_set_pos(footer, lm.x, lm.y + lm.h);
+    lv_obj_set_size(footer, sc.header_w, lm.footer_h);
+    lv_obj_set_pos(footer, sc.header_x, sc.footer_y);                 /* the hints inside the sign, on the rows' edge (0.25a) */
     lv_obj_set_style_text_font(footer, ui_font_px(lm.chrome_font_px), 0);
-    lv_obj_set_style_text_color(footer, lv_color_hex(UI_COLOR_DIM), 0);
     lv_label_set_long_mode(footer, LV_LABEL_LONG_MODE_CLIP);
+    paint();
 }
 
 void settings_show(const char * p, bool fv)
 {
     active = true;
+    ui_colours_visit("settings");                                /* a visit: three colours dealt once, kept inside (0.25) */
     from_view = fv;
     hub_focus = 0;                   /* a fresh visit starts at the top */
     open_page(p && p[0] ? p : "hub");

@@ -1575,6 +1575,7 @@ void grid_show(bool fresh)
 {
     static unsigned seeds[GRID_SCOPE_COLLECTION + 1]; /* each scope's last deal: coming back from a deeper view wears the same colours (0.20) */
     shown = true;
+    ui_colours_visit("home");                          /* what pops up over the library wears Home's visit colours (0.25) */
     const grid_memory_t * mem = fresh ? NULL : memory_find();
     if(fresh) visit_seed = (unsigned)time(NULL) ^ (unsigned)lv_tick_get() ^ (unsigned)rand();
     else if(mem) visit_seed = mem->seed;

@@ -55,6 +55,7 @@ static lv_obj_t * pill_label;
 
 /* panel */
 static lv_obj_t * panel;
+static lv_obj_t * panel_line, * strip_line;   /* the signs' inset keylines (0.25) */
 static lv_obj_t * rows[ROW_COUNT];
 static lv_obj_t * row_names[ROW_COUNT];
 static lv_obj_t * row_values[ROW_COUNT];      /* the "< value >" label */
@@ -208,6 +209,10 @@ static void strip_render(void)
     lv_obj_set_size(strip, w, h);
     lv_obj_set_pos(strip, lm.x + (lm.w - w) / 2, lm.y + (lm.row_h - h) / 2);     /* in the view's top row band */
     lv_obj_center(pill_label);
+    lv_obj_set_style_bg_color(strip, lv_color_hex(ui_accent()), 0);
+    lv_obj_set_style_text_color(strip, lv_color_hex(ui_accent_ink()), 0);
+    ui_sign_fit(strip_line);
+    lv_obj_set_style_border_color(strip_line, lv_color_hex(ui_accent_ink()), 0);
 }
 
 /* ------------------------------------------------------------- panel */
@@ -243,14 +248,18 @@ static void panel_value_text(row_t r, char * out, size_t len)
 
 /* Row geometry: the focused row is a full list row; with PICKER_MINIMIZE the
  * others are three-quarter height in the chrome font. */
-static int row_height(bool on) { return (on || !PICKER_MINIMIZE) ? mm.row_h : mm.row_h * 3 / 4; }
+/* 0.25a (Ian): every row keeps its slot, so the selected one grows up and
+ * down from its own centre line; its name in bold caps, grown. */
+static int row_height(bool on) { (void)on; return mm.row_h * 7 / 8; }
 static const lv_font_t * row_font(bool on) { return (on || !PICKER_MINIMIZE) ? ui_font_px(mm.font_px) : ui_font_px(mm.chrome_font_px); }
+static const lv_font_t * name_font(bool on) { int px = mm.font_px * 80 / 100; return ui_font_caps(on ? px * UI_GROW_PCT / 100 : px); }
 
 static int panel_w(void) { return mm.w * 3 / 4; }
-static int panel_pad(void) { return mm.margin; }
+static int panel_pad(void) { return mm.margin + ui_sign_inset(mm.w * 3 / 4); }   /* the rows inside the keyline (0.25) */
 
 static void panel_refresh(void)
 {
+    ui_colours_t pc = ui_colours_inverse();                                    /* the page's colours turned round (0.25a) */
     int pad = panel_pad();
     int y = pad;
     int inner_w = panel_w() - 2 * pad;
@@ -260,9 +269,10 @@ static void panel_refresh(void)
         lv_obj_set_size(rows[r], inner_w, h);
         lv_obj_set_pos(rows[r], pad, y);
         lv_obj_set_style_text_font(rows[r], row_font(on), 0);
-        lv_obj_set_style_bg_opa(rows[r], on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_text_color(row_names[r], lv_color_hex(on ? UI_COLOR_FOCUS_FG : UI_COLOR_DIM), 0);
-        lv_obj_set_style_text_color(row_values[r], lv_color_hex(on ? UI_COLOR_FOCUS_FG : UI_COLOR_DIM), 0);
+        lv_obj_set_style_text_font(row_names[r], name_font(on), 0);
+        lv_obj_set_style_bg_opa(rows[r], LV_OPA_TRANSP, 0);                     /* no bar: the row grows and takes the accent (0.24) */
+        lv_obj_set_style_text_color(row_names[r], lv_color_hex(on ? pc.sel : pc.ink), 0);
+        lv_obj_set_style_text_color(row_values[r], lv_color_hex(on ? pc.sel : ui_mix(pc.ground, pc.ink, 70)), 0);
         char v[64];
         panel_value_text(order[r], v, sizeof(v));
         lv_label_set_text(row_values[r], v);
@@ -272,6 +282,9 @@ static void panel_refresh(void)
     }
     int panel_h = y - mm.row_gap + pad;
     lv_obj_set_size(panel, panel_w(), panel_h);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(pc.ground), 0);
+    ui_sign_fit(panel_line);
+    ui_sign_colour(panel_line, pc.ink);
     /* centred on the stage's list area */
     lv_obj_set_pos(panel, lm.x + (lm.w - panel_w()) / 2, lm.y + (lm.h - panel_h) / 2);
 }
@@ -279,6 +292,7 @@ static void panel_refresh(void)
 static void panel_build(void)
 {
     lv_obj_clean(panel);
+    panel_line = ui_sign(panel);                      /* the clean took the keyline too */
     const char * names[ROW_COUNT] = { T(S_PICKER_JUMP), T(S_PICKER_STYLE), T(S_PICKER_SIZE), opts.sort_name ? opts.sort_name : T(S_PICKER_SORT), T(S_PICKER_NAMES), T(S_PICKER_STRIP) };
     nrows = 0;
     if(opts.jump_row && opts.label_count > 0) order[nrows++] = ROW_JUMP;
@@ -291,13 +305,12 @@ static void panel_build(void)
     for(int r = 0; r < nrows; r++) {
         lv_obj_t * row = lv_obj_create(panel);
         lv_obj_remove_style_all(row);
-        lv_obj_set_style_radius(row, mm.row_radius, 0);
-        lv_obj_set_style_bg_color(row, lv_color_hex(UI_COLOR_FOCUS_BG), 0);
+        lv_obj_set_style_radius(row, 0, 0);
         lv_obj_set_style_pad_hor(row, mm.margin, 0);
         lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         rows[r] = row;
         row_names[r] = lv_label_create(row);
-        lv_label_set_text(row_names[r], names[order[r]]);
+        { char caps[96]; ui_caps(names[order[r]], caps, sizeof(caps)); lv_label_set_text(row_names[r], caps); }   /* bold caps (0.25a) */
         row_values[r] = lv_label_create(row);
     }
     panel_refresh();
@@ -324,23 +337,24 @@ void picker_attach(lv_obj_t * st, const ui_list_t * m)
 
     strip = lv_obj_create(stage);
     lv_obj_remove_style_all(strip);
-    lv_obj_set_style_bg_color(strip, lv_color_hex(UI_COLOR_FOCUS_BG), 0);
+    lv_obj_set_style_bg_color(strip, lv_color_hex(ui_accent()), 0);          /* the jump mark: a small sign in the selected colour (0.25) */
     lv_obj_set_style_bg_opa(strip, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(strip, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_radius(strip, 0, 0);
     lv_obj_set_style_shadow_width(strip, mm.margin, 0);
     lv_obj_set_style_shadow_opa(strip, LV_OPA_50, 0);
-    lv_obj_set_style_text_color(strip, lv_color_hex(UI_COLOR_FOCUS_FG), 0);
+    lv_obj_set_style_text_color(strip, lv_color_hex(ui_accent_ink()), 0);
     lv_obj_remove_flag(strip, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(strip, LV_OBJ_FLAG_HIDDEN);
     pill_label = lv_label_create(strip);
+    strip_line = ui_sign(strip);
 
     panel = lv_obj_create(stage);
     lv_obj_remove_style_all(panel);
-    lv_obj_set_style_bg_color(panel, lv_color_hex(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(ui_ground()), 0);
     lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(panel, lv_color_hex(UI_COLOR_DIM), 0);
-    lv_obj_set_style_border_width(panel, 1, 0);
-    lv_obj_set_style_radius(panel, mm.row_radius * 2, 0);
+    lv_obj_set_style_border_width(panel, 0, 0);                       /* a sign: square, the keyline inside (0.25) */
+    lv_obj_set_style_radius(panel, 0, 0);
+    panel_line = ui_sign(panel);
     lv_obj_set_style_shadow_width(panel, mm.margin, 0);
     lv_obj_set_style_shadow_opa(panel, LV_OPA_60, 0);
     lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
@@ -365,6 +379,8 @@ static void show(picker_mode_t m)
     if(m == PICKER_STRIP) {
         lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
         strip_render();
+        lv_obj_set_style_bg_color(strip, lv_color_hex(ui_accent()), 0);        /* the theme may have loaded since the attach */
+        lv_obj_set_style_text_color(strip, lv_color_hex(ui_accent_ink()), 0);
         lv_obj_remove_flag(strip, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(strip);
     }

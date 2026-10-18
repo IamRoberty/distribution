@@ -77,6 +77,7 @@ static int    sleep_timer_song;
 
 static lv_obj_t * indicator, * ind_label;
 static lv_obj_t * menu, * menu_rows[3], * menu_count;
+static lv_obj_t * menu_box, * menu_title, * menu_rule, * menu_line;   /* the sign (0.25) */
 static int    menu_focus;
 static lv_obj_t * overlay, * overlay_label;
 static lv_obj_t * blackout;               /* a black sheet over everything, faded in before the screen goes off */
@@ -592,11 +593,24 @@ void power_poweroff(void)
 
 static void menu_render(void)
 {
+    ui_colours_t c = ui_colours_inverse();                              /* the page's colours turned round (0.25a) */
+    int row_h = PX(56), in = ui_sign_inset(PX(360)) + PX(8);
     for(int i = 0; i < 3; i++) {
         bool f = i == menu_focus;
-        lv_obj_set_style_bg_opa(menu_rows[i], f ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_text_color(menu_rows[i], lv_color_hex(f ? UI_COLOR_FOCUS_FG : UI_COLOR_FG), 0);
+        const lv_font_t * font = ui_font_caps(f ? 24 * UI_GROW_PCT / 100 : 24);   /* bold caps (0.25a) */
+        lv_obj_set_style_bg_opa(menu_rows[i], LV_OPA_TRANSP, 0);
+        lv_obj_set_style_text_font(menu_rows[i], font, 0);
+        lv_obj_set_style_text_color(menu_rows[i], lv_color_hex(f ? c.sel : c.ink), 0);
+        int h = lv_font_get_line_height(font) + 2 * PX(10);                 /* centred on its slot: grows both ways */
+        lv_obj_set_height(menu_rows[i], h);
+        lv_obj_align(menu_rows[i], LV_ALIGN_TOP_LEFT, in - PX(10), in + PX(36) + row_h * i + (row_h - h) / 2);
     }
+    /* the sign (0.25) */
+    if(menu_box) lv_obj_set_style_bg_color(menu_box, lv_color_hex(c.ground), 0);
+    if(menu_title) lv_obj_set_style_text_color(menu_title, lv_color_hex(c.ink), 0);
+    if(menu_rule) lv_obj_set_style_bg_color(menu_rule, lv_color_hex(c.ink), 0);
+    ui_sign_fit(menu_line);
+    ui_sign_colour(menu_line, c.ink);
 }
 
 static void menu_show(void)
@@ -843,7 +857,7 @@ void power_init(void (*on_resume)(void), void (*on_poweroff)(void))
     lv_obj_set_style_text_color(toast, lv_color_hex(UI_COLOR_FOCUS_FG), 0);
     lv_obj_set_style_bg_color(toast, lv_color_hex(RED), 0);
     lv_obj_set_style_bg_opa(toast, LV_OPA_90, 0);
-    lv_obj_set_style_radius(toast, PX(10), 0);
+    lv_obj_set_style_radius(toast, 0, 0);                            /* square (0.25) */
     lv_obj_set_style_pad_all(toast, PX(12), 0);
     lv_obj_align(toast, LV_ALIGN_BOTTOM_MID, 0, -PX(40));
     lv_obj_add_flag(toast, LV_OBJ_FLAG_HIDDEN);
@@ -869,39 +883,40 @@ void power_init(void (*on_resume)(void), void (*on_poweroff)(void))
     lv_obj_set_pos(menu, 0, 0);
     lv_obj_set_style_border_width(menu, 0, 0);
     lv_obj_set_style_radius(menu, 0, 0);
-    lv_obj_set_style_bg_color(menu, lv_color_hex(UI_COLOR_BG), 0);
-    lv_obj_set_style_bg_opa(menu, LV_OPA_80, 0);
+    lv_obj_set_style_bg_opa(menu, LV_OPA_TRANSP, 0);                  /* no shade over the page (0.25a) */
     lv_obj_remove_flag(menu, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t * box = make_box(menu);
-    lv_obj_set_style_bg_color(box, lv_color_hex(UI_COLOR_BG), 0);
+    menu_box = box;
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(box, 2, 0);
-    lv_obj_set_style_border_color(box, lv_color_hex(UI_COLOR_DIM), 0);
+    lv_obj_set_style_border_width(box, 0, 0);                        /* a sign: square, the keyline inside (0.25) */
+    lv_obj_set_style_radius(box, 0, 0);
     int row_h = PX(56), w = PX(360);
-    lv_obj_set_size(box, w, row_h * 5 + PX(16));
+    lv_obj_set_size(box, w, row_h * 5 + PX(48));
     lv_obj_center(box);
+    menu_line = ui_sign(box);
+    int in = ui_sign_inset(w) + PX(8);
     lv_obj_t * title = lv_label_create(box);
-    lv_label_set_text(title, T(S_POWER_TITLE));
-    lv_obj_set_style_text_font(title, UI_FONT_HINT, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(UI_COLOR_DIM), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, PX(12), PX(6));
+    { char caps[64]; ui_caps(T(S_POWER_TITLE), caps, sizeof(caps)); lv_label_set_text(title, caps); }   /* Jost Bold caps (0.25) */
+    lv_obj_set_style_text_font(title, ui_font_caps(20), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, in, in);
+    menu_title = title;
+    menu_rule = ui_rule(box, in, in + PX(30), w - 2 * in - PX(16));
     static const int ids[3] = { S_POWER_SLEEP, S_POWER_OFF, S_POWER_CANCEL };
     for(int i = 0; i < 3; i++) {
         lv_obj_t * r = lv_label_create(box);
-        lv_label_set_text(r, T(ids[i]));
+        { char caps[64]; ui_caps(T(ids[i]), caps, sizeof(caps)); lv_label_set_text(r, caps); }
         lv_obj_set_style_text_font(r, UI_FONT_LIST, 0);
-        lv_obj_set_style_bg_color(r, lv_color_hex(UI_COLOR_FOCUS_BG), 0);
-        lv_obj_set_style_radius(r, PX(6), 0);
+        lv_obj_set_style_radius(r, 0, 0);
         lv_obj_set_style_pad_all(r, PX(10), 0);
-        lv_obj_set_width(r, w - PX(32));
-        lv_obj_align(r, LV_ALIGN_TOP_LEFT, 0, row_h * (i + 1) - PX(8));
+        lv_obj_set_width(r, w - 2 * in - PX(16));
+        lv_obj_align(r, LV_ALIGN_TOP_LEFT, in - PX(10), in + PX(36) + row_h * i);
         menu_rows[i] = r;
     }
     menu_count = lv_label_create(box);
     lv_label_set_text(menu_count, "");
     lv_obj_set_style_text_font(menu_count, UI_FONT_HINT, 0);
     lv_obj_set_style_text_color(menu_count, lv_color_hex(RED), 0);
-    lv_obj_align(menu_count, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_align(menu_count, LV_ALIGN_BOTTOM_MID, 0, -in);
     lv_obj_add_flag(menu, LV_OBJ_FLAG_HIDDEN);
     menu_render();
 

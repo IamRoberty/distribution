@@ -149,6 +149,7 @@ static bool   active;
 static void (*done_cb)(const char *, void *);
 static void * done_ctx;
 
+static lv_obj_t * keyline, * rule;      /* the sign's inset line and the rule under its title (0.25) */
 static lv_obj_t * sheet, * box, * title_l, * field, * keys[MAX_ROWS][MAX_COLS], * ctrl[NCTRL];
 static int ncols[MAX_ROWS];
 static char keytext[MAX_ROWS][MAX_COLS][8];
@@ -195,8 +196,13 @@ static void paint_key(int r, int c, bool f)
 {
     lv_obj_t * k = key_obj(r, c);
     if(!k) return;
-    lv_obj_set_style_bg_opa(k, f ? LV_OPA_COVER : LV_OPA_20, 0);
-    lv_obj_set_style_text_color(k, lv_color_hex(f ? UI_COLOR_FOCUS_FG : UI_COLOR_FG), 0);
+    /* the key grows and takes the selected colour; a thin square line
+     * in the faint ink is the key (0.25: no filled key grounds) */
+    ui_colours_t kc = ui_colours_inverse();
+    lv_obj_set_style_bg_opa(k, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(k, lv_color_hex(ui_mix(kc.ground, kc.ink, 28)), 0);
+    lv_obj_set_style_text_font(k, f ? ui_font(28 * UI_GROW_PCT / 100) : UI_FONT_LIST, 0);
+    lv_obj_set_style_text_color(k, lv_color_hex(f ? kc.sel : kc.ink), 0);
 }
 
 static void render_field(void)
@@ -216,9 +222,16 @@ static void render(void)
 {
     const page_t * P = pages[page_i];
     bool up = shift && P->upper[0];
+    ui_colours_t c = ui_colours_inverse();                             /* the page's colours turned round (0.25a) */
+    lv_obj_set_style_bg_color(box, lv_color_hex(c.ground), 0);
+    lv_obj_set_style_text_color(title_l, lv_color_hex(c.ink), 0);
+    lv_obj_set_style_text_color(field, lv_color_hex(c.ink), 0);
+    if(rule) lv_obj_set_style_bg_color(rule, lv_color_hex(c.ink), 0);
+    ui_sign_fit(keyline);
+    ui_sign_colour(keyline, c.ink);
     for(int r = 0; r < MAX_ROWS; r++) split_row(up && P->upper[r] ? P->upper[r] : P->lower[r], r);
     int w = lv_obj_get_width(box);
-    int y = PX(96);
+    int y = PX(112);
     for(int r = 0; r < MAX_ROWS; r++) {
         int total = ncols[r] * key_w() + (ncols[r] - 1) * key_gap();
         int x0 = (w - total) / 2;
@@ -245,10 +258,11 @@ static void render(void)
         paint_key(CTRL_ROW, i, row == CTRL_ROW && col == i);
         x += cw[i] + key_gap();
     }
-    lv_obj_set_height(box, y + key_h() + PX(16));
+    lv_obj_set_height(box, y + key_h() + PX(28));
     lv_obj_center(box);
+    ui_sign_fit(keyline);
     render_field();
-    lv_label_set_text(title_l, title_text);
+    { char caps[160]; ui_caps(title_text, caps, sizeof(caps)); lv_label_set_text(title_l, caps); }   /* Jost Bold caps (0.25) */
 }
 
 /* ------------------------------------------------------------ editing */
@@ -372,9 +386,10 @@ static lv_obj_t * make_key(lv_obj_t * parent, int w)
     lv_label_set_text(k, "");
     lv_obj_set_style_text_font(k, UI_FONT_LIST, 0);
     lv_obj_set_style_text_align(k, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_bg_color(k, lv_color_hex(UI_COLOR_FOCUS_BG), 0);
-    lv_obj_set_style_bg_opa(k, LV_OPA_20, 0);
-    lv_obj_set_style_radius(k, PX(6), 0);
+    lv_obj_set_style_bg_opa(k, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(k, 1, 0);
+    lv_obj_set_style_border_opa(k, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(k, 0, 0);
     lv_obj_set_style_pad_ver(k, (key_h() - lv_font_get_line_height(UI_FONT_LIST)) / 2, 0);
     lv_obj_set_size(k, w, key_h());
     return k;
@@ -388,32 +403,30 @@ void keyboard_create(void)
     lv_obj_set_pos(sheet, 0, 0);
     lv_obj_set_style_border_width(sheet, 0, 0);
     lv_obj_set_style_radius(sheet, 0, 0);
-    lv_obj_set_style_bg_color(sheet, lv_color_hex(UI_COLOR_BG), 0);
-    lv_obj_set_style_bg_opa(sheet, LV_OPA_70, 0);
+    lv_obj_set_style_bg_opa(sheet, LV_OPA_TRANSP, 0);                /* no shade over the page (0.25a) */
     lv_obj_remove_flag(sheet, LV_OBJ_FLAG_SCROLLABLE);
     box = lv_obj_create(sheet);
-    int w = MAX_COLS * key_w() + (MAX_COLS - 1) * key_gap() + PX(32);
+    int w = MAX_COLS * key_w() + (MAX_COLS - 1) * key_gap() + PX(72);   /* room inside the keyline (0.25) */
     if(w > ui_screen.w - PX(8)) w = ui_screen.w - PX(8);
     lv_obj_set_size(box, w, PX(400));
-    lv_obj_set_style_border_width(box, 2, 0);
-    lv_obj_set_style_border_color(box, lv_color_hex(UI_COLOR_DIM), 0);
-    lv_obj_set_style_radius(box, PX(10), 0);
+    lv_obj_set_style_border_width(box, 0, 0);                        /* a sign: square, the keyline inside (0.25) */
+    lv_obj_set_style_radius(box, 0, 0);
     lv_obj_set_style_pad_all(box, 0, 0);
-    lv_obj_set_style_bg_color(box, lv_color_hex(UI_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
     lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+    keyline = ui_sign(box);
+    int in = ui_sign_inset(w < PX(400) ? w : PX(400)) + PX(12);
     title_l = lv_label_create(box);
-    lv_obj_set_style_text_font(title_l, UI_FONT_HINT, 0);
-    lv_obj_set_style_text_color(title_l, lv_color_hex(UI_COLOR_DIM), 0);
-    lv_obj_set_width(title_l, w - PX(32));
+    lv_obj_set_style_text_font(title_l, ui_font_caps(18), 0);        /* small caps (0.25) */
+    lv_obj_set_width(title_l, w - 2 * in);
     lv_label_set_long_mode(title_l, LV_LABEL_LONG_DOT);
-    lv_obj_set_pos(title_l, PX(16), PX(10));
+    lv_obj_set_pos(title_l, in, in - PX(4));
+    rule = ui_rule(box, in, in + PX(22), w - 2 * in);
     field = lv_label_create(box);
     lv_obj_set_style_text_font(field, ui_font(34), 0);
-    lv_obj_set_style_text_color(field, lv_color_hex(UI_COLOR_FG), 0);
-    lv_obj_set_width(field, w - PX(32));
+    lv_obj_set_width(field, w - 2 * in);
     lv_label_set_long_mode(field, LV_LABEL_LONG_MODE_CLIP);
-    lv_obj_set_pos(field, PX(16), PX(38));
+    lv_obj_set_pos(field, in, in + PX(34));
     for(int r = 0; r < MAX_ROWS; r++) for(int c = 0; c < MAX_COLS; c++) keys[r][c] = make_key(box, key_w());
     for(int i = 0; i < NCTRL; i++) ctrl[i] = make_key(box, key_w() * 2);
     lv_obj_add_flag(sheet, LV_OBJ_FLAG_HIDDEN);

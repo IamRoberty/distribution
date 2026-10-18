@@ -44,13 +44,16 @@
 typedef struct {
     char * uri;
     int    focus;      /* row index to restore when we come back */
+    bool   skipped;    /* a level with one folder in it, walked through (0.25a): Back walks through it too */
 } nav_frame_t;
+static bool root_skipped;   /* the root had one card: it is never shown */
 
 static lv_group_t * grp;
 static lv_obj_t * stage;
 static lv_obj_t * header;
 static lv_obj_t * list;
 static lv_obj_t * footer;
+static lv_obj_t * root_scr, * sign, * title_rule;   /* the screen, its keyline and the header's rule (0.25) */
 
 /* The list size in use and its measurements on this screen: the Folders
  * view's setting (remembered per screen type), or the picker's choice for
@@ -160,6 +163,7 @@ static void row_focus_cb(lv_event_t * e)
 }
 
 static void row_click_cb(lv_event_t * e);
+static void prune_listing(mpd_listing_t * l);
 static void focus_uri(const char * uri);
 static int focused_index(void);
 static void close_overlay(void);
@@ -167,7 +171,7 @@ static void close_overlay(void);
 static void style_row(lv_obj_t * btn)
 {
     lv_obj_set_height(btn, lm.row_h);
-    lv_obj_set_style_radius(btn, lm.row_radius, 0);
+    lv_obj_set_style_radius(btn, 0, 0);                         /* square (0.25) */
     lv_obj_set_style_border_width(btn, 0, 0);
     lv_obj_set_style_outline_width(btn, 0, 0);
     lv_obj_set_style_outline_width(btn, 0, LV_STATE_FOCUSED);
@@ -176,12 +180,16 @@ static void style_row(lv_obj_t * btn)
     lv_obj_set_style_pad_hor(btn, lm.margin, 0);
     lv_obj_set_style_text_font(btn, ui_font_px(lm.font_px), 0);
 
-    /* unfocused: no background; focused: solid accent block + white text */
+    /* unfocused: plain; focused: the theme's accent, the text grown - no bar (0.24) */
     lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_text_color(btn, lv_color_hex(UI_COLOR_FG), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_STATE_FOCUSED);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(UI_COLOR_FOCUS_BG), LV_STATE_FOCUSED);
-    lv_obj_set_style_text_color(btn, lv_color_hex(UI_COLOR_FOCUS_FG), LV_STATE_FOCUSED);
+    lv_obj_set_style_text_color(btn, lv_color_hex(ui_ink()), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, LV_STATE_FOCUS_KEY);     /* the default theme paints a blue block here (0.25) */
+    lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, LV_STATE_PRESSED);
+    lv_obj_set_style_text_font(btn, ui_font_px(lm.font_px * UI_GROW_PCT / 100), LV_STATE_FOCUSED);
+    lv_obj_set_style_text_font(btn, ui_font_px(lm.font_px * UI_GROW_PCT / 100), LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_text_color(btn, lv_color_hex(ui_accent()), LV_STATE_FOCUSED);
+    lv_obj_set_style_text_color(btn, lv_color_hex(ui_accent()), LV_STATE_FOCUS_KEY);
 
     lv_obj_add_flag(btn, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     lv_obj_add_event_cb(btn, row_focus_cb, LV_EVENT_FOCUSED, NULL);
@@ -198,6 +206,24 @@ static void clear_rows(void)
     lv_obj_clean(list);
 }
 
+/* The visit's three colours on the chrome and every row on screen (0.25). */
+static void paint(void)
+{
+    if(root_scr) lv_obj_set_style_bg_color(root_scr, lv_color_hex(ui_ground()), 0);
+    if(header) lv_obj_set_style_text_color(header, lv_color_hex(ui_ink()), 0);
+    if(footer) lv_obj_set_style_text_color(footer, lv_color_hex(ui_dim()), 0);
+    ui_rule_colour(title_rule);
+    ui_sign_fit(sign);
+    if(!list) return;
+    uint32_t n = lv_obj_get_child_count(list);
+    for(uint32_t i = 0; i < n; i++) {
+        lv_obj_t * o = lv_obj_get_child(list, (int32_t)i);
+        bool text = (intptr_t)lv_obj_get_user_data(o) == -1;
+        lv_obj_set_style_text_color(o, lv_color_hex(text ? ui_dim() : ui_ink()), 0);
+        if(!text) { lv_obj_set_style_text_color(o, lv_color_hex(ui_accent()), LV_STATE_FOCUSED); lv_obj_set_style_text_color(o, lv_color_hex(ui_accent()), LV_STATE_FOCUS_KEY); }
+    }
+}
+
 /* A non-interactive text row: messages (MPD not up yet, empty folder) and
  * the disc dividers. */
 static lv_obj_t * add_text_row(const char * msg, int height)
@@ -205,7 +231,7 @@ static lv_obj_t * add_text_row(const char * msg, int height)
     lv_obj_t * t = lv_list_add_text(list, msg);
     lv_obj_set_height(t, height);
     lv_obj_set_style_bg_opa(t, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_text_color(t, lv_color_hex(UI_COLOR_DIM), 0);
+    lv_obj_set_style_text_color(t, lv_color_hex(ui_dim()), 0);
     lv_obj_set_style_pad_hor(t, lm.margin, 0);
     lv_obj_set_user_data(t, (void *)(intptr_t)-1);
     return t;
@@ -226,7 +252,7 @@ static void set_header(void)
         const char * slash = strrchr(uri, '/');
         name = slash ? slash + 1 : uri;
     }
-    lv_label_set_text(header, name);
+    { char caps[300]; ui_caps(name, caps, sizeof(caps)); lv_label_set_text(header, caps); }   /* Jost Bold caps (0.25) */
 }
 
 /* The selectable row for entry `index`, or NULL. */
@@ -316,6 +342,7 @@ static bool load(const char * uri, int focus_idx)
         return false;
     }
     waiting_for_mpd = false;
+    prune_listing(&l);
     mpd_listing_free(&cur);
     cur = l;
     free(mpd_order);
@@ -339,8 +366,9 @@ static void list_inset(bool on)
 {
     /* the pill sits over the top row: the list starts below it */
     inset_on = on;
-    lv_obj_set_height(list, on ? lm.h - lm.row_h : lm.h);
-    lv_obj_set_y(list, on ? lm.y + lm.row_h : lm.y);
+    ui_sign_chrome_t sc; ui_sign_chrome(&lm, &sc);
+    lv_obj_set_height(list, on ? sc.list_h - lm.row_h : sc.list_h);
+    lv_obj_set_y(list, on ? sc.list_y + lm.row_h : sc.list_y);
     lv_obj_update_layout(list);          /* so a scroll-into-view right after uses the new height */
 }
 
@@ -445,6 +473,56 @@ static int focused_index(void)
     return f ? (int)(intptr_t)lv_obj_get_user_data(f) : 0;
 }
 
+/* Folders without music anywhere below them (system folders, empty ones)
+ * are not shown (0.25a, Ian): the index has a node for every folder on a
+ * track's path and nothing else, so a folder the index doesn't know holds
+ * no music. A card without an index yet is kept whole. */
+static void prune_listing(mpd_listing_t * l)
+{
+    if(!libs_loaded()) return;
+    int keep = 0;
+    for(int i = 0; i < l->count; i++) {
+        mpd_entry_t * e = &l->items[i];
+        bool drop = false;
+        if(e->kind == MPD_ENTRY_DIR) {
+            const lib_folder_t * fo = NULL;
+            bool is_card = strchr(e->uri, '/') == NULL;
+            const lib_source_t * src = libs_find_folder(e->uri, &fo);
+            if(!src && is_card) {
+                /* a card: shown unless its index says it holds nothing */
+                for(int k = 0; k < libs_count() && !drop; k++)
+                    if(strcmp(libs_get(k)->card, e->uri) == 0 && libs_get(k)->lib.ntracks == 0) drop = true;
+            }
+            else if(!src) drop = true;
+        }
+        if(drop) { free(e->uri); free(e->display); free(e->section); continue; }
+        l->items[keep++] = *e;
+    }
+    l->count = keep;
+}
+
+/* A listing with one folder and nothing else is walked through (0.25a,
+ * Ian: one card, or one music folder on it - "we should just be in the
+ * folder"). Each level walked through is marked, so Back walks back
+ * through it as well. */
+static bool single_hooked;     /* the one folder opened as its type's view: coming back here means going up */
+static void descend_singles(void)
+{
+    single_hooked = false;
+    while(cur.count == 1 && cur.items[0].kind == MPD_ENTRY_DIR && depth < MAX_DEPTH) {
+        char * uri = strdup(cur.items[0].uri);
+        if(!uri) return;
+        if(folder_hook && folder_hook(uri)) { single_hooked = true; free(uri); return; }   /* an album, a folder of albums...: its view */
+        if(depth) stack[depth - 1].skipped = true; else root_skipped = true;
+        stack[depth].uri = uri;
+        stack[depth].focus = 0;
+        stack[depth].skipped = false;
+        depth++;
+        if(!load(uri, 0)) { free(stack[--depth].uri); stack[depth].uri = NULL; if(depth) stack[depth - 1].skipped = false; else root_skipped = false; load(cur_uri(), 0); return; }
+        fprintf(stderr, "simpleton-ui: browser: walked through \"%s\" (the only folder)\n", uri);
+    }
+}
+
 static void push_and_enter(const char * uri)
 {
     if(depth >= MAX_DEPTH) return;
@@ -455,6 +533,7 @@ static void push_and_enter(const char * uri)
 
     stack[depth].uri = strdup(uri);
     stack[depth].focus = 0;
+    stack[depth].skipped = false;
     depth++;
     if(!load(uri, 0)) {
         /* couldn't enter: unwind so Back doesn't go somewhere we never were */
@@ -463,6 +542,7 @@ static void push_and_enter(const char * uri)
         load(cur_uri(), remembered);
         return;
     }
+    descend_singles();
     after_enter();
 }
 
@@ -533,28 +613,30 @@ void browser_create(lv_obj_t * scr, lv_group_t * group, void (*on_play)(void), v
     exit_cb = on_exit;
     read_options();
 
-    lv_obj_set_style_bg_color(scr, lv_color_hex(UI_COLOR_BG), 0);
+    root_scr = scr;
+    lv_obj_set_style_bg_color(scr, lv_color_hex(ui_ground()), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
     /* On a TV this is a centred square with plain background either side -
      * an interim layout until the TV browse screens are designed. */
     stage = ui_stage_create(scr);
     scr = stage;
+    sign = ui_sign(stage);                                         /* the screen is a sign (0.25) */
 
     ui_list_metrics(view_opts.size, &lm);
     const lv_font_t * chrome_font = ui_font_px(lm.chrome_font_px);
 
     header = lv_label_create(scr);
-    lv_obj_set_size(header, lm.w, lm.header_h);
-    lv_obj_set_pos(header, lm.x, 0);
-    lv_obj_set_style_text_font(header, chrome_font, 0);
-    lv_obj_set_style_text_color(header, lv_color_hex(UI_COLOR_DIM), 0);
-    lv_obj_set_style_pad_top(header, (lm.header_h - lm.chrome_font_px) / 2, 0);
+    ui_sign_chrome_t sc; ui_sign_chrome(&lm, &sc);           /* inside the keyline, right of the battery corner (0.25) */
+    lv_obj_set_size(header, sc.header_w, sc.header_h);
+    lv_obj_set_pos(header, sc.header_x, sc.header_y);
+    lv_obj_set_style_text_font(header, ui_font_caps(lm.chrome_font_px), 0);
     lv_label_set_long_mode(header, LV_LABEL_LONG_MODE_DOTS);
+    title_rule = ui_rule(scr, sc.header_x, sc.rule_y, sc.header_w);
 
     list = lv_list_create(scr);
-    lv_obj_set_size(list, lm.w, lm.h);
-    lv_obj_set_pos(list, lm.x, lm.y);
+    lv_obj_set_size(list, sc.header_w + 2 * lm.margin, sc.list_h);      /* the rows' text on the header's edge (0.25a) */
+    lv_obj_set_pos(list, sc.header_x - lm.margin, sc.list_y);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(list, 0, 0);
     lv_obj_set_style_pad_all(list, 0, 0);
@@ -562,11 +644,11 @@ void browser_create(lv_obj_t * scr, lv_group_t * group, void (*on_play)(void), v
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
 
     footer = lv_label_create(scr);
-    lv_obj_set_size(footer, lm.w, lm.footer_h);
-    lv_obj_set_pos(footer, lm.x, lm.y + lm.h);
+    lv_obj_set_size(footer, sc.header_w, lm.footer_h);
+    lv_obj_set_pos(footer, sc.header_x, sc.footer_y);                 /* the hints inside the sign, on the rows' edge (0.25a) */
     lv_obj_set_style_text_font(footer, chrome_font, 0);
-    lv_obj_set_style_text_color(footer, lv_color_hex(UI_COLOR_DIM), 0);
     lv_label_set_long_mode(footer, LV_LABEL_LONG_MODE_CLIP);
+    paint();
     /* Button letters and icons are the device's, the words are the string
      * table's. (When the A/B swap setting arrives, the letters come from the
      * same table as the input mapping - settings-menu.md.) */
@@ -584,7 +666,8 @@ void browser_create(lv_obj_t * scr, lv_group_t * group, void (*on_play)(void), v
     suppress_overlay = true;
     if(resume_uri && resume_uri[0] && browser_open_path(resume_uri, NULL)) { suppress_overlay = false; return; }
     suppress_overlay = false;
-    if(load("", 0)) after_enter();
+    root_skipped = false;
+    if(load("", 0)) { descend_singles(); after_enter(); }
 }
 
 /* Open at `uri` with the folder stack rebuilt from its path, so Back
@@ -606,6 +689,7 @@ bool browser_open_path(const char * uri, const char * child)
         if(slash) *slash = 0;
         stack[depth].uri = strdup(path);
         stack[depth].focus = -1;
+        stack[depth].skipped = false;
         depth++;
         if(!slash) break;
         *slash++ = '/';
@@ -635,16 +719,18 @@ static void apply_size(ui_size_t size)
     int keep = focused_index();
     ui_list_metrics(size, &lm);
     const lv_font_t * chrome_font = ui_font_px(lm.chrome_font_px);
-    lv_obj_set_size(header, lm.w, lm.header_h);
-    lv_obj_set_pos(header, lm.x, 0);
-    lv_obj_set_style_text_font(header, chrome_font, 0);
-    lv_obj_set_style_pad_top(header, (lm.header_h - lm.chrome_font_px) / 2, 0);
-    lv_obj_set_size(list, lm.w, lm.h);
-    lv_obj_set_pos(list, lm.x, lm.y);
+    ui_sign_chrome_t sc; ui_sign_chrome(&lm, &sc);
+    lv_obj_set_size(header, sc.header_w, sc.header_h);
+    lv_obj_set_pos(header, sc.header_x, sc.header_y);
+    lv_obj_set_style_text_font(header, ui_font_caps(lm.chrome_font_px), 0);
+    lv_obj_set_pos(title_rule, sc.header_x, sc.rule_y);
+    lv_obj_set_width(title_rule, sc.header_w);
+    lv_obj_set_size(list, sc.header_w + 2 * lm.margin, sc.list_h);
+    lv_obj_set_pos(list, sc.header_x - lm.margin, sc.list_y);
     list_inset(inset_on);
     lv_obj_set_style_pad_row(list, lm.row_gap, 0);
-    lv_obj_set_size(footer, lm.w, lm.footer_h);
-    lv_obj_set_pos(footer, lm.x, lm.y + lm.h);
+    lv_obj_set_size(footer, sc.header_w, lm.footer_h);
+    lv_obj_set_pos(footer, sc.header_x, sc.footer_y);                 /* the hints inside the sign, on the rows' edge (0.25a) */
     lv_obj_set_style_text_font(footer, chrome_font, 0);
     picker_relayout(&lm);
     if(cur.count) render(keep < 0 ? 0 : keep);
@@ -677,8 +763,13 @@ bool browser_overlay_active(void)
  * browse view) comes back to this stage, closed. */
 void browser_shown(void)
 {
+    ui_colours_visit("browser");                /* a visit: three colours, kept while inside (0.25) */
+    paint();
     picker_attach(stage, &lm);
     list_inset(false);
+    /* back from the view the only folder opened as: this level was never
+     * meant to be seen, so go on up (0.25a) */
+    if(single_hooked && cur.count == 1 && cur.items[0].kind == MPD_ENTRY_DIR) { single_hooked = false; go_up(); }
 }
 
 static void drop_stack(void)
@@ -695,6 +786,7 @@ bool browser_open_folder(const char * uri)
     drop_stack();
     stack[depth].uri = strdup(uri);
     stack[depth].focus = 0;
+    stack[depth].skipped = false;
     depth = 1;
     exit_depth = 1;
     suppress_overlay = true;
@@ -713,7 +805,8 @@ void browser_open_root(void)
     drop_stack();
     exit_depth = 0;
     root_focus = 0;
-    if(load("", 0)) after_enter();
+    root_skipped = false;
+    if(load("", 0)) { descend_singles(); after_enter(); }
 }
 
 bool browser_opened_at_folder(void) { return exit_depth != 0; }
@@ -737,7 +830,13 @@ static void focus_uri(const char * uri)
 static void go_up(void)
 {
     if(depth <= exit_depth) { if(exit_cb) exit_cb(); return; }
-    char * left = stack[--depth].uri;
+    /* a level walked through on the way down is walked through on the way up (0.25a) */
+    int to = depth - 1;
+    while(to > exit_depth && stack[to - 1].skipped) to--;
+    if(to == 0 && root_skipped && exit_depth == 0) { if(exit_cb) exit_cb(); return; }
+    char * left = stack[to].uri;
+    while(depth > to + 1) { free(stack[--depth].uri); stack[depth].uri = NULL; }
+    depth = to;
     stack[depth].uri = NULL;
     int f = depth ? stack[depth - 1].focus : root_focus;
     if(load(cur_uri(), f < 0 ? 0 : f) && f < 0) focus_uri(left);

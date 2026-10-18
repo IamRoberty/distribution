@@ -84,6 +84,13 @@ bool nowplaying_art_ready(void);
  * the next image, round and round; the "n / m" badge shows for a moment
  * even for a single image, so the viewer knows the cover is selected. */
 void nowplaying_browse(void);
+/* 0.24 (Ian, 17 Oct): hold A on the album page's art enters "art browse":
+ * the "n / m" badge stays up and Left/Right turn the pages (there, they
+ * otherwise flip the page or cross to the list). pages > 1 says there is
+ * something to browse (several images, or one wide image with stops). */
+int  nowplaying_art_pages(void);
+void nowplaying_browse_dir(int dir);
+void nowplaying_badge_hold(bool hold);
 
 /* 0.21: the Favorite button toggled the playing track's heart (main.c
  * tells the other screens); a heart changed elsewhere (the button follows). */

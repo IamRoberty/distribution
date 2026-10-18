@@ -4,6 +4,7 @@
  */
 #include "tilestyle.h"
 #include "placeholder.h"
+#include "config.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -38,6 +39,9 @@ static int      nfonts;
 static int      total_share;
 static double   min_contrast;          /* tilecontrast: how readable an ink must be */
 static double   list_contrast;         /* listcontrast (0.19): the floor for a whole list of text, a tick above the tiles' */
+static double   theme_min_contrast, theme_list_contrast;   /* as the theme set them (0.25: high contrast lifts the working floors) */
+static bool     high_contrast;         /* the setting (0.25, Ian: "for old people and colour blind people") */
+#define HC_FLOOR 4.5                   /* the high-contrast floor: readable text by the WCAG measure */
 static uint32_t cream;                 /* tilecream: the shared cream ink, 0 = none  */
 static bool     has_cream;
 static int      w_pal, w_cream, w_dark; /* tileinks: how often each kind of ink is drawn */
@@ -248,6 +252,22 @@ static void parse_layout(char * rest)
     if(l->name[0] && screen_set) nlayouts++;
 }
 
+static void apply_floors(void)
+{
+    min_contrast = high_contrast && theme_min_contrast < HC_FLOOR ? HC_FLOOR : theme_min_contrast;
+    double lc = theme_list_contrast > 0 ? theme_list_contrast : theme_min_contrast + 1.0;
+    list_contrast = high_contrast && lc < HC_FLOOR ? HC_FLOOR : lc;
+}
+void tilestyle_set_high_contrast(bool on) { high_contrast = on; apply_floors(); }
+bool tilestyle_high_contrast(void) { return high_contrast; }
+int  tilestyle_set_count(void) { return nsets; }
+int  tilestyle_set(int set, uint32_t * out, int max)
+{
+    int n = 0;
+    for(int j = 0; j < nset_col && n < max; j++) if(set_of[j] == set) out[n++] = set_col[j];
+    return n;
+}
+
 void tilestyle_load(const char * theme_path)
 {
     mode = TILE_COLOURS_THEME;
@@ -256,8 +276,8 @@ void tilestyle_load(const char * theme_path)
     ldeck_n[0] = ldeck_n[1] = ldeck_pos[0] = ldeck_pos[1] = 0;
     accent = 0;
     battery = battery_default;
-    min_contrast = CONTRAST_DEFAULT;
-    list_contrast = 0;
+    theme_min_contrast = CONTRAST_DEFAULT;
+    theme_list_contrast = 0;
     has_cream = false;
     w_pal = 100; w_cream = 0; w_dark = 0;
     text_min = TEXT_MIN_DEFAULT;
@@ -275,11 +295,11 @@ void tilestyle_load(const char * theme_path)
         }
         else if(strncmp(line, "tilecontrast", 12) == 0) {
             double v = atof(line + 12);
-            if(v >= 1.0 && v <= 21.0) min_contrast = v;
+            if(v >= 1.0 && v <= 21.0) theme_min_contrast = v;
         }
         else if(strncmp(line, "listcontrast", 12) == 0) {
             double v = atof(line + 12);
-            if(v >= 1.0 && v <= 21.0) list_contrast = v;
+            if(v >= 1.0 && v <= 21.0) theme_list_contrast = v;
         }
         else if(strncmp(line, "tiletextmin", 11) == 0) {
             double v = atof(line + 11);
@@ -364,6 +384,8 @@ void tilestyle_load(const char * theme_path)
         }
     }
     if(f) fclose(f);
+    high_contrast = config_read_bool("high_contrast", false);
+    apply_floors();
     fprintf(stderr, "simpleton-ui: tiles: colours %s, %d colourways, %d sets (%d colours), %d palette colours, "
             "contrast %.1f, inks palette %d cream %d dark %d, %d cover fonts; page: %d layouts, %d liner fonts\n",
             tilestyle_mode_name(), ntheme, nsets, nset_col, npal, min_contrast, w_pal, has_cream ? w_cream : 0, w_dark, nfonts,
@@ -371,7 +393,7 @@ void tilestyle_load(const char * theme_path)
 }
 
 double   tilestyle_min_contrast(void) { return min_contrast; }
-double   tilestyle_list_contrast(void) { return list_contrast > 0 ? list_contrast : min_contrast + 1.0; }
+double   tilestyle_list_contrast(void) { return list_contrast; }
 
 void tilestyle_deal_list(unsigned seed, int n, tile_style_t * out)
 {
@@ -797,7 +819,7 @@ void tilestyle_page_accents(unsigned seed, uint32_t bg, uint32_t ink, uint32_t *
     typedef struct { uint32_t c; double s; } cand_t;
     cand_t cand[PAL_MAX + 1];
     int n = 0;
-    double floor = min_contrast;                               /* the theme's own floor: vibe over contrast */
+    double floor = high_contrast ? list_contrast : min_contrast;   /* the theme's own floor: vibe over contrast; high contrast: the list floor */
     for(int i = 0; i <= npal; i++) {
         uint32_t c = i < npal ? pal[i] : accent;
         if(c == 0 && i == npal) break;

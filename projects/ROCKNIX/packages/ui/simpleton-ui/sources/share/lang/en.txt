@@ -83,6 +83,7 @@ settings.scan_now = Scan the library now
 settings.scanning = Scanning…
 settings.theme = Theme
 settings.language = Language
+settings.high_contrast = High contrast
 settings.size = Size
 settings.version = Version
 settings.empty = Nothing to set here yet

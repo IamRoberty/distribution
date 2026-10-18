@@ -38,6 +38,8 @@ static int       last_used[2];           /* uid last added to, per kind */
 static lv_obj_t * sheet, * box, * header, * title_l, * rows[ROWS_ON], * toast;
 static lv_timer_t * toast_timer;
 static void (*changed_cb)(void);
+static lv_obj_t * keyline, * rule;     /* the sign's inset line and the rule under its header (0.25) */
+static lv_obj_t * toast_line, * toast_lbl;   /* the toast's keyline and its words (0.25) */
 
 /* ------------------------------------------------------------ drawing */
 
@@ -45,15 +47,22 @@ static int row_h(void) { return PX(52); }
 
 static void layout_box(int n)
 {
-    int w = PX(440), h = PX(60) + row_h() * n + PX(12);
+    int w = PX(440), h = PX(104) + row_h() * n + PX(40);
     if(w > ui_screen.w - PX(16)) w = ui_screen.w - PX(16);
     lv_obj_set_size(box, w, h);
     lv_obj_center(box);
-    lv_obj_set_width(header, w - PX(32));
-    lv_obj_set_width(title_l, w - PX(32));
+    int in = ui_sign_inset(w) + PX(14);                 /* the words sit inside the keyline */
+    /* one line each, so a long title ends in "..." instead of wrapping onto the artist (0.25a) */
+    lv_obj_set_size(header, w - 2 * in, lv_font_get_line_height(ui_font_caps(20)) + 2);
+    lv_obj_set_size(title_l, w - 2 * in, lv_font_get_line_height(UI_FONT_HINT) + 2);
+    lv_obj_align(header, LV_ALIGN_TOP_LEFT, in - PX(8), in - PX(4));
+    lv_obj_align(title_l, LV_ALIGN_TOP_LEFT, in - PX(8), in + PX(20));
+    lv_obj_set_pos(rule, in - PX(8), in + PX(50));
+    lv_obj_set_width(rule, w - 2 * in);
+    ui_sign_fit(keyline);
     for(int i = 0; i < ROWS_ON; i++) {
-        lv_obj_set_width(rows[i], w - PX(32));
-        lv_obj_set_pos(rows[i], 0, PX(52) + row_h() * i);
+        lv_obj_set_width(rows[i], w - 2 * in);
+        lv_obj_set_pos(rows[i], in - PX(8) - PX(10), in + PX(62) + row_h() * i);
         if(i < n) lv_obj_remove_flag(rows[i], LV_OBJ_FLAG_HIDDEN); else lv_obj_add_flag(rows[i], LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -94,17 +103,36 @@ static void render(void)
     if(focus < first) first = focus;
     if(focus >= first + on) first = focus - on + 1;
     layout_box(on);
+    ui_colours_t c = ui_colours_inverse();                    /* the page's colours turned round (0.25a) */
+    int rh = row_h(), y0 = ui_sign_inset(lv_obj_get_style_width(box, 0)) + PX(14) + PX(62);
     for(int i = 0; i < on; i++) {
         int k = first + i;
-        char text[400];
+        char text[400], caps[400];
         if(level == LEVEL_MAIN) main_text(k, text, sizeof(text)); else snprintf(text, sizeof(text), "%s", pick_text(k));
-        lv_label_set_text(rows[i], text);
+        ui_caps(text, caps, sizeof(caps));                     /* the rows in bold caps (0.25a: "more all caps") */
+        lv_label_set_text(rows[i], level == LEVEL_MAIN ? caps : text);
         bool f = k == focus;
-        lv_obj_set_style_bg_opa(rows[i], f ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-        lv_obj_set_style_text_color(rows[i], lv_color_hex(f ? UI_COLOR_FOCUS_FG : UI_COLOR_FG), 0);
+        const lv_font_t * font = level == LEVEL_MAIN ? ui_font_caps(f ? 24 * UI_GROW_PCT / 100 : 24) : (f ? ui_font(28 * UI_GROW_PCT / 100) : UI_FONT_LIST);
+        lv_obj_set_style_bg_opa(rows[i], LV_OPA_TRANSP, 0);
+        lv_obj_set_style_text_font(rows[i], font, 0);
+        lv_obj_set_style_text_color(rows[i], lv_color_hex(f ? c.sel : c.ink), 0);
+        /* one line, centred on its slot: the words grow up and down equally (0.25a) */
+        int h = lv_font_get_line_height(font) + 2 * PX(8);
+        lv_obj_set_height(rows[i], h);
+        lv_obj_set_y(rows[i], y0 + rh * i + (rh - h) / 2);
     }
-    lv_label_set_text(header, level == LEVEL_PICK ? T(pick_kind == CUR_MIXTAPE ? S_MENU_PICK_MIXTAPE : S_MENU_PICK_COLLECTION) : t_artist);
-    lv_label_set_text(title_l, t_title);
+    /* the sign's header: the title in small caps, the artist (or the pick's
+     * title) under it, a rule, the rows (0.25) */
+    char caps[200];
+    ui_caps(level == LEVEL_PICK ? T(pick_kind == CUR_MIXTAPE ? S_MENU_PICK_MIXTAPE : S_MENU_PICK_COLLECTION) : t_title, caps, sizeof(caps));
+    lv_label_set_text(header, caps);
+    lv_label_set_text(title_l, level == LEVEL_PICK ? t_title : t_artist);
+    lv_obj_set_style_text_color(header, lv_color_hex(c.ink), 0);
+    lv_obj_set_style_text_color(title_l, lv_color_hex(ui_mix(c.ground, c.ink, 70)), 0);
+    lv_obj_set_style_bg_color(box, lv_color_hex(c.ground), 0);
+    if(rule) lv_obj_set_style_bg_color(rule, lv_color_hex(c.ink), 0);
+    ui_sign_fit(keyline);
+    ui_sign_colour(keyline, c.ink);
 }
 
 static void toast_hide_cb(lv_timer_t * t)
@@ -117,7 +145,16 @@ static void toast_hide_cb(lv_timer_t * t)
 void objmenu_toast(const char * text)
 {
     if(!toast) return;
-    lv_label_set_text(toast, text);
+    lv_label_set_text(toast_lbl, text);
+    lv_obj_set_style_text_color(toast_lbl, lv_color_hex(ui_accent_ink()), 0);   /* a small sign in the selected colour (0.25) */
+    lv_obj_set_style_bg_color(toast, lv_color_hex(ui_accent()), 0);
+    lv_obj_update_layout(toast_lbl);
+    int w = lv_obj_get_width(toast_lbl) + 2 * PX(26), h = lv_obj_get_height(toast_lbl) + 2 * PX(18);
+    lv_obj_set_size(toast, w, h);
+    lv_obj_align(toast, LV_ALIGN_BOTTOM_MID, 0, -PX(90));
+    lv_obj_center(toast_lbl);
+    ui_sign_fit(toast_line);
+    lv_obj_set_style_border_color(toast_line, lv_color_hex(ui_accent_ink()), 0);
     lv_obj_remove_flag(toast, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(toast);
     if(toast_timer) lv_timer_delete(toast_timer);
@@ -450,32 +487,27 @@ void objmenu_create(void (*on_changed)(void))
     lv_obj_set_style_border_width(sheet, 0, 0);
     lv_obj_set_style_radius(sheet, 0, 0);
     lv_obj_set_style_bg_color(sheet, lv_color_hex(UI_COLOR_BG), 0);
-    lv_obj_set_style_bg_opa(sheet, LV_OPA_60, 0);
+    lv_obj_set_style_bg_opa(sheet, LV_OPA_TRANSP, 0);                /* no shade over the page (0.25a, Ian: it slowed the unit and added nothing) */
     lv_obj_remove_flag(sheet, LV_OBJ_FLAG_SCROLLABLE);
     box = lv_obj_create(sheet);
-    lv_obj_set_style_border_width(box, 2, 0);
-    lv_obj_set_style_border_color(box, lv_color_hex(UI_COLOR_DIM), 0);
-    lv_obj_set_style_radius(box, PX(10), 0);
+    lv_obj_set_style_border_width(box, 0, 0);                        /* a sign: square, the keyline inside (0.25) */
+    lv_obj_set_style_radius(box, 0, 0);
     lv_obj_set_style_pad_all(box, PX(8), 0);
-    lv_obj_set_style_bg_color(box, lv_color_hex(UI_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
     lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+    keyline = ui_sign(box);
     header = lv_label_create(box);
-    lv_obj_set_style_text_font(header, UI_FONT_HINT, 0);
-    lv_obj_set_style_text_color(header, lv_color_hex(UI_COLOR_DIM), 0);
+    lv_obj_set_style_text_font(header, ui_font_caps(20), 0);
     lv_label_set_long_mode(header, LV_LABEL_LONG_DOT);
-    lv_obj_align(header, LV_ALIGN_TOP_LEFT, PX(12), PX(4));
     title_l = lv_label_create(box);
     lv_obj_set_style_text_font(title_l, UI_FONT_HINT, 0);
-    lv_obj_set_style_text_color(title_l, lv_color_hex(UI_COLOR_FG), 0);
     lv_label_set_long_mode(title_l, LV_LABEL_LONG_DOT);
-    lv_obj_align(title_l, LV_ALIGN_TOP_LEFT, PX(12), PX(26));
+    rule = ui_rule(box, 0, 0, PX(100));
     for(int i = 0; i < ROWS_ON; i++) {
         lv_obj_t * r = lv_label_create(box);
         lv_label_set_text(r, "");
         lv_obj_set_style_text_font(r, UI_FONT_LIST, 0);
-        lv_obj_set_style_bg_color(r, lv_color_hex(UI_COLOR_FOCUS_BG), 0);
-        lv_obj_set_style_radius(r, PX(6), 0);
+        lv_obj_set_style_radius(r, 0, 0);
         lv_obj_set_style_pad_hor(r, PX(10), 0);
         lv_obj_set_style_pad_ver(r, PX(8), 0);
         lv_label_set_long_mode(r, LV_LABEL_LONG_DOT);
@@ -483,16 +515,16 @@ void objmenu_create(void (*on_changed)(void))
     }
     lv_obj_add_flag(sheet, LV_OBJ_FLAG_HIDDEN);
 
-    toast = lv_label_create(top);
-    lv_obj_set_style_text_font(toast, UI_FONT_LIST, 0);
-    lv_obj_set_style_text_color(toast, lv_color_hex(UI_COLOR_FOCUS_FG), 0);
-    lv_obj_set_style_bg_color(toast, lv_color_hex(UI_COLOR_FOCUS_BG), 0);
-    lv_obj_set_style_bg_opa(toast, LV_OPA_90, 0);
-    lv_obj_set_style_radius(toast, PX(10), 0);
-    lv_obj_set_style_pad_all(toast, PX(12), 0);
-    lv_obj_set_width(toast, LV_SIZE_CONTENT);
-    lv_obj_set_style_max_width(toast, ui_screen.w - PX(32), 0);
-    lv_label_set_long_mode(toast, LV_LABEL_LONG_DOT);
-    lv_obj_align(toast, LV_ALIGN_BOTTOM_MID, 0, -PX(90));
+    /* the toast: a small sign in the selected colour - a box with the
+     * words and a keyline in it, sized to the words when shown (0.25) */
+    toast = lv_obj_create(top);
+    lv_obj_remove_style_all(toast);
+    lv_obj_set_style_bg_opa(toast, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(toast, LV_OBJ_FLAG_SCROLLABLE);
+    toast_lbl = lv_label_create(toast);
+    lv_obj_set_style_text_font(toast_lbl, UI_FONT_LIST, 0);
+    lv_label_set_long_mode(toast_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_max_width(toast_lbl, ui_screen.w - PX(80), 0);
+    toast_line = ui_sign(toast);
     lv_obj_add_flag(toast, LV_OBJ_FLAG_HIDDEN);
 }

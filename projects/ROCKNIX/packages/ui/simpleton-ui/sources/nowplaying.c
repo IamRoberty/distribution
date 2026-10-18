@@ -149,6 +149,7 @@ static lv_image_dsc_t art_dsc[2];     /* alternate so LVGL sees a new src */
 static int art_slot;
 static int art_index, art_count = 1;
 static bool badge_shown;
+static bool badge_held;               /* art browse (0.24): the badge stays while it lasts */
 
 static void set_side_colour(uint32_t colour);
 static void apply_host_art(void);
@@ -422,6 +423,7 @@ void nowplaying_curation_changed(void) { if(overlay) apply_focus(); }
 /* The strip, the words and the icons in the colours of the moment. */
 static void apply_colours(void)
 {
+    if(active && !embedded) ui_colours_set(c_bg, c_ink, c_sel);   /* a menu over this page wears its colours (0.25a) */
     grad.stops[0].color = lv_color_hex(c_bg);
     grad.stops[1].color = lv_color_hex(c_bg);
     lv_obj_set_style_bg_grad(overlay, &grad, 0);
@@ -502,7 +504,7 @@ static void colours_from_art(const uint8_t * px, int w, int h)
     uint32_t cream = tilestyle_cream() ? tilestyle_cream() : 0xFAEFD0;
     uint32_t dark = tilestyle_dark_ink() ? tilestyle_dark_ink() : 0x29221E;
     if(!palette_extract(px, w, h, &p) || !palette_roles(&p, PAL_MODE_DOMINANT, (float)tilestyle_min_contrast(), cream, dark, 0, &r)) {
-        c_bg = UI_COLOR_BG; c_ink = UI_COLOR_FG; c_dim = UI_COLOR_DIM; c_sel = UI_COLOR_FOCUS_BG; c_text = UI_COLOR_FG;
+        c_bg = UI_COLOR_BG; c_ink = UI_COLOR_FG; c_dim = UI_COLOR_DIM; c_sel = ui_accent(); c_text = UI_COLOR_FG;
         set_side_colour(UI_COLOR_BG);
         apply_colours();
         return;
@@ -566,7 +568,7 @@ static void colours_set_bg(uint32_t bg, uint32_t sel_hint)
 
 static void colours_plain(void)
 {
-    c_bg = UI_COLOR_BG; c_ink = UI_COLOR_FG; c_dim = UI_COLOR_DIM; c_sel = UI_COLOR_FOCUS_BG; c_text = UI_COLOR_FG;
+    c_bg = UI_COLOR_BG; c_ink = UI_COLOR_FG; c_dim = UI_COLOR_DIM; c_sel = ui_accent(); c_text = UI_COLOR_FG;
     set_side_colour(UI_COLOR_BG);
     if(overlay) apply_colours();
 }
@@ -664,8 +666,8 @@ static void badge_refresh(void)
 {
     lv_label_set_text_fmt(badge_lbl, "%d / %d", art_index + 1, art_count);
     bool flashing = !lv_timer_get_paused(badge_timer);
-    bool worth = art_count > 1 || (badge_single && flashing);
-    badge_set(worth && !host_hides_art && (controls_visible || flashing));
+    bool worth = art_count > 1 || (badge_single && flashing) || badge_held;
+    badge_set(worth && !host_hides_art && (controls_visible || flashing || badge_held));
 }
 
 static void badge_flash(void)
@@ -1036,7 +1038,7 @@ void nowplaying_create(void)
     lv_obj_set_size(disc, PX(220), PX(220));
     lv_obj_set_style_radius(disc, PX(110), 0);
     lv_obj_set_style_border_width(disc, 0, 0);
-    lv_obj_set_style_bg_color(disc, lv_color_hex(UI_COLOR_FOCUS_BG), 0);
+    lv_obj_set_style_bg_color(disc, lv_color_hex(ui_accent()), 0);
     lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
     lv_obj_align(disc, LV_ALIGN_CENTER, 0, PX(-90));
     placeholder_letter = lv_label_create(disc);
@@ -1159,6 +1161,7 @@ void nowplaying_create(void)
 void nowplaying_show(void)
 {
     active = true;
+    ui_colours_set(c_bg, c_ink, c_sel);
     restore_playing_art();
     row = ROW_TRANSPORT;
     tr_cur = TR_PLAY;
@@ -1329,6 +1332,26 @@ void nowplaying_browse(void)
     else if(art_count > 1 || pan_n > 0) browse_art(1);
     badge_single = true;
     badge_flash();
+}
+
+int nowplaying_art_pages(void)
+{
+    if(host_hides_art) return 0;
+    return art_count > 1 ? art_count : (pan_n > 0 ? pan_n + 1 : 1);
+}
+
+void nowplaying_browse_dir(int dir)
+{
+    if(!embedded || host_hides_art) return;
+    browse_art(dir);
+    badge_refresh();
+}
+
+void nowplaying_badge_hold(bool hold)
+{
+    badge_held = hold;
+    if(hold) badge_single = true;
+    badge_refresh();
 }
 
 void nowplaying_hide(void)

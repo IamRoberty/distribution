@@ -1045,6 +1045,7 @@ void rows_create(void (*on_artist)(int), void (*on_album)(const library_t *, int
 void rows_show(bool fresh)
 {
     shown = true;
+    ui_colours_visit("home");                          /* what pops up over the library wears Home's visit colours (0.25) */
     returning = !fresh;
     if(fresh) seed = (unsigned)time(NULL) ^ (unsigned)lv_tick_get() ^ (unsigned)rand();
     suppress_overlay = !fresh;

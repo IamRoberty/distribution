@@ -980,6 +980,7 @@ static void apply_colours(int section)
         c_sel = tilestyle_distance(s, c_ink) >= 70 && tilestyle_distance(s, c_play) >= 70 ? s : c_play;
     }
     cur_section = section;
+    if(shown) ui_colours_set(c_bg, c_ink, c_sel);           /* a menu or toast over this page wears its colours (0.25) */
     lv_obj_set_style_bg_color(scr, lv_color_hex(c_bg), 0);
     if(square) lv_obj_set_style_bg_color(square, lv_color_hex(c_bg), 0);
     if(jump_row) lv_obj_set_style_bg_color(jump_row, lv_color_hex(c_bg), 0);
@@ -1024,7 +1025,7 @@ static void row_style(row_t * r)
         return;
     }
     bool is_sel = r->item == sel, is_play = r->item == playing;
-    uint32_t col = is_play ? c_play : is_sel ? c_sel : c_ink;
+    uint32_t col = is_sel ? c_sel : is_play ? c_play : c_ink;    /* selected wins; the play mark says playing (0.25, Ian 17 Oct) */
     if(gridstyle) {
         /* a want-ad cell in its own dealt colours; the selected one turns
          * its colours round - the text in the background colour, the

@@ -144,6 +144,13 @@ int tilestyle_font_index(const char * file);
 
 /* Theme lines the page shares with the tiles. */
 double   tilestyle_min_contrast(void);
+/* High contrast (0.25): every floor at least 4.5 - the tiles', the lists',
+ * the page accents' - so no pair that is hard to read is dealt. */
+void     tilestyle_set_high_contrast(bool on);
+bool     tilestyle_high_contrast(void);
+/* The theme's tilepalette sets: how many, and one set's colours. */
+int      tilestyle_set_count(void);
+int      tilestyle_set(int set, uint32_t * out, int max);
 uint32_t tilestyle_cream(void);        /* 0 = none */
 uint32_t tilestyle_accent(void);       /* the theme's accent line, 0 = none */
 
