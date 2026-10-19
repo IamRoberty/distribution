@@ -57,6 +57,9 @@ static void disconnect(conn_t * c)
     c->sock = -1;
 }
 
+static void (*before_change)(void);                /* 0.31k: see mpd_set_before_change */
+#define BEFORE_CHANGE() do { if(before_change) before_change(); } while(0)
+
 bool mpd_is_connected(void) { return ui.sock >= 0; }
 
 static bool read_line(conn_t * c, char * buf, size_t len)
@@ -312,6 +315,7 @@ bool mpd_play_pos(int pos)
 {
     char cmd[32];
     snprintf(cmd, sizeof(cmd), "play %d", pos);
+    BEFORE_CHANGE();
     if(before_play) before_play();
     return simple_command(cmd);
 }
@@ -500,9 +504,16 @@ bool mpd_lsinfo_expanded(const char * uri, mpd_listing_t * out)
  * a sleeping DAC first). */
 void mpd_set_before_play(void (*cb)(void)) { before_play = cb; }
 
+/* 0.31k: called before any command that moves to another track or place
+ * (viz.c takes its fifo feed off first: with the fifo output on, MPD
+ * stalled at the start of a DSD track and the DAC got silence). */
+void mpd_set_before_change(void (*cb)(void)) { before_change = cb; }
+
+
 bool mpd_play_uris(char * const * uris, int count, int start_index)
 {
     if(!mpd_connect() || count <= 0) return false;
+    BEFORE_CHANGE();
     if(before_play) before_play();
     if(!send_raw(&ui, "command_list_begin\nclear\n")) return false;
     for(int i = 0; i < count; i++) {
@@ -598,7 +609,7 @@ bool mpd_library_state(long * db_update, bool * updating)
     return true;
 }
 
-bool mpd_next(void)     { return simple_command("next"); }
+bool mpd_next(void)     { BEFORE_CHANGE(); return simple_command("next"); }
 bool mpd_update(void)
 {
     if(!mpd_connect()) return false;
@@ -611,13 +622,34 @@ bool mpd_update(void)
         if(strncmp(line, "ACK ", 4) == 0) { fprintf(stderr, "simpleton-ui: mpd: %s\n", line); return false; }
     }
 }
-bool mpd_previous(void) { return simple_command("previous"); }
+bool mpd_previous(void) { BEFORE_CHANGE(); return simple_command("previous"); }
+
+/* An output by its name in mpd.conf: on or off while playing (0.31: the
+ * visualizers' fifo feed, "viz", on only while one is on screen). */
+bool mpd_output_set(const char * name, bool on)
+{
+    if(!mpd_connect()) return false;
+    if(!send_raw(&ui, "outputs\n")) return false;
+    char line[256]; int id = -1, cur = -1;
+    for(;;) {
+        if(!read_line(&ui, line, sizeof(line))) return false;
+        if(strcmp(line, "OK") == 0) break;
+        if(strncmp(line, "ACK ", 4) == 0) { fprintf(stderr, "simpleton-ui: mpd: %s\n", line); return false; }
+        if(strncmp(line, "outputid: ", 10) == 0) cur = atoi(line + 10);
+        else if(strncmp(line, "outputname: ", 12) == 0 && strcmp(line + 12, name) == 0) id = cur;
+    }
+    if(id < 0) { fprintf(stderr, "simpleton-ui: mpd: no output named %s\n", name); return false; }
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "%s %d", on ? "enableoutput" : "disableoutput", id);
+    return simple_command(cmd);
+}
 
 bool mpd_seek_relative(float seconds)
 {
     char cmd[64];
     /* MPD wants an explicit sign for a relative seek */
     snprintf(cmd, sizeof(cmd), "seekcur %+.1f", (double)seconds);
+    BEFORE_CHANGE();
     return simple_command(cmd);
 }
 

@@ -164,10 +164,11 @@ static void power_choices(const char * key)
     static const int dac_sleep[] = { 60, 300, 900, 1800, 0 };
     static const int sleep_off[] = { 900, 3600, 14400, 0 };
     if(strcmp(key, "tv_idle_do") == 0 || strcmp(key, "tv_music_do") == 0) {
-        static const char * const codes[5] = { "off", "drift", "cover", "palettes", "bounce" };
-        static const int ids[5] = { S_SET_SAVER_OFF, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE };
-        choice_count = 5;
-        for(int i = 0; i < 5; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", codes[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(ids[i])); }
+        /* the visualizers need music: only the with-music chooser offers them (Ian, 18 Oct) */
+        static const char * const codes[6] = { "off", "drift", "cover", "palettes", "bounce", "stage" };
+        static const int ids[6] = { S_SET_SAVER_OFF, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE, S_SET_SAVER_STAGE };
+        choice_count = strcmp(key, "tv_music_do") == 0 ? 6 : 5;
+        for(int i = 0; i < choice_count; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", codes[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(ids[i])); }
         return;
     }
     static const int tv_after[] = { 60, 300, 1200, 3600, 0 };
@@ -501,9 +502,9 @@ static void build_rows(void)
     if(strcmp(page, "savers") == 0) {
         /* the Home shelf's Visualization tape (0.29b): the screensavers by
          * hand, on either screen, until a press */
-        static const char * const codes[4] = { "drift", "cover", "palettes", "bounce" };
-        static const int ids[4] = { S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE };
-        for(int i = 0; i < 4; i++) {
+        static const char * const codes[5] = { "stage", "drift", "cover", "palettes", "bounce" };
+        static const int ids[5] = { S_SET_SAVER_STAGE, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE };
+        for(int i = 0; i < 5; i++) {
             row_t * r = add_row(ROW_ACTION, T(ids[i]));
             r->action = ACT_SAVER;
             snprintf(r->key, sizeof(r->key), "%s", codes[i]);

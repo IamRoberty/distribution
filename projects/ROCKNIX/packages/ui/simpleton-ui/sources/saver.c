@@ -25,6 +25,11 @@
 #include "thumbs.h"
 #include "tilestyle.h"
 #include "tiletext.h"
+#include "viz.h"
+#include "dst.h"
+#include "objmenu.h"
+#include "nowplaying.h"
+#include "power.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -862,6 +867,16 @@ void saver_create(void)
     rnd_state = (unsigned)lv_tick_get() ^ 0x5bd1e995u;
 }
 
+static bool starting_manual;                                 /* saver_start_manual is the caller */
+
+/* the playing track is DST (dst.h) */
+static bool track_is_dst(void)
+{
+    mpd_status_t st;
+    if(!mpd_status(&st) || !st.file[0]) return false;
+    return dst_track(st.file);
+}
+
 void saver_start(saver_kind_t k)
 {
     if(!root || k == SAVER_NONE) return;
@@ -878,6 +893,32 @@ void saver_start(saver_kind_t k)
     ground_now = 0;
     lv_obj_set_pos(stage, 0, 0);
     lv_obj_set_size(stage, ui_screen.w, ui_screen.h);
+    if(k == SAVER_STAGE) {
+        /* not on a DST track (Ian, 19 Oct 00:13: decoding DST already runs
+         * the chip near its limit; the lighter savers instead) */
+        if(track_is_dst()) {
+            fprintf(stderr, "simpleton-ui: saver: soundstage held back, a DST track plays%s\n", starting_manual ? "" : " - art drift instead");
+            kind = SAVER_NONE; thumbs_reserve(false);
+            if(starting_manual) objmenu_toast(T(S_VIZ_NO_DST));
+            else saver_start(SAVER_DRIFT);
+            return;
+        }
+        /* a visualizer (0.31): its own plane above the UI; the LVGL root stays hidden */
+        if(!viz_start(VIZ_SOUNDSTAGE)) {
+            fprintf(stderr, "simpleton-ui: saver: soundstage unavailable, art drift instead\n");
+            kind = SAVER_NONE; thumbs_reserve(false);
+            saver_start(SAVER_DRIFT);
+            return;
+        }
+        if(!timer) timer = lv_timer_create(tick, TICK_MS, NULL);
+        lv_timer_pause(timer);
+        /* the UI is out of sight: nothing is drawn until the visualizer ends
+         * (0.31i - a hidden now-playing redraw at every skip was the busiest
+         * moment on the unit, and skips were where DST tracks blipped) */
+        lv_display_enable_invalidation(NULL, false);
+        fprintf(stderr, "simpleton-ui: saver: stage\n");
+        return;
+    }
     if(k == SAVER_OFF) ground_set(0x000000, true);
     else if(k == SAVER_COVER) { ground_set(0x1A1612, true); last_poll_ms = 0; }
     else if(k == SAVER_BOUNCE) {
@@ -910,6 +951,15 @@ void saver_stop(void)
     fprintf(stderr, "simpleton-ui: saver: ended\n");
     kind = SAVER_NONE;
     manual = false;
+    if(viz_active()) {
+        viz_stop();
+        if(!power_screen_off()) {                            /* the UI draws again, whole */
+            lv_display_enable_invalidation(NULL, true);
+            lv_obj_invalidate(lv_screen_active());
+            lv_obj_invalidate(lv_layer_top());
+        }
+        nowplaying_mpd_changed();                            /* the cover it held back while out of sight */
+    }
     if(timer) lv_timer_pause(timer);
     if(ball_timer) lv_timer_pause(ball_timer);
     if(booming) { booming = false; boom_end(); }
@@ -922,11 +972,27 @@ void saver_stop(void)
 
 void saver_start_manual(saver_kind_t k)
 {
+    starting_manual = true;
     saver_start(k);
+    starting_manual = false;
     manual = kind != SAVER_NONE;
 }
 
+/* The player changed (main.c): a visualizer running into a DST track ends
+ * - back to the page it was started from, or on to Art drift for the TV's
+ * with-music rule (0.31j). */
+void saver_mpd_changed(void)
+{
+    if(!saver_kind_is_viz(kind) || !track_is_dst()) return;
+    bool was_manual = manual;
+    fprintf(stderr, "simpleton-ui: saver: a DST track started, soundstage ends%s\n", was_manual ? "" : " - art drift instead");
+    saver_stop();
+    if(was_manual) objmenu_toast(T(S_VIZ_NO_DST));
+    else saver_start(SAVER_DRIFT);
+}
+
 bool saver_manual(void) { return manual; }
+bool saver_kind_is_viz(saver_kind_t k) { return k == SAVER_STAGE; }
 bool saver_active(void) { return kind != SAVER_NONE; }
 saver_kind_t saver_current(void) { return kind; }
 
@@ -937,9 +1003,10 @@ saver_kind_t saver_kind_from_code(const char * code)
     if(strcmp(code, "cover") == 0) return SAVER_COVER;
     if(strcmp(code, "palettes") == 0) return SAVER_PALETTES;
     if(strcmp(code, "bounce") == 0) return SAVER_BOUNCE;
+    if(strcmp(code, "stage") == 0) return SAVER_STAGE;
     return SAVER_OFF;
 }
 const char * saver_kind_code(saver_kind_t k)
 {
-    switch(k) { case SAVER_DRIFT: return "drift"; case SAVER_COVER: return "cover"; case SAVER_PALETTES: return "palettes"; case SAVER_BOUNCE: return "bounce"; case SAVER_OFF: return "off"; default: return "none"; }
+    switch(k) { case SAVER_DRIFT: return "drift"; case SAVER_COVER: return "cover"; case SAVER_PALETTES: return "palettes"; case SAVER_BOUNCE: return "bounce"; case SAVER_STAGE: return "stage"; case SAVER_OFF: return "off"; default: return "none"; }
 }

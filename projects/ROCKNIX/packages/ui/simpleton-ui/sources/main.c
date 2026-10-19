@@ -46,6 +46,7 @@
 #include "dacpower.h"
 #include "btctl.h"
 #include "saver.h"
+#include "viz.h"
 #include "keyboard.h"
 #include "objmenu.h"
 #include "display.h"
@@ -851,7 +852,7 @@ static void mpd_changed(unsigned what)
     if(what & (MPD_CHANGED_DATABASE | MPD_CHANGED_UPDATE))
         browser_library_changed(what & MPD_CHANGED_DATABASE);
     if(what & MPD_CHANGED_DATABASE) { grid_library_changed(); listpage_library_changed(); rows_library_changed(); }
-    if(what & MPD_CHANGED_PLAYER) { albumpage_mpd_changed(); listpage_mpd_changed(); history_mpd_changed(); dacpower_mpd_changed(); }
+    if(what & MPD_CHANGED_PLAYER) { albumpage_mpd_changed(); listpage_mpd_changed(); history_mpd_changed(); dacpower_mpd_changed(); viz_mpd_changed(); saver_mpd_changed(); }
     if(what & (MPD_CHANGED_PLAYER | MPD_CHANGED_MIXER | MPD_CHANGED_OPTIONS |
                MPD_CHANGED_PLAYLIST | MPD_CHANGED_OUTPUT))
         nowplaying_mpd_changed();

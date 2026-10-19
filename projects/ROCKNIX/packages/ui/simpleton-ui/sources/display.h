@@ -42,4 +42,24 @@ int display_hotplug_fd(void);
  * than the one we're on - the caller then restarts the UI on it. */
 bool display_hotplug_poll(void);
 
+/* The visualizer's own plane (0.31, visualizers-research.md): a second
+ * DRM plane above the UI's, showing a buffer the GPU draws into - nothing
+ * is ever copied. Buffers are dumb buffers from the display's own device,
+ * exported as dma-bufs for EGL to import. display_viz_show() may be called
+ * from the GPU thread; it commits blocking (no event) under the display's
+ * lock, so the UI's own flips stay as they are. The plane scales the
+ * buffer to the screen, so a half-size buffer is fine. */
+typedef struct {
+    int      w, h;
+    int      dmabuf_fd;       /* for EGL_LINUX_DMA_BUF_EXT */
+    uint32_t pitch, fb, handle;
+} display_vizbuf_t;
+
+bool display_viz_alloc(display_vizbuf_t * b, int w, int h);
+void display_viz_free(display_vizbuf_t * b);
+bool display_viz_show(const display_vizbuf_t * b);     /* on screen, full size (scaled) */
+void display_viz_hide(void);
+bool display_viz_available(void);                      /* a second plane exists for this output (probed once) */
+bool display_viz_scales(void);                         /* ...and it scales a half-size buffer to the screen */
+
 #endif

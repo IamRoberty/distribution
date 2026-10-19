@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,6 +48,14 @@ static drmEventContext evctx;
 /* plane property ids, looked up once */
 static uint32_t p_fb, p_crtc, p_sx, p_sy, p_sw, p_sh, p_cx, p_cy, p_cw, p_ch;
 
+static pthread_mutex_t commit_lock = PTHREAD_MUTEX_INITIALIZER;   /* the UI's flips and the viz plane's commits (0.31) */
+static uint32_t viz_plane;              /* the visualizer's plane, 0 = none */
+static bool     viz_scales;             /* it may scale a smaller buffer to the screen */
+static int      viz_zpos = -1;          /* the zpos to ask for, -1 = leave it alone */
+static bool     viz_probed, viz_ok;
+static bool     viz_takeover;           /* no spare plane: the visualizer borrows the UI's own (0.31c) */
+static bool     viz_owns;               /* ...and holds it right now: the UI's flips wait */
+static fbuf_t * ui_front;               /* the UI buffer last put on screen */
 static int  uevent_fd = -1;
 static uint32_t settle_at;         /* 0 = nothing pending */
 static bool on_external;
@@ -331,7 +340,11 @@ static int commit(fbuf_t * b)
                                   : DRM_MODE_ATOMIC_ALLOW_MODESET;
     drmModeAtomicReq * req = build_request(b, !modeset_done);
 
+    pthread_mutex_lock(&commit_lock);
+    if(viz_owns) { pthread_mutex_unlock(&commit_lock); drmModeAtomicFree(req); ui_front = b; return 0; }   /* the visualizer has the plane: shown when it gives it back */
     int ret = drmModeAtomicCommit(drm_fd, req, flags, NULL);
+    pthread_mutex_unlock(&commit_lock);
+    if(!ret) ui_front = b;
     if(ret) {
         int err = errno;
         drmModeAtomicFree(req);
@@ -437,6 +450,197 @@ bool display_hotplug_poll(void)
     if(!want || want == conn_id) return false;
     fprintf(stderr, "simpleton-ui: outputs changed, moving to connector %u\n", want);
     return true;
+}
+
+/* ------------------------------------------------------------ the visualizer's plane (0.31) */
+
+/* The planes on our CRTC that take XRGB8888, aren't the UI's and aren't
+ * busy on another live CRTC. On the RK3566 (18 Oct, from
+ * /sys/kernel/debug/dri/0/state) that is Esmart0 - the panel port's own
+ * primary, free while we are on HDMI, and it scales - and Cluster0, which
+ * refuses plain buffers (it wants the compressed AFBC layout). */
+static int viz_plane_candidates(uint32_t * out, int max)
+{
+    drmModeRes * res = drmModeGetResources(drm_fd);
+    if(!res) return 0;
+    int crtc_idx = -1;
+    for(int i = 0; i < res->count_crtcs; i++) if(res->crtcs[i] == crtc_id) crtc_idx = i;
+    drmModeFreeResources(res);
+    if(crtc_idx < 0) return 0;
+    drmModePlaneRes * pr = drmModeGetPlaneResources(drm_fd);
+    if(!pr) return 0;
+    int n = 0;
+    for(uint32_t i = 0; i < pr->count_planes && n < max; i++) {
+        drmModePlane * p = drmModeGetPlane(drm_fd, pr->planes[i]);
+        if(!p) continue;
+        bool fmt = false;
+        for(uint32_t f = 0; f < p->count_formats; f++) if(p->formats[f] == DRM_FORMAT_XRGB8888) fmt = true;
+        uint64_t type = prop_value(p->plane_id, DRM_MODE_OBJECT_PLANE, "type");
+        bool busy_elsewhere = p->crtc_id != 0 && p->crtc_id != crtc_id;
+        if(fmt && p->plane_id != plane_id && type != DRM_PLANE_TYPE_CURSOR && !busy_elsewhere && (p->possible_crtcs & (1u << crtc_idx))) out[n++] = p->plane_id;
+        drmModeFreePlane(p);
+    }
+    drmModeFreePlaneResources(pr);
+    return n;
+}
+
+static drmModeAtomicReq * viz_request(const display_vizbuf_t * b)
+{
+    drmModeAtomicReq * req = drmModeAtomicAlloc();
+    add(req, viz_plane, DRM_MODE_OBJECT_PLANE, "FB_ID", b ? b->fb : 0);
+    add(req, viz_plane, DRM_MODE_OBJECT_PLANE, "CRTC_ID", b ? crtc_id : 0);
+    if(b) {
+        add(req, viz_plane, DRM_MODE_OBJECT_PLANE, "SRC_X", 0);
+        add(req, viz_plane, DRM_MODE_OBJECT_PLANE, "SRC_Y", 0);
+        add(req, viz_plane, DRM_MODE_OBJECT_PLANE, "SRC_W", (uint64_t)b->w << 16);
+        add(req, viz_plane, DRM_MODE_OBJECT_PLANE, "SRC_H", (uint64_t)b->h << 16);
+        add(req, viz_plane, DRM_MODE_OBJECT_PLANE, "CRTC_X", 0);
+        add(req, viz_plane, DRM_MODE_OBJECT_PLANE, "CRTC_Y", 0);
+        add(req, viz_plane, DRM_MODE_OBJECT_PLANE, "CRTC_W", mode.hdisplay);
+        add(req, viz_plane, DRM_MODE_OBJECT_PLANE, "CRTC_H", mode.vdisplay);
+        if(viz_zpos >= 0) add(req, viz_plane, DRM_MODE_OBJECT_PLANE, "zpos", (uint64_t)viz_zpos);
+    }
+    return req;
+}
+
+static int viz_test(const display_vizbuf_t * b)
+{
+    drmModeAtomicReq * req = viz_request(b);
+    pthread_mutex_lock(&commit_lock);
+    int ret = drmModeAtomicCommit(drm_fd, req, DRM_MODE_ATOMIC_TEST_ONLY, NULL);
+    int err = ret ? errno : 0;
+    pthread_mutex_unlock(&commit_lock);
+    drmModeAtomicFree(req);
+    return err;
+}
+
+/* Which plane, which zpos, and does it scale: found by test-only commits
+ * (0.31a - the first try on the unit got EINVAL from the one plane it
+ * picked: planes differ in what they take, and VOP2 wants each zpos used
+ * once). The UI's plane stays where it is; ours must sit above it. */
+static bool viz_probe(void)
+{
+    if(viz_probed) return viz_ok;
+    viz_probed = true;
+    uint32_t cands[16]; int nc = viz_plane_candidates(cands, 16);
+    if(!nc) { fprintf(stderr, "simpleton-ui: viz: no second plane on this output\n"); return false; }
+    int ui_z = (int)prop_value(plane_id, DRM_MODE_OBJECT_PLANE, "zpos");
+    int sizes[2][2] = { { mode.hdisplay / 2, mode.vdisplay / 2 }, { mode.hdisplay, mode.vdisplay } };
+    for(int si = 0; si < 2 && !viz_ok; si++) {
+        display_vizbuf_t t; memset(&t, 0, sizeof(t)); t.dmabuf_fd = -1;
+        fbuf_t f;
+        if(!alloc_fb(&f, sizes[si][0], sizes[si][1])) continue;
+        munmap(f.map, f.size);
+        t.w = sizes[si][0]; t.h = sizes[si][1]; t.pitch = f.pitch; t.fb = f.fb; t.handle = f.handle;
+        for(int ci = 0; ci < nc && !viz_ok; ci++) {
+            viz_plane = cands[ci];
+            uint32_t zid = prop_id(viz_plane, DRM_MODE_OBJECT_PLANE, "zpos");
+            int zmin = -1, zmax = -1; bool zset = false;
+            if(zid) { drmModePropertyRes * zp = drmModeGetProperty(drm_fd, zid); if(zp) { zset = !(zp->flags & DRM_MODE_PROP_IMMUTABLE) && zp->count_values == 2; zmin = (int)zp->values[0]; zmax = (int)zp->values[1]; drmModeFreeProperty(zp); } }
+            int own_z = zid ? (int)prop_value(viz_plane, DRM_MODE_OBJECT_PLANE, "zpos") : -1;
+            /* as it is (if that already sits above the UI), then every zpos above the UI's, highest first */
+            int tries[20]; int nt = 0;
+            if(own_z > ui_z || !zid) tries[nt++] = -1;
+            if(zset) for(int z = zmax; z > ui_z && z >= zmin && nt < 20; z--) tries[nt++] = z;
+            for(int ti = 0; ti < nt && !viz_ok; ti++) {
+                viz_zpos = tries[ti];
+                int err = viz_test(&t);
+                if(!err) { viz_ok = true; viz_scales = si == 0; }
+                else fprintf(stderr, "simpleton-ui: viz: plane %u zpos %d %dx%d refused (%s)\n", viz_plane, viz_zpos, t.w, t.h, strerror(err));
+            }
+        }
+        drmModeRmFB(drm_fd, f.fb);
+        { struct drm_mode_destroy_dumb d = { .handle = f.handle }; drmIoctl(drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &d); }
+    }
+    if(viz_ok) fprintf(stderr, "simpleton-ui: viz: plane %u, zpos %d (the UI's plane %u is at %d), %s\n", viz_plane, viz_zpos, plane_id, ui_z, viz_scales ? "scales a half-size buffer" : "full size only");
+    else {
+        /* no spare plane will do (the RK3566 on HDMI: Esmart0 belongs to the
+         * panel port, Cluster0 wants AFBC): the visualizer borrows the UI's
+         * own plane while it runs; the UI's flips are held and the UI comes
+         * back when it ends */
+        viz_plane = plane_id; viz_zpos = -1;
+        for(int si = 0; si < 2 && !viz_ok; si++) {
+            display_vizbuf_t t; memset(&t, 0, sizeof(t)); t.dmabuf_fd = -1;
+            fbuf_t f;
+            if(!alloc_fb(&f, sizes[si][0], sizes[si][1])) continue;
+            munmap(f.map, f.size);
+            t.w = sizes[si][0]; t.h = sizes[si][1]; t.pitch = f.pitch; t.fb = f.fb; t.handle = f.handle;
+            int err = viz_test(&t);
+            if(!err) { viz_ok = true; viz_takeover = true; viz_scales = si == 0; }
+            else fprintf(stderr, "simpleton-ui: viz: the UI's plane %u %dx%d refused too (%s)\n", viz_plane, t.w, t.h, strerror(err));
+            drmModeRmFB(drm_fd, f.fb);
+            { struct drm_mode_destroy_dumb d = { .handle = f.handle }; drmIoctl(drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &d); }
+        }
+        if(viz_ok) fprintf(stderr, "simpleton-ui: viz: no spare plane - borrowing the UI's plane %u, %s\n", viz_plane, viz_scales ? "scaled from half size" : "full size");
+        else { viz_plane = 0; fprintf(stderr, "simpleton-ui: viz: no plane accepted a buffer at all\n"); }
+    }
+    return viz_ok;
+}
+
+bool display_viz_scales(void) { return viz_scales; }
+
+bool display_viz_available(void)
+{
+    if(!modeset_done) return false;
+    return viz_probe();
+}
+
+bool display_viz_alloc(display_vizbuf_t * b, int w, int h)
+{
+    memset(b, 0, sizeof(*b)); b->dmabuf_fd = -1;
+    if(!display_viz_available()) return false;
+    fbuf_t f;
+    if(!alloc_fb(&f, w, h)) return false;
+    munmap(f.map, f.size);                       /* the CPU never touches it */
+    b->w = w; b->h = h; b->pitch = f.pitch; b->fb = f.fb; b->handle = f.handle;
+    if(drmPrimeHandleToFD(drm_fd, f.handle, DRM_CLOEXEC | DRM_RDWR, &b->dmabuf_fd)) { b->dmabuf_fd = -1; display_viz_free(b); return false; }
+    int err = viz_test(b);
+    if(err) { fprintf(stderr, "simpleton-ui: viz: plane %u refused a %dx%d buffer (%s)\n", viz_plane, w, h, strerror(err)); display_viz_free(b); return false; }
+    return true;
+}
+
+void display_viz_free(display_vizbuf_t * b)
+{
+    if(b->dmabuf_fd >= 0) close(b->dmabuf_fd);
+    if(b->fb) drmModeRmFB(drm_fd, b->fb);
+    if(b->handle) { struct drm_mode_destroy_dumb d = { .handle = b->handle }; drmIoctl(drm_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &d); }
+    memset(b, 0, sizeof(*b)); b->dmabuf_fd = -1;
+}
+
+bool display_viz_show(const display_vizbuf_t * b)
+{
+    if(!viz_plane || !modeset_done) return false;
+    drmModeAtomicReq * req = viz_request(b);
+    pthread_mutex_lock(&commit_lock);
+    if(viz_takeover) viz_owns = true;
+    int ret = drmModeAtomicCommit(drm_fd, req, 0, NULL);          /* blocking: back when it's on screen */
+    int err = errno;
+    pthread_mutex_unlock(&commit_lock);
+    drmModeAtomicFree(req);
+    static int failures;
+    if(ret && failures++ % 100 == 0) fprintf(stderr, "simpleton-ui: viz plane commit failed: %s\n", strerror(err));
+    if(!ret) failures = 0;
+    return ret == 0;
+}
+
+void display_viz_hide(void)
+{
+    if(!viz_plane || !modeset_done) return;
+    pthread_mutex_lock(&commit_lock);
+    if(viz_takeover) {
+        /* the UI's plane goes back to the UI's last buffer */
+        viz_owns = false;
+        fbuf_t * b = ui_front ? ui_front : &bufs[0];
+        drmModeAtomicReq * req = build_request(b, false);
+        drmModeAtomicCommit(drm_fd, req, 0, NULL);
+        drmModeAtomicFree(req);
+    }
+    else {
+        drmModeAtomicReq * req = viz_request(NULL);
+        drmModeAtomicCommit(drm_fd, req, 0, NULL);
+        drmModeAtomicFree(req);
+    }
+    pthread_mutex_unlock(&commit_lock);
 }
 
 /* ------------------------------------------------------------ public */

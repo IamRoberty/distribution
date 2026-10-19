@@ -59,6 +59,7 @@
 #include "strings.h"
 #include "theme.h"
 #include "tilestyle.h"
+#include "viz.h"
 #include "src/misc/cache/instance/lv_image_cache.h"   /* lv_image_cache_drop, not in lvgl.h */
 
 #include <ctype.h>
@@ -784,6 +785,8 @@ static void refresh_status(void)
     bool ok = mpd_status(&s);
     if(!ok) { memset(&s, 0, sizeof(s)); s.songid = -1; }
     bool track_changed = strcmp(s.file, cur_file) != 0;
+    static bool art_held;                   /* the cover not fetched while a visualizer had the screen (0.31i) */
+    if(art_held && !viz_active()) { art_held = false; track_changed = true; }
     st = s;
     base_elapsed = s.elapsed;
     base_tick = lv_tick_get();
@@ -799,7 +802,8 @@ static void refresh_status(void)
             snprintf(expected_file, sizeof(expected_file), "%s", s.file);
             enter_at_end = page_pending = false;
             if(s.file[0]) {
-                if(strcmp(art_shown_file, s.file) != 0 || strcmp(req_file, s.file) != 0) {
+                if(viz_active()) art_held = true;            /* out of sight: the decode and the card read can wait (0.31i) */
+                else if(strcmp(art_shown_file, s.file) != 0 || strcmp(req_file, s.file) != 0) {
                     snprintf(req_file, sizeof(req_file), "%s", s.file);
                     art_request(s.file, s.artist, s.album, s.title);
                 }

@@ -159,6 +159,10 @@ bool mpd_resume(void);      /* play: unpause, or start the queue if stopped */
 bool mpd_pause(void);       /* pause if playing; no-op otherwise            */
 bool mpd_next(void);
 bool mpd_previous(void);
+/* Called before next / previous / play / seek (0.31k: the visualizer's
+ * feed goes off first, see viz.c). */
+void mpd_set_before_change(void (*cb)(void));
+bool mpd_output_set(const char * name, bool on);   /* an output by its mpd.conf name, on or off (0.31) */
 
 /* Relative seek within the current song (`seekcur +N` / `seekcur -N`). */
 bool mpd_seek_relative(float seconds);

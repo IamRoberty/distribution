@@ -483,10 +483,12 @@ static void activity_now(void)
 bool power_activity(ui_action_t a)
 {
     if(saver_active()) {
-        /* the TV's screensaver (0.29): the press ends it; X and Y act as well, like in the dark */
-        saver_stop();
-        last_activity_ms = now_ms();
+        /* a screensaver or visualizer (0.29 / 0.31): pause and skip act and
+         * leave it running; any other press ends it and is spent on that
+         * (Ian, 18 Oct 20:34) */
         bool transport = a == ACT_PLAYPAUSE || a == ACT_NEXT || a == ACT_PREV || a == ACT_PLAY || a == ACT_PAUSE;
+        last_activity_ms = now_ms();
+        if(!transport) saver_stop();
         return !transport;
     }
     bool was_off = screen_off;

@@ -452,7 +452,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.29e"
+PKG_VERSION="0.31k"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk alsa-lib"
@@ -489,7 +489,7 @@ make_target() {
     ${PKG_BUILD}/grid.c ${PKG_BUILD}/thumbs.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/tilestyle.c ${PKG_BUILD}/palette.c \
     ${PKG_BUILD}/textfit.c ${PKG_BUILD}/tiletext.c ${PKG_BUILD}/albumpage.c ${PKG_BUILD}/hdmisilence.c ${PKG_BUILD}/power.c \
     ${PKG_BUILD}/libs.c ${PKG_BUILD}/listpage.c ${PKG_BUILD}/history.c \
-    ${PKG_BUILD}/artists.c ${PKG_BUILD}/rows.c ${PKG_BUILD}/curation.c ${PKG_BUILD}/objmenu.c ${PKG_BUILD}/keyboard.c ${PKG_BUILD}/dacpower.c ${PKG_BUILD}/npicons.c ${PKG_BUILD}/btctl.c ${PKG_BUILD}/saver.c \
+    ${PKG_BUILD}/artists.c ${PKG_BUILD}/rows.c ${PKG_BUILD}/curation.c ${PKG_BUILD}/objmenu.c ${PKG_BUILD}/keyboard.c ${PKG_BUILD}/dacpower.c ${PKG_BUILD}/npicons.c ${PKG_BUILD}/btctl.c ${PKG_BUILD}/saver.c ${PKG_BUILD}/viz.c ${PKG_BUILD}/dst.c \
     ${TARGET_LDFLAGS} -rdynamic \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \
@@ -498,7 +498,7 @@ make_target() {
     -L$(get_install_dir zlib)/usr/lib \
     -L$(get_install_dir freetype)/usr/lib \
     -L$(get_install_dir alsa-lib)/usr/lib \
-    -llvgl -lfreetype -ldrm -ljpeg -lpng16 -lz -lasound -lpthread -lm
+    -llvgl -lfreetype -ldrm -ljpeg -lpng16 -lz -lasound -lpthread -lm -ldl
 
   # The cache tool: the same sources without LVGL or the display.
   ${CC} ${TARGET_CFLAGS} -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
@@ -513,12 +513,20 @@ make_target() {
     -L$(get_install_dir libpng)/usr/lib \
     -L$(get_install_dir zlib)/usr/lib \
     -ljpeg -lpng16 -lz -lpthread -lm
+
+  # The visualizer test kit (0.30, visualizers-research.md): standalone,
+  # reaches EGL / GLES through dlopen so it needs no graphics headers or
+  # link-time dependency - the image's Mali driver is used as found.
+  ${CC} ${TARGET_CFLAGS} -std=gnu11 -Wall -Wextra -Wno-unused-parameter \
+    -o ${PKG_BUILD}/simpleton-viztest ${PKG_BUILD}/viztest.c \
+    ${TARGET_LDFLAGS} -lpthread -lm -ldl
 }
 
 makeinstall_target() {
   mkdir -p ${INSTALL}/usr/bin ${INSTALL}/usr/share/simpleton
   cp -a ${PKG_BUILD}/simpleton-ui ${INSTALL}/usr/bin
   cp -a ${PKG_BUILD}/simpleton-cache ${INSTALL}/usr/bin
+  cp -a ${PKG_BUILD}/simpleton-viztest ${INSTALL}/usr/bin
   cp -a ${PKG_BUILD}/share/. ${INSTALL}/usr/share/simpleton/
 }
 

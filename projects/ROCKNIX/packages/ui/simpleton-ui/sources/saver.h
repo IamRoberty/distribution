@@ -27,7 +27,13 @@
 
 #include <stdbool.h>
 
-typedef enum { SAVER_NONE = 0, SAVER_OFF, SAVER_DRIFT, SAVER_COVER, SAVER_PALETTES, SAVER_BOUNCE, SAVER_KIND_COUNT } saver_kind_t;
+typedef enum { SAVER_NONE = 0, SAVER_OFF, SAVER_DRIFT, SAVER_COVER, SAVER_PALETTES, SAVER_BOUNCE, SAVER_STAGE, SAVER_KIND_COUNT } saver_kind_t;
+
+/* The visualizers (0.31, viz.h) run as kinds of screensaver so the
+ * Visualization page and the TV's with-music rule start them like the rest;
+ * they need music, so the nothing-playing chooser never offers them. */
+bool saver_kind_is_viz(saver_kind_t kind);
+void saver_mpd_changed(void);                 /* the player changed: a visualizer ends on a DST track (0.31j) */
 
 void         saver_create(void);
 void         saver_start(saver_kind_t kind);
@@ -37,7 +43,7 @@ void         saver_stop(void);
 bool         saver_active(void);
 saver_kind_t saver_current(void);
 
-/* The setting codes: "off", "drift", "cover", "palettes", "bounce". */
+/* The setting codes: "off", "drift", "cover", "palettes", "bounce", "stage". */
 saver_kind_t saver_kind_from_code(const char * code);
 const char * saver_kind_code(saver_kind_t kind);
 
