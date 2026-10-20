@@ -50,6 +50,9 @@ static void sleep_s(double s) { if(s > 0) { struct timespec t = { (time_t)s, (lo
 typedef struct {
     float rms_l, rms_r, peak, corr;         /* the last second */
     float band[ROWS];                        /* energy per row, 0..1 after gain */
+    float sband[VIZ_BANDS];                  /* the classics' spectrum: 48 log bands, 0..1 (0.32) */
+    float level_l, level_r;                  /* the last hop's RMS, 0..1 (0.32) */
+    float spg[VIZ_SPG_ROWS];                 /* the spectrogram's column: 30 Hz - 18 kHz by log, 0..1 (0.33) */
     float hist[ROWS][PAN_SLOTS];             /* each row's energy by stereo position, the last hop */
     float bpm, bpm_conf;
     int   loud_bin;
@@ -92,6 +95,10 @@ static int   row_k0[ROWS], row_k1[ROWS], row_count[ROWS];       /* each row's FF
 static float onset_hist[ONSET_HIST]; static int onset_n;
 static float prev_logmag[FFT_N / 2];
 static float band_max[ROWS];
+static float sband_max[VIZ_BANDS];
+static int   sb_k0[VIZ_BANDS + 1];           /* the classics' band edges in FFT bins (set_rate) */
+static float spg_k[VIZ_SPG_ROWS];            /* the spectrogram rows' centre bins (fractional) */
+static float spg_max;                        /* its slow auto gain */
 
 static void analyse_hop(const int16_t * ring, int ring_len, int head)
 {
@@ -141,6 +148,30 @@ static void analyse_hop(const int16_t * ring, int ring_len, int head)
         v = logf(1 + 9 * v) / logf(10.0f);                                          /* ears are logarithmic */
         an.band[r] = v > an.band[r] ? v : an.band[r] * 0.85f + v * 0.15f;           /* fast up, slow down */
     }
+    for(int i = 0; i < VIZ_BANDS; i++) {
+        float e = 0; int n = 0;
+        for(int k = sb_k0[i]; k < sb_k0[i + 1] && k < FFT_N / 2; k++) { e += ml[k] * ml[k] + mr[k] * mr[k]; n++; }
+        e = n ? sqrtf(e / n) : 0;
+        if(e > sband_max[i]) sband_max[i] = e; else sband_max[i] *= 0.9995f;
+        float v = sband_max[i] > 1e-6f ? e / sband_max[i] : 0;
+        v = logf(1 + 9 * v) / logf(10.0f);
+        an.sband[i] = v > an.sband[i] ? v : an.sband[i] * 0.80f + v * 0.20f;
+    }
+    /* the spectrogram's column: each row the loudest bin in its range (a
+     * row narrower than a bin takes the bin it sits in), log-compressed
+     * against a slow peak */
+    { float colmax = 0; float col[VIZ_SPG_ROWS];
+      for(int i = 0; i < VIZ_SPG_ROWS; i++) {
+          float k0 = i ? (spg_k[i - 1] + spg_k[i]) / 2 : spg_k[0] * 0.9f, k1 = i < VIZ_SPG_ROWS - 1 ? (spg_k[i] + spg_k[i + 1]) / 2 : spg_k[i] * 1.1f;
+          int a = (int)k0, b = (int)ceilf(k1); if(a < 1) a = 1; if(b > FFT_N / 2 - 1) b = FFT_N / 2 - 1; if(b < a) b = a;
+          float m = 0; for(int k = a; k <= b; k++) { float v = ml[k] + mr[k]; if(v > m) m = v; }
+          col[i] = m; if(m > colmax) colmax = m;
+      }
+      if(colmax > spg_max) spg_max = colmax; else spg_max *= 0.9997f;
+      for(int i = 0; i < VIZ_SPG_ROWS; i++) { float v = spg_max > 1e-6f ? col[i] / spg_max : 0; an.spg[i] = logf(1 + 30 * v) / logf(31.0f); } }
+    { float sl = 0, sr2 = 0;
+      for(int i = 0; i < HOP; i++) { int k = (head - HOP + i + ring_len) % ring_len; float a = ring[2 * k] / 32768.0f, b = ring[2 * k + 1] / 32768.0f; sl += a * a; sr2 += b * b; }
+      an.level_l = sqrtf(sl / HOP); an.level_r = sqrtf(sr2 / HOP); }
     an.loud_bin = loud;
     /* tempo: autocorrelation of the onsets over the last 8 s, 50-200 bpm */
     if(onset_n >= ONSET_HIST / 2) {
@@ -212,6 +243,16 @@ static void set_rate(int rate)
         if(row_k1[i] > FFT_N / 2) row_k1[i] = FFT_N / 2;
         if(row_k1[i] < row_k0[i] + 1) row_k1[i] = row_k0[i] + 1;
     }
+    /* the classics' bands: 30 Hz to 18 kHz by log, at least one bin each */
+    for(int i = 0; i <= VIZ_BANDS; i++) {
+        float f = 30.0f * powf(18000.0f / 30.0f, (float)i / VIZ_BANDS);
+        int k = (int)ceilf(f * FFT_N / sr);
+        if(k < 1) k = 1;
+        if(k > FFT_N / 2) k = FFT_N / 2;
+        if(i > 0 && k < sb_k0[i - 1] + 1) k = sb_k0[i - 1] + 1;
+        sb_k0[i] = k;
+    }
+    for(int i = 0; i < VIZ_SPG_ROWS; i++) spg_k[i] = 30.0f * powf(18000.0f / 30.0f, (i + 0.5f) / VIZ_SPG_ROWS) * FFT_N / sr;
 }
 
 /* "dsd64:2" / "96000:24:2" / "44100:f:2" -> a format; false when it doesn't parse */
@@ -839,36 +880,41 @@ bool viz_available(void)
     return display_viz_available() && load_gl_more();
 }
 
+static bool gpu_up;
+
 bool viz_start(viz_kind_t k)
 {
     if(running || k == VIZ_NONE) return false;
-    if(!viz_available()) { fprintf(stderr, "simpleton-ui: viz: no plane or no GPU libraries\n"); return false; }
-    /* the render size: half the screen when the plane scales (a TV), else the screen's own */
-    bool half = display_viz_scales() && ui_screen.w > 960;
-    VW = half ? ui_screen.w / 2 : ui_screen.w;
-    VH = half ? ui_screen.h / 2 : ui_screen.h;
-    for(int i = 0; i < 2; i++) if(!display_viz_alloc(&vbuf[i], VW, VH)) {
-        if(i == 1) display_viz_free(&vbuf[0]);
-        fprintf(stderr, "simpleton-ui: viz: no display buffers\n"); return false;
+    bool gpu = k == VIZ_SOUNDSTAGE;
+    if(gpu) {
+        if(!viz_available()) { fprintf(stderr, "simpleton-ui: viz: no plane or no GPU libraries\n"); return false; }
+        /* the render size: half the screen when the plane scales (a TV), else the screen's own */
+        bool half = display_viz_scales() && ui_screen.w > 960;
+        VW = half ? ui_screen.w / 2 : ui_screen.w;
+        VH = half ? ui_screen.h / 2 : ui_screen.h;
+        for(int i = 0; i < 2; i++) if(!display_viz_alloc(&vbuf[i], VW, VH)) {
+            if(i == 1) display_viz_free(&vbuf[0]);
+            fprintf(stderr, "simpleton-ui: viz: no display buffers\n"); return false;
+        }
     }
     if(!mpd_output_set(FEED_NAME, true)) {
         fprintf(stderr, "simpleton-ui: viz: the feed (%s) could not be switched on - is it in mpd.conf?\n", FEED_NAME);
-        display_viz_free(&vbuf[0]); display_viz_free(&vbuf[1]);
+        if(gpu) { display_viz_free(&vbuf[0]); display_viz_free(&vbuf[1]); }
         return false;
     }
     kind = k;
     feed_off = false;
     mpd_set_before_change(before_change);
     memset(&an, 0, sizeof(an));
-    memset(band_max, 0, sizeof(band_max)); memset(prev_logmag, 0, sizeof(prev_logmag)); onset_n = 0;
+    memset(band_max, 0, sizeof(band_max)); memset(sband_max, 0, sizeof(sband_max)); spg_max = 0; memset(prev_logmag, 0, sizeof(prev_logmag)); onset_n = 0;
     { mpd_status_t st; memset(&fmt_next, 0, sizeof(fmt_next)); fmt_new = false;
       viz_set_format(mpd_status(&st) && st.audio[0] ? st.audio : "44100:16:2"); }       /* whatever plays now; the player's changes follow */
-    build_board();
-    build_kernels();
-    stop_flag = false; running = true;
+    if(gpu) { build_board(); build_kernels(); }
+    else set_rate(sr);
+    stop_flag = false; running = true; gpu_up = gpu;
     pthread_create(&audio_th, NULL, audio_thread, NULL);
-    pthread_create(&gpu_th, NULL, gpu_thread, NULL);
-    fprintf(stderr, "simpleton-ui: viz: soundstage started\n");
+    if(gpu) pthread_create(&gpu_th, NULL, gpu_thread, NULL);
+    fprintf(stderr, "simpleton-ui: viz: %s started\n", gpu ? "soundstage" : "the feed (a classic draws it)");
     return true;
 }
 
@@ -876,10 +922,10 @@ void viz_stop(void)
 {
     if(!running) return;
     stop_flag = true;
-    pthread_join(gpu_th, NULL);
+    if(gpu_up) pthread_join(gpu_th, NULL);
     pthread_join(audio_th, NULL);
-    display_viz_hide();
-    display_viz_free(&vbuf[0]); display_viz_free(&vbuf[1]);
+    if(gpu_up) { display_viz_hide(); display_viz_free(&vbuf[0]); display_viz_free(&vbuf[1]); }
+    gpu_up = false;
     if(feed_timer) { lv_timer_delete(feed_timer); feed_timer = NULL; }
     if(!feed_off) mpd_output_set(FEED_NAME, false);
     feed_off = false;
@@ -888,6 +934,43 @@ void viz_stop(void)
 }
 
 bool viz_active(void) { return running; }
+
+int viz_bands(float * out, int max)
+{
+    int n = max < VIZ_BANDS ? max : VIZ_BANDS;
+    pthread_mutex_lock(&an_lock);
+    memcpy(out, an.sband, sizeof(float) * (size_t)n);
+    pthread_mutex_unlock(&an_lock);
+    return running ? n : 0;
+}
+
+void viz_levels(float * l, float * r)
+{
+    pthread_mutex_lock(&an_lock);
+    *l = an.level_l; *r = an.level_r;
+    pthread_mutex_unlock(&an_lock);
+}
+
+int viz_spectrogram(float * out, int max)
+{
+    int n = max < VIZ_SPG_ROWS ? max : VIZ_SPG_ROWS;
+    pthread_mutex_lock(&an_lock);
+    memcpy(out, an.spg, sizeof(float) * (size_t)n);
+    pthread_mutex_unlock(&an_lock);
+    return running ? n : 0;
+}
+
+int viz_wave(int16_t * l, int16_t * r, int n)
+{
+    /* the newest n samples of the analysis ring, oldest first; read without
+     * a lock - the audio thread writes one sample at a time, and a frame
+     * torn by a sample or two is nothing to a scope */
+    if(!running) return 0;
+    if(n > FFT_N) n = FFT_N;
+    int head = ring_head;
+    for(int i = 0; i < n; i++) { int k = (head - n + i + FFT_N * 2) % (FFT_N * 2); l[i] = ring[2 * k]; r[i] = ring[2 * k + 1]; }
+    return n;
+}
 
 
 

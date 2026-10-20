@@ -47,6 +47,7 @@
 #include "btctl.h"
 #include "saver.h"
 #include "viz.h"
+#include "vizmenu.h"
 #include "keyboard.h"
 #include "objmenu.h"
 #include "display.h"
@@ -715,6 +716,11 @@ static void dispatch(ui_action_t a)
     /* so do the keyboard and the object menu (0.21) */
     if(keyboard_active()) { if(power_activity(a)) return; keyboard_handle_action(a); return; }
     if(objmenu_active()) { if(power_activity(a)) return; objmenu_handle_action(a); return; }
+    /* a visualizer's menu over it (0.32c): pause and skip still act; the rest is the box's */
+    if(vizmenu_active()) {
+        if(a == ACT_PLAYPAUSE || a == ACT_NEXT || a == ACT_PREV || a == ACT_PLAY || a == ACT_PAUSE) { power_activity(a); transport(a); return; }
+        vizmenu_handle_action(a); return;
+    }
     /* a button in the dark: X and Y act (pause, skip), anything else only
      * lights the screen and is spent on that (0.18) */
     if(power_activity(a)) return;
@@ -1019,6 +1025,7 @@ int main(int argc, char ** argv)
     listpage_set_artist_callback(open_artist);
     listpage_set_list_callback(open_list);
     objmenu_create(curation_changed);
+    vizmenu_create();                        /* a visualizer's menu over it (0.32c) */
     keyboard_create();                               /* naming mixtapes and collections (0.21a) */                /* A held: Favorite / Add to mixtape / Add to collection (0.21) */
     nowplaying_set_curation_callback(curation_changed);
     rows_create(open_artist, open_album, rows_exited, view_style_changed);   /* the Artists rows (0.20) */
@@ -1075,6 +1082,8 @@ int main(int argc, char ** argv)
     if(resume_folderpage) { show_browser(); if(!browser_folder_hook(resume_folderpage)) fprintf(stderr, "simpleton-ui: --folderpage %s: not an album folder now\n", resume_folderpage); }
     if(resume_nowplaying) enter_nowplaying();
     if(resume_settings) enter_settings(resume_settings, false);
+    { const char * e = getenv("SIMPLETON_START_SAVER");                  /* the workbench: straight into a saver or visualizer (0.33) */
+      if(e && e[0]) saver_start_manual(saver_kind_from_code(e)); }
     fprintf(stderr, "simpleton-ui: play-through folders: %s\n", playthrough_enabled() ? "on" : "off");
     playthrough_mpd_changed(MPD_CHANGED_PLAYER);   /* restarted mid-album: catch up now */
 

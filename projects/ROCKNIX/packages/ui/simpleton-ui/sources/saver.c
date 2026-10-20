@@ -26,6 +26,9 @@
 #include "tilestyle.h"
 #include "tiletext.h"
 #include "viz.h"
+#include "classic.h"
+#include "vizmenu.h"
+#include "config.h"
 #include "dst.h"
 #include "objmenu.h"
 #include "nowplaying.h"
@@ -754,16 +757,13 @@ static void ball_tick(lv_timer_t * t)
 /* ------------------------------------------------------------ the track */
 
 /* The playing track, when it changed: its album (or none). */
-static bool poll_track(const lib_source_t ** out_s, int * out_album, mpd_status_t * st)
+/* The album a file belongs to: by its folder's entry, else by the albums' folders. */
+static void lookup_album(const char * file, const lib_source_t ** out_s, int * out_album)
 {
-    if(!mpd_status(st) || st->songid < 0 || !st->file[0]) return false;
-    if(strcmp(st->file, cover_file) == 0) return false;
-    snprintf(cover_file, sizeof(cover_file), "%s", st->file);
     char folder[1024];
-    snprintf(folder, sizeof(folder), "%s", st->file);
+    snprintf(folder, sizeof(folder), "%s", file);
     char * slash = strrchr(folder, '/');
     if(slash) *slash = 0; else folder[0] = 0;
-    /* the album: by the folder's entry, else by the albums' folders */
     const lib_folder_t * fo = NULL;
     const lib_source_t * s = libs_find_folder(folder, &fo);
     int src = -1, album = fo ? fo->album : -1;
@@ -775,8 +775,39 @@ static bool poll_track(const lib_source_t ** out_s, int * out_album, mpd_status_
                 if(c->lib.albums[k].folder && strcmp(c->lib.albums[k].folder, folder) == 0) { s = c; src = i; album = k; break; }
         }
     }
-    if(!s || album < 0 || src < 0) { *out_s = NULL; *out_album = -1; return true; }
+    if(!s || album < 0 || src < 0) { *out_s = NULL; *out_album = -1; return; }
     *out_s = s; *out_album = album;
+}
+
+static bool poll_track(const lib_source_t ** out_s, int * out_album, mpd_status_t * st)
+{
+    if(!mpd_status(st) || st->songid < 0 || !st->file[0]) return false;
+    if(strcmp(st->file, cover_file) == 0) return false;
+    snprintf(cover_file, sizeof(cover_file), "%s", st->file);
+    lookup_album(st->file, out_s, out_album);
+    return true;
+}
+
+/* The playing album's colours for a classic visualizer's "record" look
+ * (classic.c, 0.32): the album's colour set back as the ground, its partner
+ * (Bounce's rule) for the bars, its brightest for the caps. False when
+ * nothing plays or the album has no colours. */
+bool saver_playing_colours(uint32_t * ground, uint32_t * bar, uint32_t * cap, char * file, size_t file_len)
+{
+    mpd_status_t st;
+    if(!mpd_status(&st) || st.songid < 0 || !st.file[0]) return false;
+    snprintf(file, file_len, "%s", st.file);
+    const lib_source_t * s = NULL; int album = -1;
+    lookup_album(st.file, &s, &album);
+    const lib_album_t * al = s && album >= 0 ? &s->lib.albums[album] : NULL;
+    if(!al || al->palette.ndom == 0) return false;
+    const art_palette_t * pal = &al->palette;
+    *ground = darken(pal->dom[0], 45);
+    uint32_t cand[PAL_DOM + 4]; int n = 0;
+    for(int i = 1; i < pal->ndom; i++) cand[n++] = pal->dom[i];
+    cand[n++] = pal->bright; cand[n++] = pal->dark; cand[n++] = pal->accent; cand[n++] = pal->accent2;
+    *bar = pick_contrast(*ground, cand, n, 0);
+    *cap = pal->bright && palette_contrast(*ground, pal->bright) >= 3.0 ? pal->bright : 0xFAEFD0;
     return true;
 }
 
@@ -860,8 +891,7 @@ void saver_create(void)
     lv_obj_set_size(boom_img, ui_screen.w, ui_screen.h);
     lv_obj_set_pos(boom_img, 0, 0);
     lv_obj_add_flag(boom_img, LV_OBJ_FLAG_HIDDEN);
-    const char * e = getenv("SIMPLETON_BOUNCE_EVERY");
-    if(e && atoi(e) > 1) corner_every = atoi(e);
+    classic_create(root);
     ball_timer = lv_timer_create(ball_tick, BALL_FRAME_MS, NULL);
     lv_timer_pause(ball_timer);
     rnd_state = (unsigned)lv_tick_get() ^ 0x5bd1e995u;
@@ -893,14 +923,32 @@ void saver_start(saver_kind_t k)
     ground_now = 0;
     lv_obj_set_pos(stage, 0, 0);
     lv_obj_set_size(stage, ui_screen.w, ui_screen.h);
-    if(k == SAVER_STAGE) {
+    if(saver_kind_is_viz(k)) {
         /* not on a DST track (Ian, 19 Oct 00:13: decoding DST already runs
          * the chip near its limit; the lighter savers instead) */
         if(track_is_dst()) {
-            fprintf(stderr, "simpleton-ui: saver: soundstage held back, a DST track plays%s\n", starting_manual ? "" : " - art drift instead");
+            fprintf(stderr, "simpleton-ui: saver: %s held back, a DST track plays%s\n", saver_kind_code(k), starting_manual ? "" : " - art drift instead");
             kind = SAVER_NONE; thumbs_reserve(false);
             if(starting_manual) objmenu_toast(T(S_VIZ_NO_DST));
             else saver_start(SAVER_DRIFT);
+            return;
+        }
+        if(k != SAVER_STAGE) {
+            /* a classic (0.32 / 0.33): drawn by LVGL inside our root, in its chosen look */
+            char key[48], look[32];
+            snprintf(key, sizeof(key), "viz-%s-look", saver_kind_code(k));
+            config_read(key, look, sizeof(look), "archer");
+            if(!classic_start(classic_kind_from_code(saver_kind_code(k)), look)) {
+                fprintf(stderr, "simpleton-ui: saver: %s unavailable, art drift instead\n", saver_kind_code(k));
+                kind = SAVER_NONE; thumbs_reserve(false);
+                saver_start(SAVER_DRIFT);
+                return;
+            }
+            lv_obj_remove_flag(root, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(root);
+            if(!timer) timer = lv_timer_create(tick, TICK_MS, NULL);
+            lv_timer_pause(timer);
+            fprintf(stderr, "simpleton-ui: saver: %s\n", saver_kind_code(k));
             return;
         }
         /* a visualizer (0.31): its own plane above the UI; the LVGL root stays hidden */
@@ -922,6 +970,8 @@ void saver_start(saver_kind_t k)
     if(k == SAVER_OFF) ground_set(0x000000, true);
     else if(k == SAVER_COVER) { ground_set(0x1A1612, true); last_poll_ms = 0; }
     else if(k == SAVER_BOUNCE) {
+        { char n[16]; config_read("viz-bounce-n", n, sizeof(n), "1000"); corner_every = atoi(n) > 1 ? atoi(n) : CORNER_EVERY;
+          const char * e = getenv("SIMPLETON_BOUNCE_EVERY"); if(e && atoi(e) > 1) corner_every = atoi(e); }
         libs_refresh();
         pick_set();
         ground_set(0x1A1612, true); last_poll_ms = 0;
@@ -945,13 +995,17 @@ void saver_start(saver_kind_t k)
     else fprintf(stderr, "simpleton-ui: saver: %s\n", saver_kind_code(k));
 }
 
+void saver_set_bounce_every(int n) { if(n > 1) corner_every = n; }
+
 void saver_stop(void)
 {
     if(kind == SAVER_NONE) return;
+    vizmenu_close();
     fprintf(stderr, "simpleton-ui: saver: ended\n");
     kind = SAVER_NONE;
     manual = false;
-    if(viz_active()) {
+    if(classic_active()) classic_stop();
+    else if(viz_active()) {
         viz_stop();
         if(!power_screen_off()) {                            /* the UI draws again, whole */
             lv_display_enable_invalidation(NULL, true);
@@ -992,7 +1046,7 @@ void saver_mpd_changed(void)
 }
 
 bool saver_manual(void) { return manual; }
-bool saver_kind_is_viz(saver_kind_t k) { return k == SAVER_STAGE; }
+bool saver_kind_is_viz(saver_kind_t k) { return k == SAVER_STAGE || k == SAVER_SPECTRUM || k == SAVER_METERS || k == SAVER_SCOPE || k == SAVER_SPECTROGRAM; }
 bool saver_active(void) { return kind != SAVER_NONE; }
 saver_kind_t saver_current(void) { return kind; }
 
@@ -1004,9 +1058,13 @@ saver_kind_t saver_kind_from_code(const char * code)
     if(strcmp(code, "palettes") == 0) return SAVER_PALETTES;
     if(strcmp(code, "bounce") == 0) return SAVER_BOUNCE;
     if(strcmp(code, "stage") == 0) return SAVER_STAGE;
+    if(strcmp(code, "spectrum") == 0) return SAVER_SPECTRUM;
+    if(strcmp(code, "meters") == 0) return SAVER_METERS;
+    if(strcmp(code, "scope") == 0) return SAVER_SCOPE;
+    if(strcmp(code, "spectrogram") == 0) return SAVER_SPECTROGRAM;
     return SAVER_OFF;
 }
 const char * saver_kind_code(saver_kind_t k)
 {
-    switch(k) { case SAVER_DRIFT: return "drift"; case SAVER_COVER: return "cover"; case SAVER_PALETTES: return "palettes"; case SAVER_BOUNCE: return "bounce"; case SAVER_STAGE: return "stage"; case SAVER_OFF: return "off"; default: return "none"; }
+    switch(k) { case SAVER_DRIFT: return "drift"; case SAVER_COVER: return "cover"; case SAVER_PALETTES: return "palettes"; case SAVER_BOUNCE: return "bounce"; case SAVER_STAGE: return "stage"; case SAVER_SPECTRUM: return "spectrum"; case SAVER_METERS: return "meters"; case SAVER_SCOPE: return "scope"; case SAVER_SPECTROGRAM: return "spectrogram"; case SAVER_OFF: return "off"; default: return "none"; }
 }

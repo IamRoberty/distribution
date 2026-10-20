@@ -34,8 +34,12 @@
 #define SIMPLETON_VIZ_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
-typedef enum { VIZ_NONE = 0, VIZ_SOUNDSTAGE } viz_kind_t;
+typedef enum { VIZ_NONE = 0, VIZ_SOUNDSTAGE, VIZ_FEED } viz_kind_t;   /* VIZ_FEED: the feed and analysis only, for a visualizer drawn by LVGL (classic.c, 0.32) */
+
+#define VIZ_BANDS 48        /* the classics' spectrum: 30 Hz - 18 kHz by log, four a grid column */
+#define VIZ_SPG_ROWS 240    /* the spectrogram's rows, the same range (0.33) */
 
 /* The display has a plane for it and the GPU libraries load. */
 bool viz_available(void);
@@ -49,6 +53,13 @@ bool viz_active(void);
 /* The player changed (main.c, on MPD's player event): the feed's format may
  * have, and the reader follows MPD's status "audio" (0.31g). */
 void viz_mpd_changed(void);
+
+/* For the classics (0.32): the spectrum's bands 0..1 (returns how many, 0
+ * when nothing runs) and the last moment's RMS levels 0..1. */
+int  viz_bands(float * out, int max);
+void viz_levels(float * l, float * r);
+int  viz_spectrogram(float * out, int max);                 /* the newest column, bottom row first (0.33) */
+int  viz_wave(int16_t * l, int16_t * r, int n);             /* the newest n samples (up to 4096), oldest first (0.33) */
 void viz_set_format(const char * audio);     /* "dsd64:2" / "96000:24:2"; ignored unless it parses */
 
 #endif

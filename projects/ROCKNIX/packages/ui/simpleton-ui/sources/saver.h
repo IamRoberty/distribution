@@ -26,14 +26,19 @@
 #define SIMPLETON_SAVER_H
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
-typedef enum { SAVER_NONE = 0, SAVER_OFF, SAVER_DRIFT, SAVER_COVER, SAVER_PALETTES, SAVER_BOUNCE, SAVER_STAGE, SAVER_KIND_COUNT } saver_kind_t;
+typedef enum { SAVER_NONE = 0, SAVER_OFF, SAVER_DRIFT, SAVER_COVER, SAVER_PALETTES, SAVER_BOUNCE, SAVER_STAGE, SAVER_SPECTRUM, SAVER_METERS, SAVER_SCOPE, SAVER_SPECTROGRAM, SAVER_KIND_COUNT } saver_kind_t;
 
 /* The visualizers (0.31, viz.h) run as kinds of screensaver so the
  * Visualization page and the TV's with-music rule start them like the rest;
  * they need music, so the nothing-playing chooser never offers them. */
 bool saver_kind_is_viz(saver_kind_t kind);
 void saver_mpd_changed(void);                 /* the player changed: a visualizer ends on a DST track (0.31j) */
+/* The playing album's colours for a classic's "record" look (classic.c, 0.32). */
+void saver_set_bounce_every(int n);          /* the developer's number, while Bounce runs (vizmenu, 0.32c) */
+bool saver_playing_colours(uint32_t * ground, uint32_t * bar, uint32_t * cap, char * file, size_t file_len);
 
 void         saver_create(void);
 void         saver_start(saver_kind_t kind);
@@ -43,7 +48,7 @@ void         saver_stop(void);
 bool         saver_active(void);
 saver_kind_t saver_current(void);
 
-/* The setting codes: "off", "drift", "cover", "palettes", "bounce", "stage". */
+/* The setting codes: "off", "drift", "cover", "palettes", "bounce", "stage", "spectrum", "meters", "scope", "spectrogram". */
 saver_kind_t saver_kind_from_code(const char * code);
 const char * saver_kind_code(saver_kind_t kind);
 

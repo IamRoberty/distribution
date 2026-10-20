@@ -17,6 +17,8 @@
  */
 #include "settings.h"
 #include "saver.h"
+#include "classic.h"
+#include "vizmenu.h"
 #include "config.h"
 #include "home.h"
 #include "input.h"
@@ -44,7 +46,7 @@
 #endif
 
 typedef enum { ROW_PAGE, ROW_TOGGLE, ROW_CHOICE, ROW_ACTION, ROW_TEXT, ROW_HUB } row_kind_t;
-typedef enum { CH_NONE, CH_THEME, CH_LANGUAGE, CH_SIZE, CH_SORT, CH_STYLE, CH_POWER } choice_kind_t;
+typedef enum { CH_NONE, CH_THEME, CH_LANGUAGE, CH_SIZE, CH_SORT, CH_STYLE, CH_POWER, CH_LOOK, CH_NUMBER, CH_DIR } choice_kind_t;
 
 #define MAX_ROWS     32
 #define MAX_CHOICES  32
@@ -75,6 +77,8 @@ static row_t rows[MAX_ROWS];
 static int row_count, focus;
 static int hub_focus;                /* the hub row a page was opened from: Back lands on it */
 static char page[32] = "hub";
+static char return_to[32];            /* the page Back goes to when one was opened from another than the hub (0.32) */
+static int  return_focus;             /* ...and the row it left from */
 static bool from_view;
 static bool active;
 static void (*restart_cb)(const char * page);
@@ -147,6 +151,31 @@ static int choice_index(const char * code)
     return 0;
 }
 
+/* The savers and visualizers, in the order the pages list them (0.32). */
+static const char * const saver_codes[] = { "stage", "spectrum", "meters", "scope", "spectrogram", "drift", "cover", "palettes", "bounce" };
+static const int          saver_ids[]   = { S_SET_SAVER_STAGE, S_SET_SAVER_SPECTRUM, S_SET_SAVER_METERS, S_SET_SAVER_SCOPE, S_SET_SAVER_SPECTROGRAM, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE };
+#define NSAVERS 9
+static bool saver_is_classic(const char * code) { return classic_kind_from_code(code) != CLASSIC_NONE; }
+static bool saver_is_viz_code(const char * code) { return saver_kind_is_viz(saver_kind_from_code(code)); }
+
+/* A classic's looks (classic.c) and the developer's bare number (Bounce). */
+static void look_choices(void)
+{
+    choice_count = classic_look_count() < MAX_CHOICES ? classic_look_count() : MAX_CHOICES;
+    for(int i = 0; i < choice_count; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", classic_look_code(i)); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T((str_id_t)classic_look_name_id(i))); }
+}
+static void dir_choices(void)
+{
+    choice_count = classic_spg_dir_count();
+    for(int i = 0; i < choice_count; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", classic_spg_dir_code(i)); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T((str_id_t)classic_spg_dir_name_id(i))); }
+}
+static void number_choices(void)
+{
+    static const int v[] = { 10, 50, 100, 250, 500, 1000, 2000, 5000 };
+    choice_count = 8;
+    for(int i = 0; i < 8; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%d", v[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%d", v[i]); }
+}
+
 /* The Power page's lists (0.18): seconds or minutes as the file holds them,
  * shown as "30 s" / "2 min" / "Never". */
 static void power_choices(const char * key)
@@ -165,9 +194,9 @@ static void power_choices(const char * key)
     static const int sleep_off[] = { 900, 3600, 14400, 0 };
     if(strcmp(key, "tv_idle_do") == 0 || strcmp(key, "tv_music_do") == 0) {
         /* the visualizers need music: only the with-music chooser offers them (Ian, 18 Oct) */
-        static const char * const codes[6] = { "off", "drift", "cover", "palettes", "bounce", "stage" };
-        static const int ids[6] = { S_SET_SAVER_OFF, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE, S_SET_SAVER_STAGE };
-        choice_count = strcmp(key, "tv_music_do") == 0 ? 6 : 5;
+        static const char * const codes[10] = { "off", "drift", "cover", "palettes", "bounce", "stage", "spectrum", "meters", "scope", "spectrogram" };
+        static const int ids[10] = { S_SET_SAVER_OFF, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE, S_SET_SAVER_STAGE, S_SET_SAVER_SPECTRUM, S_SET_SAVER_METERS, S_SET_SAVER_SCOPE, S_SET_SAVER_SPECTROGRAM };
+        choice_count = strcmp(key, "tv_music_do") == 0 ? 10 : 5;
         for(int i = 0; i < choice_count; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", codes[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(ids[i])); }
         return;
     }
@@ -354,7 +383,8 @@ static const char * group_title(const char * p)
     if(strcmp(p, "btdevices") == 0) return T(S_SET_BT_DEVICES);
     if(strcmp(p, "developer") == 0) return T(S_SET_DEVELOPER);
     if(strcmp(p, "tv") == 0) return T(S_SET_TV);
-    if(strcmp(p, "savers") == 0) return T(S_HOME_VISUALIZATION);
+    if(strcmp(p, "savers") == 0 || strcmp(p, "vizset") == 0) return T(S_HOME_VISUALIZATION);
+    if(strncmp(p, "viz-", 4) == 0) { for(int i = 0; i < NSAVERS; i++) if(strcmp(p + 4, saver_codes[i]) == 0) return T((str_id_t)saver_ids[i]); }
     return NULL;
 }
 
@@ -491,6 +521,7 @@ static void build_rows(void)
         add_page_row(T(S_SET_CONTROLS), "controls");
         add_page_row(T(S_SET_POWER), "power");
         add_page_row(T(S_SET_TV), "tv");
+        add_page_row(T(S_HOME_VISUALIZATION), "vizset");                  /* every saver and visualizer's look (0.32) */
         add_page_row(T(S_SET_SYSTEM), "system");
         add_row(ROW_TEXT, T(S_SET_VIEWS));
         for(int v = 0; v < HOME_VIEW_COUNT; v++) {
@@ -501,15 +532,49 @@ static void build_rows(void)
     }
     if(strcmp(page, "savers") == 0) {
         /* the Home shelf's Visualization tape (0.29b): the screensavers by
-         * hand, on either screen, until a press */
-        static const char * const codes[5] = { "stage", "drift", "cover", "palettes", "bounce" };
-        static const int ids[5] = { S_SET_SAVER_STAGE, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE };
-        for(int i = 0; i < 5; i++) {
-            row_t * r = add_row(ROW_ACTION, T(ids[i]));
+         * hand, on either screen, until a press; hold A opens one's
+         * options page first (Ian, 19 Oct 22:12) */
+        for(int i = 0; i < NSAVERS; i++) {
+            row_t * r = add_row(ROW_ACTION, T((str_id_t)saver_ids[i]));
             r->action = ACT_SAVER;
-            snprintf(r->key, sizeof(r->key), "%s", codes[i]);
+            snprintf(r->key, sizeof(r->key), "%s", saver_codes[i]);
         }
         add_row(ROW_TEXT, T(S_SET_SAVERS_NOTE))->value[0] = ' ';
+        { char h[160]; ui_strf(h, sizeof(h), S_SET_SAVERS_HOLD, "a", input_letter_select(), NULL); add_row(ROW_TEXT, h)->value[0] = ' '; }   /* "Hold A: with its menu" */
+        return;
+    }
+    if(strcmp(page, "vizset") == 0) {
+        /* Settings → Visualization (0.32): each one's own page */
+        for(int i = 0; i < NSAVERS; i++) { char to[32]; snprintf(to, sizeof(to), "viz-%s", saver_codes[i]); add_page_row(T((str_id_t)saver_ids[i]), to); }
+        return;
+    }
+    if(strncmp(page, "viz-", 4) == 0) {
+        /* one saver or visualizer: show it, and whatever it has to set */
+        const char * code = page + 4;
+        bool any = false;
+        if(saver_is_classic(code)) {
+            any = true;
+            char cur[32], key[48];
+            snprintf(key, sizeof(key), "viz-%s-look", code);
+            look_choices();
+            config_read(key, cur, sizeof(cur), "archer");
+            add_choice(T(S_SET_LOOK), key, CH_LOOK, cur);
+            if(strcmp(code, "spectrogram") == 0) {
+                dir_choices();
+                config_read("viz-spectrogram-dir", cur, sizeof(cur), "rtl");
+                add_choice(T(S_SET_DIRECTION), "viz-spectrogram-dir", CH_DIR, cur);
+            }
+        }
+        if(strcmp(code, "bounce") == 0 && config_read_bool("developer", false)) {
+            /* a number, nothing else (Ian, 19 Oct: "no explanation of what it's for") */
+            any = true;
+            char cur[32];
+            number_choices();
+            config_read("viz-bounce-n", cur, sizeof(cur), "1000");
+            add_choice("", "viz-bounce-n", CH_NUMBER, cur);
+        }
+        if(!any) add_row(ROW_TEXT, T(S_SET_NOTHING_TO_SET))->value[0] = ' ';
+        if(saver_is_viz_code(code)) add_row(ROW_TEXT, T(S_SET_VIZ_MUSIC_NOTE))->value[0] = ' ';
         return;
     }
     if(strcmp(page, "playback") == 0) {
@@ -801,6 +866,9 @@ static void step_choice(row_t * r, int dir)
     else if(r->choice == CH_SORT) sort_choices();
     else if(r->choice == CH_STYLE) style_choices();
     else if(r->choice == CH_POWER) power_choices(r->key);
+    else if(r->choice == CH_LOOK) look_choices();
+    else if(r->choice == CH_NUMBER) number_choices();
+    else if(r->choice == CH_DIR) dir_choices();
     if(choice_count < 2) return;
     r->index = (r->index + dir + choice_count) % choice_count;
     const choice_t * c = &choices[r->index];
@@ -812,6 +880,7 @@ static void step_choice(row_t * r, int dir)
      * are read at start-up: come straight back here with the new one */
     if(is_view_key(r->key)) { if(view_changed_cb) view_changed_cb(page); }
     else if(is_power_key(r->key)) power_reload_settings();      /* takes effect now, no restart */
+    else if(strncmp(r->key, "viz-", 4) == 0) { }                /* read at the next start (0.32) */
     else if(restart_cb) restart_cb(page);
 }
 
@@ -927,6 +996,7 @@ void settings_show(const char * p, bool fv)
     ui_colours_visit("settings");                                /* a visit: three colours dealt once, kept inside (0.25) */
     from_view = fv;
     hub_focus = 0;                   /* a fresh visit starts at the top */
+    return_to[0] = 0;
     open_page(p && p[0] ? p : "hub");
     lv_screen_load(scr);
 }
@@ -969,7 +1039,10 @@ set_result_t settings_handle_action(ui_action_t a)
         case ACT_SELECT:
             if(!r) return SET_HANDLED;
             switch(r->kind) {
-                case ROW_PAGE:   if(strcmp(page, "hub") == 0) hub_focus = focus; open_page(r->page); break;
+                case ROW_PAGE:
+                    if(strcmp(page, "hub") == 0) { hub_focus = focus; return_to[0] = 0; }
+                    else { snprintf(return_to, sizeof(return_to), "%s", page); return_focus = focus; }
+                    open_page(r->page); break;
                 case ROW_TOGGLE: flip_toggle(r); break;
                 case ROW_CHOICE: step_choice(r, 1); break;
                 case ROW_ACTION: run_action(r); break;
@@ -982,8 +1055,20 @@ set_result_t settings_handle_action(ui_action_t a)
                 const bt_device_t * d = bt_find(r->key);
                 if(d && d->paired) { bt_forget(d->mac); settings_bt_changed(); }
             }
+            if(r && r->kind == ROW_ACTION && r->action == ACT_SAVER && strcmp(page, "savers") == 0) {
+                /* hold A on the Visualization page: it starts with its menu over it (0.32c, Ian) */
+                saver_kind_t k = saver_kind_from_code(r->key);
+                saver_start_manual(k);
+                if(saver_current() == k && vizmenu_has_options(k)) vizmenu_open(k);
+            }
             return SET_HANDLED;
         case ACT_BACK:
+            if(return_to[0]) {
+                char to[32]; snprintf(to, sizeof(to), "%s", return_to); return_to[0] = 0;
+                open_page(to);
+                if(return_focus > 0 && return_focus < row_count && rows[return_focus].kind != ROW_TEXT) set_focus(return_focus);
+                return SET_HANDLED;
+            }
             if(strcmp(page, "hub") == 0 || from_view) return SET_EXIT;
             open_page("hub");
             if(hub_focus > 0 && hub_focus < row_count && rows[hub_focus].kind != ROW_TEXT) set_focus(hub_focus);
