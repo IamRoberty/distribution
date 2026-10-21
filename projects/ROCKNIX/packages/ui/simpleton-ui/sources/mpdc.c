@@ -644,6 +644,73 @@ bool mpd_output_set(const char * name, bool on)
     return simple_command(cmd);
 }
 
+/* The sync page's metronome (0.35a, Ian: "it is impossible to time it with
+ * regular music"). The click track has to come through MPD itself - that
+ * is the path being measured - and MPD only plays what its database knows,
+ * so: the queue is saved as a playlist, a folder holding the click is
+ * mounted as a storage of its own (patch 0004 allows folders under
+ * /var/media), indexed, the click queued and looped; on leaving everything
+ * is put back - the queue, the song, the position, the options. */
+#define SYNC_PLAYLIST "__simpleton-sync"
+#define SYNC_STORAGE  "sync-click"
+static struct { bool saved; int song; float elapsed; char state[8]; bool repeat, single, random; } sync_was;
+
+static bool wait_update_done(void)
+{
+    for(int i = 0; i < 100; i++) {                     /* up to 5 s */
+        if(!send_raw(&ui, "status\n")) return false;
+        char line[256]; bool updating = false;
+        for(;;) {
+            if(!read_line(&ui, line, sizeof(line))) return false;
+            if(strcmp(line, "OK") == 0) break;
+            if(strncmp(line, "ACK ", 4) == 0) return false;
+            if(strncmp(line, "updating_db:", 12) == 0) updating = true;
+        }
+        if(!updating) return true;
+        usleep(50000);
+    }
+    return false;
+}
+
+bool mpd_sync_begin(const char * dir)
+{
+    mpd_status_t st;
+    if(!mpd_status(&st)) return false;
+    sync_was.song = st.song; sync_was.elapsed = st.elapsed; snprintf(sync_was.state, sizeof(sync_was.state), "%s", st.state);
+    sync_was.repeat = st.repeat; sync_was.single = st.single; sync_was.random = st.random;
+    simple_command("rm \"" SYNC_PLAYLIST "\"");
+    sync_was.saved = st.playlistlength > 0 && simple_command("save \"" SYNC_PLAYLIST "\"");
+    char cmd[600];
+    snprintf(cmd, sizeof(cmd), "mount \"" SYNC_STORAGE "\" \"file://%s\"", dir);
+    simple_command(cmd);                                /* already mounted from a page left in a hurry: fine */
+    if(!simple_command("update \"" SYNC_STORAGE "\"")) { fprintf(stderr, "simpleton-ui: sync: the click folder could not be indexed\n"); return false; }
+    wait_update_done();
+    if(!simple_command("clear")) return false;
+    if(!simple_command("add \"" SYNC_STORAGE "/click.wav\"")) { fprintf(stderr, "simpleton-ui: sync: the click is not in MPD's database\n"); mpd_sync_end(); return false; }
+    simple_command("random 0"); simple_command("repeat 1"); simple_command("single 1");
+    if(before_play) before_play();
+    return simple_command("play 0");
+}
+
+void mpd_sync_end(void)
+{
+    simple_command("stop");
+    simple_command("clear");
+    if(sync_was.saved) { simple_command("load \"" SYNC_PLAYLIST "\""); simple_command("rm \"" SYNC_PLAYLIST "\""); }
+    simple_command("unmount \"" SYNC_STORAGE "\"");
+    char cmd[64];
+    snprintf(cmd, sizeof(cmd), "repeat %d", sync_was.repeat ? 1 : 0); simple_command(cmd);
+    snprintf(cmd, sizeof(cmd), "single %d", sync_was.single ? 1 : 0); simple_command(cmd);
+    snprintf(cmd, sizeof(cmd), "random %d", sync_was.random ? 1 : 0); simple_command(cmd);
+    if(sync_was.saved && sync_was.song >= 0) {
+        snprintf(cmd, sizeof(cmd), "play %d", sync_was.song); simple_command(cmd);
+        snprintf(cmd, sizeof(cmd), "seekcur %.1f", (double)sync_was.elapsed); simple_command(cmd);
+        if(strcmp(sync_was.state, "pause") == 0) simple_command("pause 1");
+        else if(strcmp(sync_was.state, "stop") == 0) simple_command("stop");
+    }
+    sync_was.saved = false;
+}
+
 bool mpd_seek_relative(float seconds)
 {
     char cmd[64];

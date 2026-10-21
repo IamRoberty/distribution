@@ -192,6 +192,7 @@ void vizmenu_handle_action(ui_action_t a)
         case ACT_SELECT:
         case ACT_BACK:
         case ACT_MENU:
+        case ACT_SETTINGS:                                    /* the button that opened it closes it */
             vizmenu_close();                                  /* the visualizer stays (Ian: select closes the box) */
             return;
         default:

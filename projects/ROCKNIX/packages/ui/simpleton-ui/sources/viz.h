@@ -56,6 +56,11 @@ void viz_mpd_changed(void);
 
 /* For the classics (0.32): the spectrum's bands 0..1 (returns how many, 0
  * when nothing runs) and the last moment's RMS levels 0..1. */
+/* The sync (0.35): the visuals' delay behind the feed, ms (the setting
+ * viz-delay, read at each start; set live from the sync page), and a count
+ * of beats heard so far (the sync page's light flips on each). */
+void     viz_set_delay_ms(int ms);
+unsigned viz_beats(void);
 int  viz_bands(float * out, int max);
 void viz_levels(float * l, float * r);
 int  viz_spectrogram(float * out, int max);                 /* the newest column, bottom row first (0.33) */

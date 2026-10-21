@@ -5,6 +5,7 @@
  */
 #define _GNU_SOURCE
 #include "viz.h"
+#include "config.h"
 #include "display.h"
 #include "layout.h"
 #include "mpdc.h"
@@ -27,6 +28,8 @@
 #define FIFO_PATH   "/tmp/simpleton-viz.fifo"
 #define FEED_NAME   "viz"
 static int   sr = 44100;              /* the analysis rate: the feed brought down to 44.1 or 48 kHz */
+static volatile int delay_samples;    /* the sync delay (0.35), in samples at sr */
+static int delay_ms_set = 400;
 #define FFT_N       4096
 #define HOP         1024
 #define ROWS        17                   /* at most; the board picks how many fit */
@@ -95,6 +98,7 @@ static int   row_k0[ROWS], row_k1[ROWS], row_count[ROWS];       /* each row's FF
 static float onset_hist[ONSET_HIST]; static int onset_n;
 static float prev_logmag[FFT_N / 2];
 static float band_max[ROWS];
+static float onset_mean; static int hops_since_beat; static volatile unsigned beats;
 static float sband_max[VIZ_BANDS];
 static int   sb_k0[VIZ_BANDS + 1];           /* the classics' band edges in FFT bins (set_rate) */
 static float spg_k[VIZ_SPG_ROWS];            /* the spectrogram rows' centre bins (fractional) */
@@ -126,6 +130,9 @@ static void analyse_hop(const int16_t * ring, int ring_len, int head)
         prev_logmag[k] = m;
         if(ml[k] + mr[k] > loudv) { loudv = ml[k] + mr[k]; loud = k; }
     }
+    /* a beat for the sync page (0.35): an onset well above the recent run of them */
+    onset_mean += (onset - onset_mean) * 0.05f;
+    if(onset > 2.2f * onset_mean && onset > 0.5f && hops_since_beat > 6) { beats++; hops_since_beat = 0; } else hops_since_beat++;
     if(onset_n < ONSET_HIST) onset_hist[onset_n++] = onset;
     else { memmove(onset_hist, onset_hist + 1, sizeof(float) * (ONSET_HIST - 1)); onset_hist[ONSET_HIST - 1] = onset; }
     pthread_mutex_lock(&an_lock);
@@ -237,6 +244,7 @@ static pthread_mutex_t fmt_lock = PTHREAD_MUTEX_INITIALIZER;
 static void set_rate(int rate)
 {
     sr = rate;
+    delay_samples = (int)((long)delay_ms_set * sr / 1000);
     for(int i = 0; i < nrows; i++) {
         row_k0[i] = (int)ceilf(row_lo(i) * FFT_N / sr); row_k1[i] = (int)ceilf(row_lo(i + 1) * FFT_N / sr);
         if(row_k0[i] < 1) row_k0[i] = 1;
@@ -354,13 +362,33 @@ static bool converter_setup(const feed_fmt_t * f)
     return true;
 }
 
+/* The delay (0.35): the feed runs ahead of what the DAC plays (MPD's output
+ * buffer, the DAC's own), so every sample waits here `delay_samples` before
+ * the analysis sees it - one setting (viz-delay, ms) for every visualizer.
+ * Changing it moves the read point: no reset, a hiccup in the picture at
+ * most. */
+#define DLINE_MAX (48000 * 6 / 5)                        /* 1.2 s at 48 kHz */
+static int16_t dline[DLINE_MAX * 2];
+static int dline_pos;
 static inline void emit(float l, float r)
 {
     l = l > 1 ? 1 : l < -1 ? -1 : l;
     r = r > 1 ? 1 : r < -1 ? -1 : r;
-    ring[2 * ring_head] = (int16_t)(l * 32767.0f); ring[2 * ring_head + 1] = (int16_t)(r * 32767.0f);
+    dline[2 * dline_pos] = (int16_t)(l * 32767.0f); dline[2 * dline_pos + 1] = (int16_t)(r * 32767.0f);
+    int d = delay_samples; if(d < 0) d = 0; if(d > DLINE_MAX - 1) d = DLINE_MAX - 1;
+    int rp = (dline_pos - d + DLINE_MAX) % DLINE_MAX;
+    dline_pos = (dline_pos + 1) % DLINE_MAX;
+    ring[2 * ring_head] = dline[2 * rp]; ring[2 * ring_head + 1] = dline[2 * rp + 1];
     ring_head = (ring_head + 1) % (FFT_N * 2);
     if(++hop_fill >= HOP) { hop_fill = 0; analyse_hop(ring, FFT_N * 2, ring_head); }
+}
+
+void viz_set_delay_ms(int ms)
+{
+    if(ms < 0) ms = 0;
+    if(ms > 1000) ms = 1000;
+    delay_ms_set = ms;
+    delay_samples = (int)((long)ms * sr / 1000);
 }
 
 /* one sample of the feed at its own rate (a byte's worth for DSD): low-passed and dropped to the analysis rate */
@@ -906,7 +934,9 @@ bool viz_start(viz_kind_t k)
     feed_off = false;
     mpd_set_before_change(before_change);
     memset(&an, 0, sizeof(an));
-    memset(band_max, 0, sizeof(band_max)); memset(sband_max, 0, sizeof(sband_max)); spg_max = 0; memset(prev_logmag, 0, sizeof(prev_logmag)); onset_n = 0;
+    memset(band_max, 0, sizeof(band_max)); memset(sband_max, 0, sizeof(sband_max)); spg_max = 0;
+    memset(dline, 0, sizeof(dline)); dline_pos = 0; onset_mean = 0; hops_since_beat = 0;
+    { char d[16]; config_read("viz-delay", d, sizeof(d), "400"); viz_set_delay_ms(atoi(d)); } memset(prev_logmag, 0, sizeof(prev_logmag)); onset_n = 0;
     { mpd_status_t st; memset(&fmt_next, 0, sizeof(fmt_next)); fmt_new = false;
       viz_set_format(mpd_status(&st) && st.audio[0] ? st.audio : "44100:16:2"); }       /* whatever plays now; the player's changes follow */
     if(gpu) { build_board(); build_kernels(); }
@@ -934,6 +964,8 @@ void viz_stop(void)
 }
 
 bool viz_active(void) { return running; }
+
+unsigned viz_beats(void) { return beats; }
 
 int viz_bands(float * out, int max)
 {

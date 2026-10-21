@@ -107,6 +107,8 @@ void power_key_event(int value);
  * Returns true when the press was spent waking the screen: the caller must
  * not act on it. X and Y (transport) are never spent: they work in the dark. */
 bool power_activity(ui_action_t a);
+/* A press that was handled without ending a visualizer (0.34: Now Playing, the menu): the idle clock restarts, nothing else. */
+void power_note_activity(void);
 
 /* The menu takes every action while it is up. */
 bool power_menu_active(void);

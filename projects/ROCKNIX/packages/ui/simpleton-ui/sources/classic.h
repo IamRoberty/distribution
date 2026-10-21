@@ -39,7 +39,8 @@ typedef enum { CLASSIC_NONE = 0, CLASSIC_SPECTRUM, CLASSIC_METERS, CLASSIC_SCOPE
 void classic_create(lv_obj_t * parent);                    /* once; `parent` is the saver's root */
 bool classic_start(classic_kind_t kind, const char * look); /* the feed on, the drawing timer up */
 void classic_stop(void);
-void classic_set_look(const char * look);                   /* while it runs: the picture changes at once (vizmenu, 0.32c) */
+void classic_set_look(const char * look);
+void classic_keep_colours(void);                           /* the next start keeps a dealt look's colours (0.34: back from Now Playing) */                   /* while it runs: the picture changes at once (vizmenu, 0.32c) */
 bool classic_active(void);
 classic_kind_t classic_kind_from_code(const char * code);     /* "spectrum" / "meters" / "scope" / "spectrogram" */
 

@@ -472,6 +472,8 @@ void power_keep_awake(unsigned holder, bool on)
     if(on) { screen_undim(); if(!screen_off && fading_out) blackout_end(); screen_set_off(false); }
 }
 
+void power_note_activity(void) { last_activity_ms = now_ms(); }
+
 static void activity_now(void)
 {
     last_activity_ms = now_ms();

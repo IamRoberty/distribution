@@ -158,10 +158,16 @@ static void record_colours(bool force)
     apply_colours();
 }
 
+static bool keep_colours;                   /* the next start keeps the dealt colours (a return from Now Playing) */
+void classic_keep_colours(void) { keep_colours = true; }
+
 static void set_look(const char * look)
 {
     int li = 0;
     for(int i = 0; i < NLOOKS; i++) if(look && strcmp(looks[i].code, look) == 0) li = i;
+    bool keep = keep_colours && strcmp(cur.code, looks[li].code) == 0 && looks[li].dealt;
+    keep_colours = false;
+    if(keep) return;                                                   /* the same deal as before the break */
     cur = looks[li];
     track_file[0] = 0;
     if(strcmp(cur.code, "archer") == 0) deal_colours();

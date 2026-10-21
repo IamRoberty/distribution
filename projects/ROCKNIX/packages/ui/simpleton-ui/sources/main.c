@@ -48,6 +48,8 @@
 #include "saver.h"
 #include "viz.h"
 #include "vizmenu.h"
+#include "sync.h"
+#include "classic.h"
 #include "keyboard.h"
 #include "objmenu.h"
 #include "display.h"
@@ -152,8 +154,12 @@ static void show_home(void);
 static void show_browser(void);
 static bool browser_folder_hook(const char * uri);
 
+static saver_kind_t viz_parked;           /* a visualizer put aside for Now Playing (0.34, Ian): Start or Back brings it back */
+static bool viz_resuming;
+
 static void leave_current(void)
 {
+    if(!viz_resuming) viz_parked = SAVER_NONE;              /* anywhere else from Now Playing: the visualizer is over */
     switch(cur) {
         case SCR_HOME:       home_hide(); break;
         case SCR_NOWPLAYING: nowplaying_hide(); break;
@@ -621,6 +627,22 @@ static void enter_notice(const char * title, const char * text)
 }
 
 /* Return from a screen that was entered from another. */
+static void go_back(void);
+
+/* Back from Now Playing to the visualizer that was put aside: the screen it
+ * was started from comes back under it, then it runs again as it was. */
+static void resume_viz(void)
+{
+    saver_kind_t k = viz_parked;
+    viz_parked = SAVER_NONE;
+    viz_resuming = true;
+    if(back_to == SCR_SETTINGS) { back_to = SCR_HOME; leave_current(); cur = SCR_SETTINGS; settings_show("savers", true); }   /* the Visualization page it came from */
+    else go_back();
+    viz_resuming = false;
+    classic_keep_colours();
+    saver_start_manual(k);
+}
+
 static void go_back(void)
 {
     screen_t to = back_to;
@@ -716,6 +738,31 @@ static void dispatch(ui_action_t a)
     /* so do the keyboard and the object menu (0.21) */
     if(keyboard_active()) { if(power_activity(a)) return; keyboard_handle_action(a); return; }
     if(objmenu_active()) { if(power_activity(a)) return; objmenu_handle_action(a); return; }
+    /* the sync page (0.35): Left/Right set the delay, Back leaves; pause and skip act */
+    if(sync_active()) {
+        power_activity(a);                                /* the metronome plays; no transport keys here (0.35a) */
+        sync_handle_action(a); return;
+    }
+    /* a running saver or visualizer (0.34, Ian): the Now Playing button
+     * shows Now Playing with the visualizer put aside - Start or Back there
+     * brings it back; the menu button opens its small menu over it. Any
+     * other key still ends it (power_activity) */
+    if(saver_active() && !vizmenu_active()) {
+        if(a == ACT_HOME) {
+            saver_kind_t k = saver_current(); bool manual = saver_manual();
+            power_note_activity();
+            saver_stop();
+            enter_nowplaying();
+            viz_parked = manual ? k : SAVER_NONE;
+            return;
+        }
+        if(a == ACT_MENU || a == ACT_SETTINGS) {               /* the settings button, or A held (Ian, 20 Oct 19:53) */
+            saver_kind_t k = saver_current();
+            power_note_activity();
+            if(vizmenu_has_options(k)) vizmenu_open(k);       /* nothing to set: the press does nothing */
+            return;
+        }
+    }
     /* a visualizer's menu over it (0.32c): pause and skip still act; the rest is the box's */
     if(vizmenu_active()) {
         if(a == ACT_PLAYPAUSE || a == ACT_NEXT || a == ACT_PREV || a == ACT_PLAY || a == ACT_PAUSE) { power_activity(a); transport(a); return; }
@@ -733,7 +780,8 @@ static void dispatch(ui_action_t a)
         case ACT_PLAY:      mpd_resume();       return;
         case ACT_PAUSE:     mpd_pause();        return;
         case ACT_HOME:
-            if(cur == SCR_NOWPLAYING) go_back(); else enter_nowplaying();
+            if(cur == SCR_NOWPLAYING) { if(viz_parked) resume_viz(); else go_back(); }
+            else enter_nowplaying();
             return;
         case ACT_HOMEPAGE:                      /* the F button (0.21a): Home from anywhere */
             if(cur != SCR_HOME) { folder_stack_clear(); back_to = SCR_HOME; show_home(); }
@@ -759,7 +807,7 @@ static void dispatch(ui_action_t a)
             home_handle_action(a);
             return;
         case SCR_NOWPLAYING:
-            if(nowplaying_handle_action(a) == NP_EXIT) go_back();
+            if(nowplaying_handle_action(a) == NP_EXIT) { if(viz_parked) resume_viz(); else go_back(); }
             return;
         case SCR_SETTINGS:
             if(settings_handle_action(a) == SET_EXIT) go_back();
@@ -1026,6 +1074,7 @@ int main(int argc, char ** argv)
     listpage_set_list_callback(open_list);
     objmenu_create(curation_changed);
     vizmenu_create();                        /* a visualizer's menu over it (0.32c) */
+    sync_create();                           /* the picture in time with the sound (0.35) */
     keyboard_create();                               /* naming mixtapes and collections (0.21a) */                /* A held: Favorite / Add to mixtape / Add to collection (0.21) */
     nowplaying_set_curation_callback(curation_changed);
     rows_create(open_artist, open_album, rows_exited, view_style_changed);   /* the Artists rows (0.20) */

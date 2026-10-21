@@ -162,6 +162,11 @@ bool mpd_previous(void);
 /* Called before next / previous / play / seek (0.31k: the visualizer's
  * feed goes off first, see viz.c). */
 void mpd_set_before_change(void (*cb)(void));
+/* The sync page's metronome (0.35a): the queue put aside, the click folder
+ * `dir` (under /var/media) mounted and indexed, the click looped; _end puts
+ * everything back. */
+bool mpd_sync_begin(const char * dir);
+void mpd_sync_end(void);
 bool mpd_output_set(const char * name, bool on);   /* an output by its mpd.conf name, on or off (0.31) */
 
 /* Relative seek within the current song (`seekcur +N` / `seekcur -N`). */

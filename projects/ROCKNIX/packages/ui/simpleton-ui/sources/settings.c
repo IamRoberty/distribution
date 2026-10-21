@@ -19,6 +19,7 @@
 #include "saver.h"
 #include "classic.h"
 #include "vizmenu.h"
+#include "sync.h"
 #include "config.h"
 #include "home.h"
 #include "input.h"
@@ -65,7 +66,7 @@ typedef struct {
     lv_obj_t *    val_label;
 } row_t;
 
-enum { ACT_SCAN = 1, ACT_BT_DEVICE = 2, ACT_RESET = 3, ACT_UPDATE = 4, ACT_VERSION = 5, ACT_SAVER = 6 };
+enum { ACT_SCAN = 1, ACT_BT_DEVICE = 2, ACT_RESET = 3, ACT_UPDATE = 4, ACT_VERSION = 5, ACT_SAVER = 6, ACT_SYNC = 7 };
 
 typedef struct { char code[32]; char name[96]; } choice_t;
 
@@ -544,7 +545,8 @@ static void build_rows(void)
         return;
     }
     if(strcmp(page, "vizset") == 0) {
-        /* Settings → Visualization (0.32): each one's own page */
+        /* Settings → Visualization (0.32): the sync page, then each one's own page */
+        add_row(ROW_ACTION, T(S_SYNC_TITLE))->action = ACT_SYNC;
         for(int i = 0; i < NSAVERS; i++) { char to[32]; snprintf(to, sizeof(to), "viz-%s", saver_codes[i]); add_page_row(T((str_id_t)saver_ids[i]), to); }
         return;
     }
@@ -934,6 +936,7 @@ static void run_action(row_t * r)
         return;
     }
     if(r->action == ACT_SAVER) { saver_start_manual(saver_kind_from_code(r->key)); return; }
+    if(r->action == ACT_SYNC) { sync_open(); return; }
     if(r->action == ACT_UPDATE) {
         objmenu_toast(T(S_SET_UPDATE_LATER));   /* installing comes with the image round (offline-updates-plan.md) */
         return;
