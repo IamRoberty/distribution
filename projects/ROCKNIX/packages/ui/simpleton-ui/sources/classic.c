@@ -165,7 +165,7 @@ static void set_look(const char * look)
 {
     int li = 0;
     for(int i = 0; i < NLOOKS; i++) if(look && strcmp(looks[i].code, look) == 0) li = i;
-    bool keep = keep_colours && strcmp(cur.code, looks[li].code) == 0 && looks[li].dealt;
+    bool keep = keep_colours && cur.code && strcmp(cur.code, looks[li].code) == 0 && looks[li].dealt;   /* cur.code: none before the first start */
     keep_colours = false;
     if(keep) return;                                                   /* the same deal as before the break */
     cur = looks[li];

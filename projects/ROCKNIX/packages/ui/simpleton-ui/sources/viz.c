@@ -364,7 +364,9 @@ static bool converter_setup(const feed_fmt_t * f)
 
 /* The delay (0.35): the feed runs ahead of what the DAC plays (MPD's output
  * buffer, the DAC's own), so every sample waits here `delay_samples` before
- * the analysis sees it - one setting (viz-delay, ms) for every visualizer.
+ * the analysis sees it - one setting for every visualizer, remembered per
+ * output (0.37: viz-delay-tv / viz-delay-handheld - Ian found the TV path
+ * ~200 ms longer than the handheld's; a unit's old viz-delay seeds both).
  * Changing it moves the read point: no reset, a hiccup in the picture at
  * most. */
 #define DLINE_MAX (48000 * 6 / 5)                        /* 1.2 s at 48 kHz */
@@ -381,6 +383,22 @@ static inline void emit(float l, float r)
     ring[2 * ring_head] = dline[2 * rp]; ring[2 * ring_head + 1] = dline[2 * rp + 1];
     ring_head = (ring_head + 1) % (FFT_N * 2);
     if(++hop_fill >= HOP) { hop_fill = 0; analyse_hop(ring, FFT_N * 2, ring_head); }
+}
+
+const char * viz_delay_key(void)
+{
+    static char key[32];
+    snprintf(key, sizeof(key), "viz-delay-%s", ui_screen_kind_name());
+    return key;
+}
+
+int viz_delay_setting(void)
+{
+    char old[16], d[16];
+    config_read("viz-delay", old, sizeof(old), ui_screen.kind == UI_SCREEN_TV ? "630" : "490");   /* Ian's by ear, 21 Oct: HDMI 630, handheld 490 */
+    config_read(viz_delay_key(), d, sizeof(d), old);
+    int ms = atoi(d); if(ms < 0) ms = 0; if(ms > 1000) ms = 1000;
+    return ms;
 }
 
 void viz_set_delay_ms(int ms)
@@ -522,6 +540,16 @@ typedef int32_t EGLint; typedef unsigned EGLBoolean; typedef unsigned GLenum; ty
 #define GL_COLOR_ATTACHMENT0 0x8CE0
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
 #define GL_RGBA8 0x8058
+#define GL_TEXTURE_2D 0x0DE1
+#define GL_TEXTURE_MIN_FILTER 0x2801
+#define GL_TEXTURE_MAG_FILTER 0x2800
+#define GL_TEXTURE_WRAP_S 0x2802
+#define GL_TEXTURE_WRAP_T 0x2803
+#define GL_LINEAR 0x2601
+#define GL_CLAMP_TO_EDGE 0x812F
+#define GL_SRC_ALPHA 0x0302
+#define GL_ONE_MINUS_SRC_ALPHA 0x0303
+#define GL_UNPACK_ALIGNMENT 0x0CF5
 #define EGL_LINUX_DMA_BUF_EXT 0x3270
 #define EGL_LINUX_DRM_FOURCC_EXT 0x3271
 #define EGL_DMA_BUF_PLANE0_FD_EXT 0x3272
@@ -626,6 +654,14 @@ static void (*p_glDeleteFramebuffers)(GLsizei, const GLuint *);
 static void (*p_glDeleteRenderbuffers)(GLsizei, const GLuint *);
 static void (*p_glDeleteProgram)(GLuint);
 static void (*p_glDeleteShader)(GLuint);
+static void (*p_glGenTextures)(GLsizei, GLuint *);
+static void (*p_glBindTexture)(GLenum, GLuint);
+static void (*p_glTexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
+static void (*p_glTexParameteri)(GLenum, GLenum, GLint);
+static void (*p_glDeleteTextures)(GLsizei, const GLuint *);
+static void (*p_glPixelStorei)(GLenum, GLint);
+static GLint (*p_glGetUniformLocation)(GLuint, const char *);
+static void (*p_glUniform1i)(GLint, GLint);
 
 static bool gl_loaded;
 static bool load_gl_more(void)
@@ -638,6 +674,8 @@ static bool load_gl_more(void)
     L(egl, eglDestroySurface); L(egl, eglDestroyContext); L(egl, eglTerminate); L(egl, eglGetProcAddress);
     L(gl, glGenFramebuffers); L(gl, glBindFramebuffer); L(gl, glGenRenderbuffers); L(gl, glBindRenderbuffer);
     L(gl, glFramebufferRenderbuffer); L(gl, glCheckFramebufferStatus); L(gl, glDeleteFramebuffers); L(gl, glDeleteRenderbuffers);
+    L(gl, glGenTextures); L(gl, glBindTexture); L(gl, glTexImage2D); L(gl, glTexParameteri); L(gl, glDeleteTextures); L(gl, glPixelStorei);
+    L(gl, glGetUniformLocation); L(gl, glUniform1i);
     L(gl, glDeleteProgram); L(gl, glDeleteShader);
 #undef L
     *(void **)&p_eglCreateImageKHR = p_eglGetProcAddress("eglCreateImageKHR");
@@ -682,6 +720,89 @@ static GLuint shader(GLenum kind, const char * src)
 /* Ian's ramp (18 Oct 19:46, amended 20:41): the visible spectrum over the
  * audible one - infrared at the bottom for the sub-bass, ultraviolet at the
  * top past 15 kHz, by log frequency. */
+/* Soundstage's looks (0.36, Ian's picks from the 21 Oct mock-ups): the
+ * original ramp by pitch, Amp 2000 (cyan low, giving way sooner, to a
+ * fluorescent pink), Fluoro (highlighter colours by pitch) and Fluoro sweep
+ * (the same across the stage, left to right). A bulb's colour is a
+ * constant: a look change recolours the vertices before the next frame. */
+typedef enum { STAGE_SPECTRUM = 0, STAGE_AMP2000, STAGE_FLUORO, STAGE_FLUORO_SWEEP } stage_look_t;
+static stage_look_t stage_look;
+static volatile bool recolour;
+static const char * const stage_look_codes[4] = { "spectrum", "amp2000", "fluoro", "fluoro-sweep" };
+static const uint32_t neon_cs[]   = { 0x4DDFF9, 0x3B93F0, 0x5171EC, 0x7660F3, 0x9456F0, 0xC251EE, 0xFF3BD6, 0xFF1FA8 };
+static const uint32_t fluoro_cs[] = { 0xCCFF00, 0x39FF14, 0x00FFC8, 0x00E5FF, 0xFF10F0, 0xFF2BB0, 0xFF6A00 };
+
+static void grad_rgb(const uint32_t * cs, int n, float t, float * r, float * g, float * b)
+{
+    if(t < 0) t = 0;
+    if(t > 1) t = 1;
+    float x = t * (n - 1); int i = (int)x; if(i >= n - 1) i = n - 2; float k = x - i;
+    uint32_t a = cs[i], c = cs[i + 1];
+    *r = (((a >> 16) & 255) * (1 - k) + ((c >> 16) & 255) * k) / 255.0f;
+    *g = (((a >> 8) & 255) * (1 - k) + ((c >> 8) & 255) * k) / 255.0f;
+    *b = ((a & 255) * (1 - k) + (c & 255) * k) / 255.0f;
+}
+
+static void ramp(float f, float * r, float * g, float * b);
+
+/* a bulb's colour for the look: by its row (0 = the bottom) or its stereo position */
+static void bulb_colour(int row, float pan, float f, float * r, float * g, float * b)
+{
+    float t = nrows > 1 ? (float)row / (nrows - 1) : 0;
+    switch(stage_look) {
+        case STAGE_AMP2000:      grad_rgb(neon_cs, 8, powf(t, 0.7f), r, g, b); break;
+        case STAGE_FLUORO:       grad_rgb(fluoro_cs, 7, t, r, g, b); break;
+        case STAGE_FLUORO_SWEEP: grad_rgb(fluoro_cs, 7, (pan + 1) / 2, r, g, b); break;
+        default:                 ramp(f, r, g, b); break;
+    }
+}
+
+static void stage_ground(float * r, float * g, float * b)
+{
+    switch(stage_look) {
+        case STAGE_AMP2000: *r = 0x0B / 255.0f; *g = 0x0F / 255.0f; *b = 0x1E / 255.0f; break;
+        case STAGE_FLUORO: case STAGE_FLUORO_SWEEP: *r = *g = *b = 0; break;
+        default: *r = 0.03f; *g = 0.03f; *b = 0.04f; break;
+    }
+}
+
+/* The overlay (0.36a): a picture laid over the board - the menu over
+ * Soundstage, which LVGL cannot composite itself while the visualizer owns
+ * the plane (no spare plane on the TV: takeover). RGBA rows, top first;
+ * its place as fractions of the screen. The GPU loop uploads it as a
+ * texture when it changes and draws it last, blended. NULL clears it. */
+static pthread_mutex_t ov_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint8_t * ov_px; static int ov_w, ov_h; static float ov_x0, ov_y0, ov_x1, ov_y1; static bool ov_dirty;
+
+void viz_set_overlay(uint8_t * rgba, int w, int h, float x0, float y0, float x1, float y1)
+{
+    pthread_mutex_lock(&ov_lock);
+    free(ov_px);
+    ov_px = rgba; ov_w = w; ov_h = h; ov_x0 = x0; ov_y0 = y0; ov_x1 = x1; ov_y1 = y1;
+    ov_dirty = true;
+    pthread_mutex_unlock(&ov_lock);
+}
+
+static const char * OVS =
+    "attribute vec2 a_pos;\n"
+    "attribute vec2 a_uv;\n"
+    "varying vec2 v_uv;\n"
+    "void main() { gl_Position = vec4(a_pos.x, -a_pos.y, 0.0, 1.0); v_uv = a_uv; }\n";   /* the same flip as the board: the buffer is read bottom-up */
+static const char * OFS =
+    "precision mediump float;\n"
+    "uniform sampler2D u_tex;\n"
+    "varying vec2 v_uv;\n"
+    "void main() { gl_FragColor = texture2D(u_tex, v_uv); }\n";
+
+void viz_set_stage_look(const char * code)
+{
+    stage_look_t l = STAGE_SPECTRUM;
+    for(int i = 0; i < 4; i++) if(code && strcmp(code, stage_look_codes[i]) == 0) l = (stage_look_t)i;
+    stage_look = l;
+    recolour = true;
+    fprintf(stderr, "simpleton-ui: viz: soundstage look %s\n", stage_look_codes[l]);
+}
+
 static void ramp(float f, float * r, float * g, float * b)
 {
     static const float fs[] = { 20, 35, 50, 100, 200, 500, 1000, 2000, 3000, 5000, 10000, 15000, 20000 };
@@ -726,7 +847,7 @@ static void build_board(void)
             bulb_t * b = &bulbs[nbulbs++];
             b->x = off + k * pitch; b->y = yc; b->r = d / 2; b->row = i;
             b->pan = (b->x - VW / 2.0f) / (VW / 2.0f);
-            ramp(f, &b->cr, &b->cg, &b->cb);
+            bulb_colour(i, b->pan, f, &b->cr, &b->cg, &b->cb);
         }
     }
 }
@@ -785,7 +906,7 @@ static void * gpu_thread(void * arg)
     const EGLint attr[] = { EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE };
     EGLConfig cfg; EGLint ncfg = 0;
     EGLSurface surf = NULL; EGLContext ctx = NULL;
-    GLuint vs = 0, fs = 0, prog = 0;
+    GLuint vs = 0, fs = 0, prog = 0, ovs = 0, ofs = 0, oprog = 0, otex = 0;
     if(!p_eglChooseConfig(dpy, attr, &cfg, 1, &ncfg) || ncfg < 1) { fprintf(stderr, "simpleton-ui: viz: no EGL config\n"); goto out; }
     { const EGLint pattr[] = { EGL_WIDTH, 16, EGL_HEIGHT, 16, EGL_NONE };            /* a token surface: we draw into our own buffers */
       surf = p_eglCreatePbufferSurface(dpy, cfg, pattr); }
@@ -799,6 +920,18 @@ static void * gpu_thread(void * arg)
     { GLint ok = 0; p_glGetProgramiv(prog, GL_LINK_STATUS, &ok); if(!ok) { fprintf(stderr, "simpleton-ui: viz: link failed\n"); goto out; } }
     p_glUseProgram(prog);
     GLint a_pos = p_glGetAttribLocation(prog, "a_pos"), a_uv = p_glGetAttribLocation(prog, "a_uv"), a_col = p_glGetAttribLocation(prog, "a_col");
+    /* the overlay's program and texture (0.36a) */
+    ovs = shader(GL_VERTEX_SHADER, OVS); ofs = shader(GL_FRAGMENT_SHADER, OFS);
+    if(!ovs || !ofs) goto out;
+    oprog = p_glCreateProgram(); p_glAttachShader(oprog, ovs); p_glAttachShader(oprog, ofs); p_glLinkProgram(oprog);
+    { GLint ok = 0; p_glGetProgramiv(oprog, GL_LINK_STATUS, &ok); if(!ok) { fprintf(stderr, "simpleton-ui: viz: overlay link failed\n"); goto out; } }
+    GLint o_pos = p_glGetAttribLocation(oprog, "a_pos"), o_uv = p_glGetAttribLocation(oprog, "a_uv"), o_tex = p_glGetUniformLocation(oprog, "u_tex");
+    p_glGenTextures(1, &otex); p_glBindTexture(GL_TEXTURE_2D, otex);
+    p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    p_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    float oq[6][4]; bool ov_on = false;
+    p_glUseProgram(prog);
 
     /* the two display buffers as render targets */
     GLuint fbo[2] = { 0, 0 }, rbo[2] = { 0, 0 }; void * img[2] = { NULL, NULL };
@@ -816,7 +949,7 @@ static void * gpu_thread(void * arg)
     }
     p_glViewport(0, 0, VW, VH);
     p_glEnable(GL_BLEND); p_glBlendFunc(GL_ONE, GL_ONE);
-    p_glClearColor(0.03f, 0.03f, 0.04f, 1);
+    { float gr, gg, gb; stage_ground(&gr, &gg, &gb); p_glClearColor(gr, gg, gb, 1); }
 
     float * verts = malloc((size_t)nbulbs * 6 * 8 * sizeof(float));
     float * bright = calloc((size_t)nbulbs, sizeof(float));
@@ -834,6 +967,15 @@ static void * gpu_thread(void * arg)
     int cur = 0; double next = now_s(), sec_t = next, draw_ms = 0; int frames = 0; frames_total = 0;
     while(!stop_flag) {
         double f0 = now_s();
+        if(recolour) {                                        /* a new look: the bulbs' colours, the ground */
+            recolour = false;
+            for(int i = 0; i < nbulbs; i++) {
+                bulb_t * b = &bulbs[i];
+                bulb_colour(b->row, b->pan, sqrtf(row_lo(b->row) * row_lo(b->row + 1)), &b->cr, &b->cg, &b->cb);
+                for(int v = 0; v < 6; v++) { float * o = verts + ((size_t)i * 6 + v) * 8; o[4] = b->cr; o[5] = b->cg; o[6] = b->cb; }
+            }
+            float gr, gg, gb; stage_ground(&gr, &gg, &gb); p_glClearColor(gr, gg, gb, 1);
+        }
         light_board(bright);
         for(int i = 0; i < nbulbs; i++) for(int v = 0; v < 6; v++) verts[((size_t)i * 6 + v) * 8 + 7] = bright[i];
         p_glBindFramebuffer(GL_FRAMEBUFFER, fbo[cur]);
@@ -843,6 +985,31 @@ static void * gpu_thread(void * arg)
         p_glVertexAttribPointer((GLuint)a_col, 4, GL_FLOAT, 0, 8 * sizeof(float), verts + 4);
         p_glEnableVertexAttribArray((GLuint)a_pos); p_glEnableVertexAttribArray((GLuint)a_uv); p_glEnableVertexAttribArray((GLuint)a_col);
         p_glDrawArrays(GL_TRIANGLES, 0, nbulbs * 6);
+        /* the overlay, if any: uploaded when it changed, drawn over the board */
+        pthread_mutex_lock(&ov_lock);
+        if(ov_dirty) {
+            ov_dirty = false;
+            ov_on = ov_px != NULL;
+            if(ov_on) {
+                p_glBindTexture(GL_TEXTURE_2D, otex);
+                p_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ov_w, ov_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, ov_px);
+                float x0 = ov_x0 * 2 - 1, x1 = ov_x1 * 2 - 1, y0 = 1 - ov_y0 * 2, y1 = 1 - ov_y1 * 2;   /* y0 the top */
+                float q[6][4] = { { x0, y0, 0, 0 }, { x1, y0, 1, 0 }, { x1, y1, 1, 1 }, { x0, y0, 0, 0 }, { x1, y1, 1, 1 }, { x0, y1, 0, 1 } };
+                memcpy(oq, q, sizeof(oq));
+            }
+        }
+        pthread_mutex_unlock(&ov_lock);
+        if(ov_on) {
+            p_glUseProgram(oprog);
+            p_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            p_glBindTexture(GL_TEXTURE_2D, otex); p_glUniform1i(o_tex, 0);
+            p_glVertexAttribPointer((GLuint)o_pos, 2, GL_FLOAT, 0, 4 * sizeof(float), &oq[0][0]);
+            p_glVertexAttribPointer((GLuint)o_uv, 2, GL_FLOAT, 0, 4 * sizeof(float), &oq[0][2]);
+            p_glEnableVertexAttribArray((GLuint)o_pos); p_glEnableVertexAttribArray((GLuint)o_uv);
+            p_glDrawArrays(GL_TRIANGLES, 0, 6);
+            p_glBlendFunc(GL_ONE, GL_ONE);
+            p_glUseProgram(prog);
+        }
         p_glFinish();
         display_viz_show(&vbuf[cur]);                       /* on screen; back when the display has it */
         cur ^= 1;
@@ -859,6 +1026,10 @@ static void * gpu_thread(void * arg)
     free(verts); free(bright);
     for(int i = 0; i < 2; i++) { if(fbo[i]) p_glDeleteFramebuffers(1, &fbo[i]); if(rbo[i]) p_glDeleteRenderbuffers(1, &rbo[i]); if(img[i] && p_eglDestroyImageKHR) p_eglDestroyImageKHR(dpy, img[i]); }
 out:
+    if(otex) p_glDeleteTextures(1, &otex);
+    if(oprog) p_glDeleteProgram(oprog);
+    if(ovs) p_glDeleteShader(ovs);
+    if(ofs) p_glDeleteShader(ofs);
     if(prog) p_glDeleteProgram(prog);
     if(vs) p_glDeleteShader(vs);
     if(fs) p_glDeleteShader(fs);
@@ -936,10 +1107,10 @@ bool viz_start(viz_kind_t k)
     memset(&an, 0, sizeof(an));
     memset(band_max, 0, sizeof(band_max)); memset(sband_max, 0, sizeof(sband_max)); spg_max = 0;
     memset(dline, 0, sizeof(dline)); dline_pos = 0; onset_mean = 0; hops_since_beat = 0;
-    { char d[16]; config_read("viz-delay", d, sizeof(d), "400"); viz_set_delay_ms(atoi(d)); } memset(prev_logmag, 0, sizeof(prev_logmag)); onset_n = 0;
+    viz_set_delay_ms(viz_delay_setting()); fprintf(stderr, "simpleton-ui: viz: delay %d ms (%s)\n", delay_ms_set, viz_delay_key()); memset(prev_logmag, 0, sizeof(prev_logmag)); onset_n = 0;
     { mpd_status_t st; memset(&fmt_next, 0, sizeof(fmt_next)); fmt_new = false;
       viz_set_format(mpd_status(&st) && st.audio[0] ? st.audio : "44100:16:2"); }       /* whatever plays now; the player's changes follow */
-    if(gpu) { build_board(); build_kernels(); }
+    if(gpu) { char lk[32]; config_read("viz-stage-look", lk, sizeof(lk), "spectrum"); viz_set_stage_look(lk); recolour = false; build_board(); build_kernels(); }
     else set_rate(sr);
     stop_flag = false; running = true; gpu_up = gpu;
     pthread_create(&audio_th, NULL, audio_thread, NULL);
@@ -960,6 +1131,7 @@ void viz_stop(void)
     if(!feed_off) mpd_output_set(FEED_NAME, false);
     feed_off = false;
     running = false; kind = VIZ_NONE;
+    viz_set_overlay(NULL, 0, 0, 0, 0, 0, 0);
     fprintf(stderr, "simpleton-ui: viz: ended (%d frames)\n", frames_total);
 }
 

@@ -60,6 +60,14 @@ void viz_mpd_changed(void);
  * viz-delay, read at each start; set live from the sync page), and a count
  * of beats heard so far (the sync page's light flips on each). */
 void     viz_set_delay_ms(int ms);
+const char * viz_delay_key(void);          /* "viz-delay-tv" / "viz-delay-handheld" (0.37) */
+int      viz_delay_setting(void);          /* the current output's delay from the settings (the old viz-delay seeds it) */
+/* Soundstage's look (0.36): "spectrum" (infrared to ultraviolet), "amp2000", "fluoro", "fluoro-sweep"; live. */
+void     viz_set_stage_look(const char * code);
+/* A picture over Soundstage (0.36a: its menu - LVGL cannot draw over the
+ * plane the visualizer owns): RGBA rows top first, taken over and freed
+ * here; its place as fractions of the screen (0..1). NULL clears it. */
+void     viz_set_overlay(uint8_t * rgba, int w, int h, float x0, float y0, float x1, float y1);
 unsigned viz_beats(void);
 int  viz_bands(float * out, int max);
 void viz_levels(float * l, float * r);

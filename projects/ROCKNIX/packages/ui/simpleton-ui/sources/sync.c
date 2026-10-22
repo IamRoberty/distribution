@@ -104,8 +104,7 @@ void sync_open(void)
     lv_obj_set_style_text_color(delay_l, lv_color_hex(c->sel), 0);
     lv_obj_set_style_text_color(help_l, lv_color_hex(c->ink), 0);
     lv_obj_set_style_text_color(footer, lv_color_hex(ui_mix(c->ground, c->ink, 70)), 0);
-    char cur[16]; config_read("viz-delay", cur, sizeof(cur), "400");
-    delay_ms = atoi(cur); if(delay_ms < 0) delay_ms = 0; if(delay_ms > 1000) delay_ms = 1000;
+    delay_ms = viz_delay_setting();                       /* this output's own (0.37) */
     show_delay();
     { char caps[64]; ui_caps(T(S_SYNC_DELAY), caps, sizeof(caps)); lv_label_set_text(name_l, caps); }
     { char hints[200]; snprintf(hints, sizeof(hints), LV_SYMBOL_LEFT LV_SYMBOL_RIGHT " %s  %s %s", T(S_HINT_CHANGE), input_letter_back(), T(S_HINT_BACK)); lv_label_set_text(footer, hints); }
@@ -155,7 +154,7 @@ void sync_handle_action(ui_action_t a)
             if(n == delay_ms) return;
             delay_ms = n;
             char v[16]; snprintf(v, sizeof(v), "%d", delay_ms);
-            config_write("viz-delay", v);
+            config_write(viz_delay_key(), v);
             viz_set_delay_ms(delay_ms);                      /* live */
             show_delay();
             return;

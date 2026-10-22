@@ -47,7 +47,7 @@
 #endif
 
 typedef enum { ROW_PAGE, ROW_TOGGLE, ROW_CHOICE, ROW_ACTION, ROW_TEXT, ROW_HUB } row_kind_t;
-typedef enum { CH_NONE, CH_THEME, CH_LANGUAGE, CH_SIZE, CH_SORT, CH_STYLE, CH_POWER, CH_LOOK, CH_NUMBER, CH_DIR } choice_kind_t;
+typedef enum { CH_NONE, CH_THEME, CH_LANGUAGE, CH_SIZE, CH_SORT, CH_STYLE, CH_POWER, CH_LOOK, CH_NUMBER, CH_DIR, CH_STAGELOOK } choice_kind_t;
 
 #define MAX_ROWS     32
 #define MAX_CHOICES  32
@@ -164,6 +164,13 @@ static void look_choices(void)
 {
     choice_count = classic_look_count() < MAX_CHOICES ? classic_look_count() : MAX_CHOICES;
     for(int i = 0; i < choice_count; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", classic_look_code(i)); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T((str_id_t)classic_look_name_id(i))); }
+}
+static void stagelook_choices(void)
+{
+    static const char * const c[4] = { "spectrum", "amp2000", "fluoro", "fluoro-sweep" };
+    static const int ids[4] = { S_LOOK_STAGE_SPECTRUM, S_LOOK_AMP2000, S_LOOK_FLUORO, S_LOOK_FLUORO_SWEEP };
+    choice_count = 4;
+    for(int i = 0; i < 4; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", c[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T((str_id_t)ids[i])); }
 }
 static void dir_choices(void)
 {
@@ -567,6 +574,13 @@ static void build_rows(void)
                 add_choice(T(S_SET_DIRECTION), "viz-spectrogram-dir", CH_DIR, cur);
             }
         }
+        if(strcmp(code, "stage") == 0) {
+            any = true;
+            char cur[32];
+            stagelook_choices();
+            config_read("viz-stage-look", cur, sizeof(cur), "spectrum");
+            add_choice(T(S_SET_LOOK), "viz-stage-look", CH_STAGELOOK, cur);
+        }
         if(strcmp(code, "bounce") == 0 && config_read_bool("developer", false)) {
             /* a number, nothing else (Ian, 19 Oct: "no explanation of what it's for") */
             any = true;
@@ -871,6 +885,7 @@ static void step_choice(row_t * r, int dir)
     else if(r->choice == CH_LOOK) look_choices();
     else if(r->choice == CH_NUMBER) number_choices();
     else if(r->choice == CH_DIR) dir_choices();
+    else if(r->choice == CH_STAGELOOK) stagelook_choices();
     if(choice_count < 2) return;
     r->index = (r->index + dir + choice_count) % choice_count;
     const choice_t * c = &choices[r->index];

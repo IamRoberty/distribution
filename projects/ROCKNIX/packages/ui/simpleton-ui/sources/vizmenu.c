@@ -11,6 +11,8 @@
 #include "layout.h"
 #include "strings.h"
 #include "theme.h"
+#include "viz.h"
+#include "saver.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,6 +58,11 @@ static void fill_options(saver_kind_t k)
             for(int i = 0; i < dn; i++) { dc[i] = classic_spg_dir_code(i); di[i] = classic_spg_dir_name_id(i); }
             add_choice_opt("viz-spectrogram-dir", S_SET_DIRECTION, "rtl", dn, dc, di, NULL);
         }
+    }
+    else if(k == SAVER_STAGE) {
+        static const char * const c[4] = { "spectrum", "amp2000", "fluoro", "fluoro-sweep" };
+        static const int ids[4] = { S_LOOK_STAGE_SPECTRUM, S_LOOK_AMP2000, S_LOOK_FLUORO, S_LOOK_FLUORO_SWEEP };
+        add_choice_opt("viz-stage-look", S_SET_LOOK, "spectrum", 4, c, ids, NULL);
     }
     else if(k == SAVER_BOUNCE && config_read_bool("developer", false)) {
         static const char * const v[] = { "10", "50", "100", "250", "500", "1000", "2000", "5000" };
@@ -113,12 +120,41 @@ static void render(void)
     }
 }
 
+/* Over Soundstage (0.36a) LVGL's picture never reaches the screen - the
+ * visualizer owns the plane - so the box is rendered here into a picture
+ * and handed to viz.c, which lays it over the board on the GPU. */
+static void hand_over(void)
+{
+#ifndef SIMPLETON_RIG_OVDUMP
+    if(!viz_active() || kind != SAVER_STAGE) return;
+#endif
+    lv_obj_update_layout(box);
+    lv_draw_buf_t * db = lv_snapshot_take(box, LV_COLOR_FORMAT_ARGB8888);
+    if(!db) { fprintf(stderr, "simpleton-ui: vizmenu: snapshot failed\n"); return; }
+    int w = (int)db->header.w, h = (int)db->header.h;
+    uint8_t * px = malloc((size_t)w * h * 4);
+    if(px) {
+        for(int y = 0; y < h; y++) {
+            const uint8_t * in = db->data + (size_t)y * db->header.stride; uint8_t * out = px + (size_t)y * w * 4;
+            for(int x = 0; x < w; x++) { out[4 * x] = in[4 * x + 2]; out[4 * x + 1] = in[4 * x + 1]; out[4 * x + 2] = in[4 * x]; out[4 * x + 3] = in[4 * x + 3]; }   /* BGRA in memory -> RGBA */
+        }
+        lv_area_t a; lv_obj_get_coords(box, &a);
+#ifdef SIMPLETON_RIG_OVDUMP
+        { FILE * f = fopen(SIMPLETON_RIG_OVDUMP, "wb"); if(f) { fprintf(f, "P6\n%d %d\n255\n", w, h); for(int i = 0; i < w * h; i++) { int al = px[4 * i + 3]; fputc(px[4 * i] * al / 255, f); fputc(px[4 * i + 1] * al / 255, f); fputc(px[4 * i + 2] * al / 255, f); } fclose(f); }
+          fprintf(stderr, "simpleton-ui: vizmenu: overlay %dx%d at %d,%d\n", w, h, a.x1, a.y1); }
+#endif
+        viz_set_overlay(px, w, h, (float)a.x1 / ui_screen.w, (float)a.y1 / ui_screen.h, (float)(a.x1 + w) / ui_screen.w, (float)(a.y1 + h) / ui_screen.h);
+    }
+    lv_draw_buf_destroy(db);
+}
+
 static void apply(const option_t * o)
 {
     config_write(o->key, o->codes[o->index]);
     fprintf(stderr, "simpleton-ui: vizmenu: %s = %s\n", o->key, o->codes[o->index]);
     /* the picture behind follows at once */
     if(strcmp(o->key, "viz-spectrogram-dir") == 0) classic_set_spg_dir(o->codes[o->index]);
+    else if(strcmp(o->key, "viz-stage-look") == 0) viz_set_stage_look(o->codes[o->index]);
     else if(strstr(o->key, "-look")) classic_set_look(o->codes[o->index]);
     else if(kind == SAVER_BOUNCE) saver_set_bounce_every(atoi(o->codes[o->index]));
 }
@@ -160,6 +196,7 @@ void vizmenu_open(saver_kind_t k)
     render();
     lv_obj_remove_flag(sheet, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(sheet);
+    hand_over();
 }
 
 void vizmenu_close(void)
@@ -167,6 +204,7 @@ void vizmenu_close(void)
     if(!active) return;
     active = false;
     lv_obj_add_flag(sheet, LV_OBJ_FLAG_HIDDEN);
+    if(kind == SAVER_STAGE) viz_set_overlay(NULL, 0, 0, 0, 0, 0, 0);
 }
 
 bool vizmenu_active(void) { return active; }
@@ -178,7 +216,7 @@ void vizmenu_handle_action(ui_action_t a)
         case ACT_DOWN:
             if(nopts < 2) return;
             focus = (focus + (a == ACT_DOWN ? 1 : -1) + nopts) % nopts;
-            render();
+            render(); hand_over();
             return;
         case ACT_LEFT:
         case ACT_RIGHT: {
@@ -186,7 +224,7 @@ void vizmenu_handle_action(ui_action_t a)
             if(o->n < 2) return;
             o->index = (o->index + (a == ACT_RIGHT ? 1 : -1) + o->n) % o->n;
             apply(o);
-            render();
+            render(); hand_over();
             return;
         }
         case ACT_SELECT:

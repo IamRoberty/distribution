@@ -639,7 +639,7 @@ static void resume_viz(void)
     if(back_to == SCR_SETTINGS) { back_to = SCR_HOME; leave_current(); cur = SCR_SETTINGS; settings_show("savers", true); }   /* the Visualization page it came from */
     else go_back();
     viz_resuming = false;
-    classic_keep_colours();
+    if(k != SAVER_STAGE) classic_keep_colours();              /* a classic keeps its deal (Soundstage left the flag set for the next classic: 0.36c crash) */
     saver_start_manual(k);
 }
 
@@ -751,8 +751,17 @@ static void dispatch(ui_action_t a)
         if(a == ACT_HOME) {
             saver_kind_t k = saver_current(); bool manual = saver_manual();
             power_note_activity();
-            saver_stop();
-            enter_nowplaying();
+            if(k == SAVER_STAGE) {
+                /* Soundstage holds the UI's plane (0.36c, Ian: the page it was
+                 * started from showed for a moment): Now Playing is drawn into
+                 * the UI's buffer first, unseen, so the plane comes back on it */
+                enter_nowplaying();
+                lv_display_enable_invalidation(NULL, true);
+                lv_obj_invalidate(lv_screen_active()); lv_obj_invalidate(lv_layer_top());
+                lv_refr_now(NULL);
+                saver_stop();
+            }
+            else { saver_stop(); enter_nowplaying(); }
             viz_parked = manual ? k : SAVER_NONE;
             return;
         }
