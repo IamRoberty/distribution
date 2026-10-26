@@ -29,7 +29,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef enum { SAVER_NONE = 0, SAVER_OFF, SAVER_DRIFT, SAVER_COVER, SAVER_PALETTES, SAVER_BOUNCE, SAVER_STAGE, SAVER_SPECTRUM, SAVER_METERS, SAVER_SCOPE, SAVER_SPECTROGRAM, SAVER_KIND_COUNT } saver_kind_t;
+typedef enum { SAVER_NONE = 0, SAVER_OFF, SAVER_DRIFT, SAVER_COVER, SAVER_PALETTES, SAVER_BOUNCE, SAVER_STAGE, SAVER_SPECTRUM, SAVER_METERS, SAVER_SCOPE, SAVER_SPECTROGRAM, SAVER_LINER, SAVER_KIND_COUNT } saver_kind_t;
 
 /* The visualizers (0.31, viz.h) run as kinds of screensaver so the
  * Visualization page and the TV's with-music rule start them like the rest;

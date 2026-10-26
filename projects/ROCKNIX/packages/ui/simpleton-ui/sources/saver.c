@@ -27,6 +27,7 @@
 #include "tiletext.h"
 #include "viz.h"
 #include "classic.h"
+#include "liner.h"
 #include "vizmenu.h"
 #include "config.h"
 #include "dst.h"
@@ -811,13 +812,46 @@ bool saver_playing_colours(uint32_t * ground, uint32_t * bar, uint32_t * cap, ch
     return true;
 }
 
+/* The Liner's art square (0.38): the playing album's cover at the full
+ * height on the TV's left, or the no-art tile dealt for it (Bounce's rule). */
+static void liner_art(const lib_source_t * s, int album, const char * title, const char * artist)
+{
+    if(ui_screen.w <= ui_screen.h * 5 / 4) return;                     /* the handheld: the sheet alone */
+    pieces_clear();
+    int side = ui_screen.h;
+    const lib_album_t * al = s && album >= 0 ? &s->lib.albums[album] : NULL;
+    int src = -1;
+    for(int i = 0; i < libs_count() && s; i++) if(libs_get(i) == s) src = i;
+    piece_t * p = al && al->has_art && al->thumb_sizes && src >= 0 ? spawn_cover_piece(src, album, side, 0, 0) : NULL;
+    if(p) return;
+    p = piece_new();
+    if(!p) return;
+    p->obj = lv_obj_create(root);
+    lv_obj_remove_style_all(p->obj);
+    lv_obj_set_size(p->obj, side, side);
+    lv_obj_set_pos(p->obj, 0, 0);
+    lv_obj_set_style_bg_opa(p->obj, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(p->obj, LV_OBJ_FLAG_SCROLLABLE);
+    bool noart = true; int letters = (int)strlen(al && al->title ? al->title : title ? title : "");
+    tile_style_t st; tilestyle_deal(rnd(), 1, 1, &noart, &letters, &st);
+    lv_obj_set_style_bg_color(p->obj, lv_color_hex(st.bg), 0);
+    lv_obj_t * k = ui_sign(p->obj);
+    ui_sign_colour(k, st.ink);
+    tiletext_t tt;
+    tiletext_make_lines(p->obj, side, al && al->title ? al->title : title ? title : "", al && al->artist ? al->artist : artist ? artist : "", &st, 3, &tt);
+    lv_obj_set_style_opa(p->obj, LV_OPA_TRANSP, 0);
+    fade(p->obj, 0, 255, FADE_IN_MS);
+}
+
 static void track_poll(void)
 {
     mpd_status_t st; const lib_source_t * s = NULL; int album = -1;
+    if(kind == SAVER_LINER) liner_mpd_changed();                          /* the page follows the queue (cheap when nothing moved) */
     if(!poll_track(&s, &album, &st)) return;
     const char * slash = strrchr(st.file, '/');
     const char * title = st.title[0] ? st.title : (slash ? slash + 1 : st.file);
     if(kind == SAVER_BOUNCE) { bounce_show(s, album, title, st.artist); return; }
+    if(kind == SAVER_LINER) { liner_art(s, album, title, st.artist); return; }
     if(!s || album < 0) {
         /* no album known: the ground alone, the file's name */
         fprintf(stderr, "simpleton-ui: saver: no album for %s\n", st.file);
@@ -857,7 +891,7 @@ static void tick(lv_timer_t * t)
             next_set_ms = now + (uint32_t)rnd_between(SET_MIN_MS, SET_MAX_MS);
         }
     }
-    else if((kind == SAVER_COVER || kind == SAVER_BOUNCE) && now - last_poll_ms >= COVER_POLL_MS) { last_poll_ms = now; track_poll(); }
+    else if((kind == SAVER_COVER || kind == SAVER_BOUNCE || kind == SAVER_LINER) && now - last_poll_ms >= COVER_POLL_MS) { last_poll_ms = now; track_poll(); }
 }
 
 /* ------------------------------------------------------------ public */
@@ -892,6 +926,7 @@ void saver_create(void)
     lv_obj_set_pos(boom_img, 0, 0);
     lv_obj_add_flag(boom_img, LV_OBJ_FLAG_HIDDEN);
     classic_create(root);
+    liner_create(root);
     ball_timer = lv_timer_create(ball_tick, BALL_FRAME_MS, NULL);
     lv_timer_pause(ball_timer);
     rnd_state = (unsigned)lv_tick_get() ^ 0x5bd1e995u;
@@ -969,6 +1004,12 @@ void saver_start(saver_kind_t k)
     }
     if(k == SAVER_OFF) ground_set(0x000000, true);
     else if(k == SAVER_COVER) { ground_set(0x1A1612, true); last_poll_ms = 0; }
+    else if(k == SAVER_LINER) {
+        /* the sheet beside the art square on the TV, the whole screen on the handheld (0.38) */
+        bool tv = ui_screen.w > ui_screen.h * 5 / 4;
+        ground_set(0x101010, true); last_poll_ms = 0; cover_file[0] = 0;
+        liner_start(tv ? ui_screen.h : 0, tv ? ui_screen.w - ui_screen.h : ui_screen.w);
+    }
     else if(k == SAVER_BOUNCE) {
         { char n[16]; config_read("viz-bounce-n", n, sizeof(n), "1000"); corner_every = atoi(n) > 1 ? atoi(n) : CORNER_EVERY;
           const char * e = getenv("SIMPLETON_BOUNCE_EVERY"); if(e && atoi(e) > 1) corner_every = atoi(e); }
@@ -1004,6 +1045,7 @@ void saver_stop(void)
     fprintf(stderr, "simpleton-ui: saver: ended\n");
     kind = SAVER_NONE;
     manual = false;
+    if(liner_active()) liner_stop();
     if(classic_active()) classic_stop();
     else if(viz_active()) {
         viz_stop();
@@ -1062,9 +1104,10 @@ saver_kind_t saver_kind_from_code(const char * code)
     if(strcmp(code, "meters") == 0) return SAVER_METERS;
     if(strcmp(code, "scope") == 0) return SAVER_SCOPE;
     if(strcmp(code, "spectrogram") == 0) return SAVER_SPECTROGRAM;
+    if(strcmp(code, "liner") == 0) return SAVER_LINER;
     return SAVER_OFF;
 }
 const char * saver_kind_code(saver_kind_t k)
 {
-    switch(k) { case SAVER_DRIFT: return "drift"; case SAVER_COVER: return "cover"; case SAVER_PALETTES: return "palettes"; case SAVER_BOUNCE: return "bounce"; case SAVER_STAGE: return "stage"; case SAVER_SPECTRUM: return "spectrum"; case SAVER_METERS: return "meters"; case SAVER_SCOPE: return "scope"; case SAVER_SPECTROGRAM: return "spectrogram"; case SAVER_OFF: return "off"; default: return "none"; }
+    switch(k) { case SAVER_DRIFT: return "drift"; case SAVER_COVER: return "cover"; case SAVER_PALETTES: return "palettes"; case SAVER_BOUNCE: return "bounce"; case SAVER_STAGE: return "stage"; case SAVER_SPECTRUM: return "spectrum"; case SAVER_METERS: return "meters"; case SAVER_SCOPE: return "scope"; case SAVER_SPECTROGRAM: return "spectrogram"; case SAVER_LINER: return "liner"; case SAVER_OFF: return "off"; default: return "none"; }
 }

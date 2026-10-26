@@ -20,7 +20,7 @@
 
 #define MAX_OPTS 2
 
-typedef struct { char key[48]; int label_id; int n; char codes[12][16]; char names[12][48]; int index; } option_t;
+typedef struct { char key[48]; int label_id; int n; char codes[16][16]; char names[16][48]; int index; } option_t;
 
 static lv_obj_t * sheet, * box, * keyline, * header, * rule, * name_l[MAX_OPTS], * value_l[MAX_OPTS];
 static saver_kind_t kind;
@@ -36,12 +36,12 @@ static void add_choice_opt(const char * key, int label_id, const char * def, int
     snprintf(o->key, sizeof(o->key), "%s", key);
     o->label_id = label_id;
     char cur[32]; config_read(key, cur, sizeof(cur), def);
-    for(int i = 0; i < n && i < 12; i++) {
+    for(int i = 0; i < n && i < 16; i++) {
         snprintf(o->codes[i], sizeof(o->codes[0]), "%s", codes[i]);
         snprintf(o->names[i], sizeof(o->names[0]), "%s", name_ids ? T((str_id_t)name_ids[i]) : names[i]);
         if(strcmp(cur, codes[i]) == 0) o->index = i;
     }
-    o->n = n < 12 ? n : 12;
+    o->n = n < 16 ? n : 16;
 }
 
 static void fill_options(saver_kind_t k)
@@ -50,7 +50,7 @@ static void fill_options(saver_kind_t k)
     const char * code = saver_kind_code(k);
     if(classic_kind_from_code(code) != CLASSIC_NONE) {
         char key[48]; snprintf(key, sizeof(key), "viz-%s-look", code);
-        const char * codes[12]; int ids[12]; int n = classic_look_count() < 12 ? classic_look_count() : 12;
+        const char * codes[16]; int ids[16]; int n = classic_look_count() < 16 ? classic_look_count() : 16;
         for(int i = 0; i < n; i++) { codes[i] = classic_look_code(i); ids[i] = classic_look_name_id(i); }
         add_choice_opt(key, S_SET_LOOK, "archer", n, codes, ids, NULL);
         if(k == SAVER_SPECTROGRAM) {
@@ -60,9 +60,12 @@ static void fill_options(saver_kind_t k)
         }
     }
     else if(k == SAVER_STAGE) {
-        static const char * const c[4] = { "spectrum", "amp2000", "fluoro", "fluoro-sweep" };
-        static const int ids[4] = { S_LOOK_STAGE_SPECTRUM, S_LOOK_AMP2000, S_LOOK_FLUORO, S_LOOK_FLUORO_SWEEP };
-        add_choice_opt("viz-stage-look", S_SET_LOOK, "spectrum", 4, c, ids, NULL);
+        static const char * const c[6] = { "spectrum", "amp2000", "fluoro", "fluoro-sweep", "sunset", "twilight" };
+        static const int ids[6] = { S_LOOK_STAGE_SPECTRUM, S_LOOK_AMP2000, S_LOOK_FLUORO, S_LOOK_FLUORO_SWEEP, S_LOOK_SUNSET, S_LOOK_TWILIGHT };
+        add_choice_opt("viz-stage-look", S_SET_LOOK, "spectrum", 6, c, ids, NULL);
+        static const char * const g[3] = { "off", "soft", "bright" };
+        static const int gids[3] = { S_GLOW_OFF, S_GLOW_SOFT, S_GLOW_BRIGHT };
+        add_choice_opt("viz-stage-glow", S_SET_GLOW, "soft", 3, g, gids, NULL);
     }
     else if(k == SAVER_BOUNCE && config_read_bool("developer", false)) {
         static const char * const v[] = { "10", "50", "100", "250", "500", "1000", "2000", "5000" };
@@ -88,7 +91,7 @@ static void render(void)
     lv_obj_align(box, LV_ALIGN_BOTTOM_MID, 0, -PX(40));                 /* low, so the picture shows */
     char caps[120];
     int tid = kind == SAVER_SPECTRUM ? S_SET_SAVER_SPECTRUM : kind == SAVER_METERS ? S_SET_SAVER_METERS : kind == SAVER_SCOPE ? S_SET_SAVER_SCOPE :
-              kind == SAVER_SPECTROGRAM ? S_SET_SAVER_SPECTROGRAM : kind == SAVER_BOUNCE ? S_SET_SAVER_BOUNCE : S_HOME_VISUALIZATION;
+              kind == SAVER_SPECTROGRAM ? S_SET_SAVER_SPECTROGRAM : kind == SAVER_LINER ? S_SET_SAVER_LINER : kind == SAVER_BOUNCE ? S_SET_SAVER_BOUNCE : S_HOME_VISUALIZATION;
     ui_caps(T((str_id_t)tid), caps, sizeof(caps));
     lv_label_set_text(header, caps);
     lv_obj_set_size(header, w - 2 * in, lv_font_get_line_height(ui_font_caps(20)) + 2);
@@ -155,6 +158,7 @@ static void apply(const option_t * o)
     /* the picture behind follows at once */
     if(strcmp(o->key, "viz-spectrogram-dir") == 0) classic_set_spg_dir(o->codes[o->index]);
     else if(strcmp(o->key, "viz-stage-look") == 0) viz_set_stage_look(o->codes[o->index]);
+    else if(strcmp(o->key, "viz-stage-glow") == 0) viz_set_stage_glow(o->codes[o->index]);
     else if(strstr(o->key, "-look")) classic_set_look(o->codes[o->index]);
     else if(kind == SAVER_BOUNCE) saver_set_bounce_every(atoi(o->codes[o->index]));
 }

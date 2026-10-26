@@ -30,6 +30,7 @@
 #include "libs.h"
 #include "objmenu.h"
 #include "mpdc.h"
+#include "playthrough.h"
 #include "picker.h"
 #include "strings.h"
 #include "theme.h"
@@ -562,6 +563,7 @@ static void play_from(int index)
     }
     placeholder_prefer_tracks_begin();            /* no view's colours: the theme's rotation (0.23e) */
     bool started = n && mpd_play_uris(uris, n, start);
+    if(started) playthrough_note_mixtape(0);
     free(uris);
     if(started && play_cb) play_cb();
 }

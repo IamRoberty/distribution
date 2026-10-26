@@ -14,6 +14,7 @@
  * Measurements: TV rows in 1080ths of the stage (tvpx), handheld rows in
  * stage units (PX), like the album page.
  */
+#include "liner.h"
 #include "listpage.h"
 #include "art.h"
 #include "artists.h"
@@ -41,6 +42,7 @@
 
 #include <pthread.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -138,6 +140,9 @@ static const list_memory_t * memory_find(void)
     return NULL;
 }
 static lv_obj_t * shelf;          /* the Mixtapes shelf (0.21a), NULL otherwise */
+static liner_sheet_t * sheet;     /* a mixtape's track list on ruled paper (0.38a), NULL otherwise */
+static liner_row_t * sheet_rows;
+static int sheet_first;           /* the page's first item */
 static unsigned seed;
 static int  sel;                 /* -1 = the jump row */
 static int  playing;             /* item index, -1 none */
@@ -1651,7 +1656,13 @@ static void pic_render(const char * design, int key, const char * l1, const char
     const tile_font_t * f = st->font != TILE_FONT_NONE ? tilestyle_font(st->font) : NULL;
     snprintf(j->font, sizeof(j->font), "%s", f ? f->file : "");
     j->caps = f ? f->caps : false;
-    if(kind == LIST_MIXTAPE && key == -1) { snprintf(j->font, sizeof(j->font), "*PermanentMarker-Regular.ttf"); j->caps = false; }   /* a mixtape's own tape: the marker's hand (Ian, 15 Oct) */
+    if(kind == LIST_MIXTAPE && key == -1) {                   /* a mixtape's own tape: its hand (Ian, 15 Oct; dealt per mixtape 0.38) */
+        char mk[96] = ""; curation_key(list_uid, mk, sizeof(mk));
+        const mix_hand_t * h = tilestyle_hand_for(mk);
+        snprintf(j->font, sizeof(j->font), "*%.62s", h ? h->file : "PermanentMarker-Regular.ttf");
+        j->caps = h && h->letter_case == HAND_UPPER;
+        if(h && h->letter_case == HAND_LOWER) { for(char * c = j->l1; *c; c++) *c = (char)tolower((unsigned char)*c); for(char * c = j->l2; *c; c++) *c = (char)tolower((unsigned char)*c); for(char * c = j->l3; *c; c++) *c = (char)tolower((unsigned char)*c); }
+    }
     pthread_t th;
     if(pthread_create(&th, NULL, pic_thread, j) != 0) { free(j); return; }
     pthread_detach(th);
@@ -1908,6 +1919,7 @@ static void set_section(int section)
 }
 
 static void set_sel_dir(int i, int dir, bool anim);
+static void sheet_write(void);
 static void set_sel(int i, bool anim) { set_sel_dir(i, 0, anim); }
 
 /* `dir`: which way to step off an album's break row (+1 down, -1 up); 0 =
@@ -1988,11 +2000,13 @@ static void select_item(void)
             bool started = playthrough_play_list(uris, n, start);
             free(uris);
             if(started) {
+                if(kind == LIST_MIXTAPE) playthrough_note_mixtape(list_uid);   /* the Liner saver writes it in the mixtape's hand (0.38) */
                 int was = playing;
                 playing = sel;
                 row_t * a = row_of(was), * b = row_of(sel);
                 if(a) row_style(a);                /* the mark leaves the track played before (Ian, 13 Oct) */
                 if(b) row_style(b);
+                sheet_write();
                 host_strip();                      /* the TV: now-playing's strip pops up over the square (0.23f) */
                 if(play_cb) play_cb();
             }
@@ -2291,7 +2305,18 @@ static bool shelf_build(void)
     /* a different tape for each mixtape, round the theme's collection
      * (Ian, 15 Oct), every one in the marker's face; dealt from the
      * visit's seed so neighbours differ */
-    for(int i = 0; i < nitems; i++) { its[i] = tapes[(int)((seed / 7 + (unsigned)i) % (unsigned)ntapes)]; its[i].label = item_title(i); }
+    for(int i = 0; i < nitems; i++) {
+        its[i] = tapes[(int)((seed / 7 + (unsigned)i) % (unsigned)ntapes)]; its[i].label = item_title(i);
+        /* ...each in its own hand (0.38): dealt from the mixtape's key and kept */
+        const cur_list_t * l = list_of(i); char key[96] = "";
+        if(l) curation_key(l->uid, key, sizeof(key));
+        const mix_hand_t * h = tilestyle_hand_for(key);
+        if(h) {
+            snprintf(its[i].font, sizeof(its[i].font), "%s", h->file);
+            its[i].letter_case = h->letter_case == HAND_UPPER ? SHELF_CASE_UPPER : h->letter_case == HAND_LOWER ? SHELF_CASE_LOWER : SHELF_CASE_AS_IS;
+            its[i].size_pt = its[i].size_pt * h->size_pct / 100;
+        }
+    }
     shelf = shelf_create(scr, &st);
     bool ok = shelf && shelf_set_items(shelf, its, nitems, sel < 0 ? 0 : sel);
     free(its);
@@ -2303,10 +2328,50 @@ static bool shelf_build(void)
     return true;
 }
 
+/* A mixtape's tracks on ruled paper (0.38a, Ian's design of 24-25 Oct):
+ * the sheet takes the list's place - beside the cassette on the TV, the
+ * whole screen on the handheld - in the mixtape's own hand. Up/Down along
+ * the seven, Left/Right a page; the selected track in the sheet's colour,
+ * the playing one with the triangle. */
+static void sheet_drop(void)
+{
+    if(sheet) { liner_sheet_delete(sheet); sheet = NULL; }
+    free(sheet_rows); sheet_rows = NULL;
+}
+
+static void sheet_write(void)
+{
+    if(!sheet) return;
+    if(sel >= 0) sheet_first = sel / 7 * 7;
+    liner_sheet_write(sheet, sheet_rows, nitems, sheet_first, sel, playing);
+}
+
+static bool sheet_build(void)
+{
+    sheet_drop();
+    if(kind != LIST_MIXTAPE || nitems == 0) return false;
+    sheet_rows = calloc((size_t)nitems, sizeof(liner_row_t));
+    if(!sheet_rows) return false;
+    for(int i = 0; i < nitems; i++) { sheet_rows[i].title = item_title(i); sheet_rows[i].artist = item_artist(i); }
+    sheet = liner_sheet_create(scr);
+    if(!sheet) { free(sheet_rows); sheet_rows = NULL; return false; }
+    liner_sheet_place(sheet, fx, 0, fw, ui_screen.h);
+    char mk[96] = ""; curation_key(list_uid, mk, sizeof(mk));
+    const mix_hand_t * h = tilestyle_hand_for(mk);
+    liner_sheet_deal(sheet, seed, h ? h->file : NULL, h ? h->letter_case : HAND_MIXED, h ? h->size_pct : 100);
+    if(sel < 0) sel = 0;
+    sheet_write();
+    lv_obj_add_flag(field, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(jump_row, LV_OBJ_FLAG_HIDDEN);
+    liner_sheet_show(sheet, true);
+    return true;
+}
+
 static void rebuild(void)
 {
     rows_clear();
     shelf_drop();
+    sheet_drop();
     lv_obj_remove_flag(field, LV_OBJ_FLAG_HIDDEN);
     measure();
     build_sections();
@@ -2366,6 +2431,7 @@ static void rebuild(void)
     plm.x = fx; plm.y = top_y + jump_h; plm.w = fw; plm.h = field_hh();
     picker_relayout(&plm);
     if(shelf_build()) return;
+    if(sheet_build()) { square_update(); return; }
     square_update();
 }
 
@@ -2670,6 +2736,7 @@ void listpage_hide(void)
     thumbs_want(NULL, 0);
     rows_clear();
     shelf_drop();
+    sheet_drop();
     pic_drop();
     art_free();
     notile_drop();
@@ -2723,6 +2790,7 @@ void listpage_mpd_changed(void)
         row_t * a = row_of(was), * b = row_of(playing);
         if(a) row_style(a);
         if(b) row_style(b);
+        sheet_write();
     }
 }
 
@@ -2763,6 +2831,20 @@ void listpage_handle_action(ui_action_t a)
         return;
     }
     if(nitems == 0) { if(a == ACT_BACK && exit_cb) exit_cb(); return; }
+    if(sheet) {
+        /* a mixtape's sheet: Up/Down along it (round the ends), Left/Right a page of seven */
+        int n = nitems;
+        switch(a) {
+            case ACT_UP:    sel = (sel - 1 + n) % n; sheet_write(); square_update(); return;
+            case ACT_DOWN:  sel = (sel + 1) % n; sheet_write(); square_update(); return;
+            case ACT_LEFT:  sel = sel / 7 * 7 - 7; if(sel < 0) sel = (n - 1) / 7 * 7; sheet_write(); square_update(); return;
+            case ACT_RIGHT: sel = sel / 7 * 7 + 7; if(sel >= n) sel = 0; sheet_write(); square_update(); return;
+            case ACT_SELECT: select_item(); return;
+            case ACT_MENU:   menu_item(); return;
+            case ACT_BACK:   if(exit_cb) exit_cb(); return;
+            default: return;
+        }
+    }
     if(shelf) {
         /* the Mixtapes shelf: the tapes take the D-pad */
         if(shelf_handle_action(shelf, a)) { sel = shelf_selected(shelf); return; }

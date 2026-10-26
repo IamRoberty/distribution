@@ -242,4 +242,17 @@ const tile_font_t *  tilestyle_liner(int i);
 int                  tilestyle_liner_index(const char * file);   /* -1 = not listed */
 int                  tilestyle_liner_pick(unsigned seed);         /* by share; -1 = none listed */
 
+/* The mixtape hands (0.38, 25 Oct, Ian): the handwriting faces a mixtape
+ * may be written in - on its tape on the mixtapes shelf, its cassette on
+ * the list page and the Liner saver's list, all the same hand, as if one
+ * person wrote them. One line each in the theme:
+ *   mixhand <file> upper|lower|mixed [size=N]
+ * `size` scales the face (percent; a light script needs more). A mixtape's
+ * hand is dealt from its key and never changes. */
+typedef enum { HAND_MIXED = 0, HAND_UPPER, HAND_LOWER } hand_case_t;
+typedef struct { char file[64]; hand_case_t letter_case; int size_pct; } mix_hand_t;
+int                  tilestyle_hand_count(void);
+const mix_hand_t *   tilestyle_hand(int i);
+const mix_hand_t *   tilestyle_hand_for(const char * key);     /* NULL when the theme lists none */
+
 #endif

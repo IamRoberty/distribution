@@ -35,9 +35,14 @@ static void list_drop(void)
     list_active = false;
 }
 
+static int playing_mixtape;
+void playthrough_note_mixtape(int uid) { playing_mixtape = uid; }
+int  playthrough_playing_mixtape(void) { return playing_mixtape; }
+
 bool playthrough_play_list(const char ** uris, int n, int start)
 {
     if(!uris || n <= 0 || start < 0 || start >= n) return false;
+    playing_mixtape = 0;
     list_drop();
     list_uris = calloc((size_t)n, sizeof(char *));
     if(!list_uris) return false;

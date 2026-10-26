@@ -64,6 +64,8 @@ const char * viz_delay_key(void);          /* "viz-delay-tv" / "viz-delay-handhe
 int      viz_delay_setting(void);          /* the current output's delay from the settings (the old viz-delay seeds it) */
 /* Soundstage's look (0.36): "spectrum" (infrared to ultraviolet), "amp2000", "fluoro", "fluoro-sweep"; live. */
 void     viz_set_stage_look(const char * code);
+/* Soundstage's glow (0.39): "off", "soft", "bright"; live. */
+void     viz_set_stage_glow(const char * code);
 /* A picture over Soundstage (0.36a: its menu - LVGL cannot draw over the
  * plane the visualizer owns): RGBA rows top first, taken over and freed
  * here; its place as fractions of the screen (0..1). NULL clears it. */

@@ -47,7 +47,7 @@
 #endif
 
 typedef enum { ROW_PAGE, ROW_TOGGLE, ROW_CHOICE, ROW_ACTION, ROW_TEXT, ROW_HUB } row_kind_t;
-typedef enum { CH_NONE, CH_THEME, CH_LANGUAGE, CH_SIZE, CH_SORT, CH_STYLE, CH_POWER, CH_LOOK, CH_NUMBER, CH_DIR, CH_STAGELOOK } choice_kind_t;
+typedef enum { CH_NONE, CH_THEME, CH_LANGUAGE, CH_SIZE, CH_SORT, CH_STYLE, CH_POWER, CH_LOOK, CH_NUMBER, CH_DIR, CH_STAGELOOK, CH_STAGEGLOW } choice_kind_t;
 
 #define MAX_ROWS     32
 #define MAX_CHOICES  32
@@ -153,9 +153,9 @@ static int choice_index(const char * code)
 }
 
 /* The savers and visualizers, in the order the pages list them (0.32). */
-static const char * const saver_codes[] = { "stage", "spectrum", "meters", "scope", "spectrogram", "drift", "cover", "palettes", "bounce" };
-static const int          saver_ids[]   = { S_SET_SAVER_STAGE, S_SET_SAVER_SPECTRUM, S_SET_SAVER_METERS, S_SET_SAVER_SCOPE, S_SET_SAVER_SPECTROGRAM, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE };
-#define NSAVERS 9
+static const char * const saver_codes[] = { "stage", "spectrum", "meters", "scope", "spectrogram", "liner", "drift", "cover", "palettes", "bounce" };
+static const int          saver_ids[]   = { S_SET_SAVER_STAGE, S_SET_SAVER_SPECTRUM, S_SET_SAVER_METERS, S_SET_SAVER_SCOPE, S_SET_SAVER_SPECTROGRAM, S_SET_SAVER_LINER, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE };
+#define NSAVERS 10
 static bool saver_is_classic(const char * code) { return classic_kind_from_code(code) != CLASSIC_NONE; }
 static bool saver_is_viz_code(const char * code) { return saver_kind_is_viz(saver_kind_from_code(code)); }
 
@@ -167,10 +167,17 @@ static void look_choices(void)
 }
 static void stagelook_choices(void)
 {
-    static const char * const c[4] = { "spectrum", "amp2000", "fluoro", "fluoro-sweep" };
-    static const int ids[4] = { S_LOOK_STAGE_SPECTRUM, S_LOOK_AMP2000, S_LOOK_FLUORO, S_LOOK_FLUORO_SWEEP };
-    choice_count = 4;
-    for(int i = 0; i < 4; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", c[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T((str_id_t)ids[i])); }
+    static const char * const c[6] = { "spectrum", "amp2000", "fluoro", "fluoro-sweep", "sunset", "twilight" };
+    static const int ids[6] = { S_LOOK_STAGE_SPECTRUM, S_LOOK_AMP2000, S_LOOK_FLUORO, S_LOOK_FLUORO_SWEEP, S_LOOK_SUNSET, S_LOOK_TWILIGHT };
+    choice_count = 6;
+    for(int i = 0; i < 6; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", c[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T((str_id_t)ids[i])); }
+}
+static void stageglow_choices(void)
+{
+    static const char * const c[3] = { "off", "soft", "bright" };
+    static const int ids[3] = { S_GLOW_OFF, S_GLOW_SOFT, S_GLOW_BRIGHT };
+    choice_count = 3;
+    for(int i = 0; i < 3; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", c[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T((str_id_t)ids[i])); }
 }
 static void dir_choices(void)
 {
@@ -202,9 +209,9 @@ static void power_choices(const char * key)
     static const int sleep_off[] = { 900, 3600, 14400, 0 };
     if(strcmp(key, "tv_idle_do") == 0 || strcmp(key, "tv_music_do") == 0) {
         /* the visualizers need music: only the with-music chooser offers them (Ian, 18 Oct) */
-        static const char * const codes[10] = { "off", "drift", "cover", "palettes", "bounce", "stage", "spectrum", "meters", "scope", "spectrogram" };
-        static const int ids[10] = { S_SET_SAVER_OFF, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE, S_SET_SAVER_STAGE, S_SET_SAVER_SPECTRUM, S_SET_SAVER_METERS, S_SET_SAVER_SCOPE, S_SET_SAVER_SPECTROGRAM };
-        choice_count = strcmp(key, "tv_music_do") == 0 ? 10 : 5;
+        static const char * const codes[11] = { "off", "drift", "cover", "palettes", "bounce", "liner", "stage", "spectrum", "meters", "scope", "spectrogram" };
+        static const int ids[11] = { S_SET_SAVER_OFF, S_SET_SAVER_DRIFT, S_SET_SAVER_COVER, S_SET_SAVER_PALETTES, S_SET_SAVER_BOUNCE, S_SET_SAVER_LINER, S_SET_SAVER_STAGE, S_SET_SAVER_SPECTRUM, S_SET_SAVER_METERS, S_SET_SAVER_SCOPE, S_SET_SAVER_SPECTROGRAM };
+        choice_count = strcmp(key, "tv_music_do") == 0 ? 11 : 5;
         for(int i = 0; i < choice_count; i++) { snprintf(choices[i].code, sizeof(choices[i].code), "%s", codes[i]); snprintf(choices[i].name, sizeof(choices[i].name), "%s", T(ids[i])); }
         return;
     }
@@ -580,6 +587,9 @@ static void build_rows(void)
             stagelook_choices();
             config_read("viz-stage-look", cur, sizeof(cur), "spectrum");
             add_choice(T(S_SET_LOOK), "viz-stage-look", CH_STAGELOOK, cur);
+            stageglow_choices();
+            config_read("viz-stage-glow", cur, sizeof(cur), "soft");
+            add_choice(T(S_SET_GLOW), "viz-stage-glow", CH_STAGEGLOW, cur);
         }
         if(strcmp(code, "bounce") == 0 && config_read_bool("developer", false)) {
             /* a number, nothing else (Ian, 19 Oct: "no explanation of what it's for") */
@@ -590,7 +600,7 @@ static void build_rows(void)
             add_choice("", "viz-bounce-n", CH_NUMBER, cur);
         }
         if(!any) add_row(ROW_TEXT, T(S_SET_NOTHING_TO_SET))->value[0] = ' ';
-        if(saver_is_viz_code(code)) add_row(ROW_TEXT, T(S_SET_VIZ_MUSIC_NOTE))->value[0] = ' ';
+        if(saver_is_viz_code(code) || strcmp(code, "liner") == 0) add_row(ROW_TEXT, T(S_SET_VIZ_MUSIC_NOTE))->value[0] = ' ';
         return;
     }
     if(strcmp(page, "playback") == 0) {
@@ -886,6 +896,7 @@ static void step_choice(row_t * r, int dir)
     else if(r->choice == CH_NUMBER) number_choices();
     else if(r->choice == CH_DIR) dir_choices();
     else if(r->choice == CH_STAGELOOK) stagelook_choices();
+    else if(r->choice == CH_STAGEGLOW) stageglow_choices();
     if(choice_count < 2) return;
     r->index = (r->index + dir + choice_count) % choice_count;
     const choice_t * c = &choices[r->index];

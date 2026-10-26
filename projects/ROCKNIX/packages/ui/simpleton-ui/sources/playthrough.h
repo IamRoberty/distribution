@@ -42,6 +42,13 @@ bool playthrough_enabled(void);
 bool playthrough_play_list(const char ** uris, int n, int start);
 bool playthrough_list_active(void);
 
+/* What the queue came from (0.38): the mixtape (curation.h uid) when the
+ * list page played one, else 0 - the Liner saver writes a mixtape's list in
+ * its own hand. Every start of play notes it (play_list clears it; the
+ * list page sets it after a mixtape starts). */
+void playthrough_note_mixtape(int uid);
+int  playthrough_playing_mixtape(void);
+
 /* Hand over MPD's change bits (MPD_CHANGED_*). Cheap for bits it ignores. */
 void playthrough_mpd_changed(unsigned what);
 

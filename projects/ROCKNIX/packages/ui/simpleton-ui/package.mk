@@ -452,7 +452,7 @@
 #     pulls ft2build.h, hence the freetype2 include path here as well.
 
 PKG_NAME="simpleton-ui"
-PKG_VERSION="0.37"
+PKG_VERSION="0.39a"
 PKG_LICENSE="GPL-2.0-or-later"
 PKG_SITE="https://github.com/IamRoberty/distribution"
 PKG_DEPENDS_TARGET="toolchain lvgl libdrm libjpeg-turbo libpng zlib freetype noto-sans-cjk alsa-lib"
@@ -489,7 +489,7 @@ make_target() {
     ${PKG_BUILD}/grid.c ${PKG_BUILD}/thumbs.c ${PKG_BUILD}/cache.c ${PKG_BUILD}/tilestyle.c ${PKG_BUILD}/palette.c \
     ${PKG_BUILD}/textfit.c ${PKG_BUILD}/tiletext.c ${PKG_BUILD}/albumpage.c ${PKG_BUILD}/hdmisilence.c ${PKG_BUILD}/power.c \
     ${PKG_BUILD}/libs.c ${PKG_BUILD}/listpage.c ${PKG_BUILD}/history.c \
-    ${PKG_BUILD}/artists.c ${PKG_BUILD}/rows.c ${PKG_BUILD}/curation.c ${PKG_BUILD}/objmenu.c ${PKG_BUILD}/keyboard.c ${PKG_BUILD}/dacpower.c ${PKG_BUILD}/npicons.c ${PKG_BUILD}/btctl.c ${PKG_BUILD}/saver.c ${PKG_BUILD}/viz.c ${PKG_BUILD}/dst.c ${PKG_BUILD}/classic.c ${PKG_BUILD}/vizmenu.c ${PKG_BUILD}/sync.c \
+    ${PKG_BUILD}/artists.c ${PKG_BUILD}/rows.c ${PKG_BUILD}/curation.c ${PKG_BUILD}/objmenu.c ${PKG_BUILD}/keyboard.c ${PKG_BUILD}/dacpower.c ${PKG_BUILD}/npicons.c ${PKG_BUILD}/btctl.c ${PKG_BUILD}/saver.c ${PKG_BUILD}/viz.c ${PKG_BUILD}/dst.c ${PKG_BUILD}/classic.c ${PKG_BUILD}/vizmenu.c ${PKG_BUILD}/sync.c ${PKG_BUILD}/liner.c \
     ${TARGET_LDFLAGS} -rdynamic \
     -L$(get_install_dir lvgl)/usr/lib \
     -L$(get_install_dir libdrm)/usr/lib \

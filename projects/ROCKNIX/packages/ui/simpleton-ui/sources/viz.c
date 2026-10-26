@@ -662,6 +662,7 @@ static void (*p_glDeleteTextures)(GLsizei, const GLuint *);
 static void (*p_glPixelStorei)(GLenum, GLint);
 static GLint (*p_glGetUniformLocation)(GLuint, const char *);
 static void (*p_glUniform1i)(GLint, GLint);
+static void (*p_glUniform1f)(GLint, GLfloat);
 
 static bool gl_loaded;
 static bool load_gl_more(void)
@@ -675,7 +676,7 @@ static bool load_gl_more(void)
     L(gl, glGenFramebuffers); L(gl, glBindFramebuffer); L(gl, glGenRenderbuffers); L(gl, glBindRenderbuffer);
     L(gl, glFramebufferRenderbuffer); L(gl, glCheckFramebufferStatus); L(gl, glDeleteFramebuffers); L(gl, glDeleteRenderbuffers);
     L(gl, glGenTextures); L(gl, glBindTexture); L(gl, glTexImage2D); L(gl, glTexParameteri); L(gl, glDeleteTextures); L(gl, glPixelStorei);
-    L(gl, glGetUniformLocation); L(gl, glUniform1i);
+    L(gl, glGetUniformLocation); L(gl, glUniform1i); L(gl, glUniform1f);
     L(gl, glDeleteProgram); L(gl, glDeleteShader);
 #undef L
     *(void **)&p_eglCreateImageKHR = p_eglGetProcAddress("eglCreateImageKHR");
@@ -686,23 +687,7 @@ static bool load_gl_more(void)
     return true;
 }
 
-static const char * VS =
-    "attribute vec2 a_pos; attribute vec2 a_uv; attribute vec4 a_col;\n"
-    "varying vec2 v_uv; varying vec4 v_col;\n"
-    /* GL counts rows from the bottom, the display from the top: the frame goes straight to the screen, so flip (0.31d) */
-    "void main() { v_uv = vec2(a_uv.x, -a_uv.y); v_col = a_col; gl_Position = vec4(a_pos.x, -a_pos.y, 0.0, 1.0); }\n";
-static const char * FS =
-    "precision mediump float; varying vec2 v_uv; varying vec4 v_col;\n"
-    "void main() {\n"
-    "  float d = length(v_uv);\n"
-    "  float core = 1.0 - smoothstep(0.58, 0.62, d);\n"            /* the bulb: radius 0.6 of the quad */
-    "  float glow = exp(-d * d * 4.0) * 0.55;\n"
-    "  vec2 h = v_uv - vec2(-0.2, 0.22);\n"
-    "  float hl = exp(-dot(h, h) * 30.0) * 0.6;\n"
-    "  float b = v_col.a;\n"
-    "  vec3 c = v_col.rgb * (core * (0.08 + 0.92 * b) + glow * b) + vec3(hl * b * core);\n"
-    "  gl_FragColor = vec4(c, 1.0);\n"
-    "}\n";
+#include "stage_shaders.h"
 
 static GLuint shader(GLenum kind, const char * src)
 {
@@ -725,12 +710,16 @@ static GLuint shader(GLenum kind, const char * src)
  * fluorescent pink), Fluoro (highlighter colours by pitch) and Fluoro sweep
  * (the same across the stage, left to right). A bulb's colour is a
  * constant: a look change recolours the vertices before the next frame. */
-typedef enum { STAGE_SPECTRUM = 0, STAGE_AMP2000, STAGE_FLUORO, STAGE_FLUORO_SWEEP } stage_look_t;
+typedef enum { STAGE_SPECTRUM = 0, STAGE_AMP2000, STAGE_FLUORO, STAGE_FLUORO_SWEEP, STAGE_SUNSET, STAGE_TWILIGHT, STAGE_LOOK_COUNT } stage_look_t;
 static stage_look_t stage_look;
 static volatile bool recolour;
-static const char * const stage_look_codes[4] = { "spectrum", "amp2000", "fluoro", "fluoro-sweep" };
+static const char * const stage_look_codes[STAGE_LOOK_COUNT] = { "spectrum", "amp2000", "fluoro", "fluoro-sweep", "sunset", "twilight" };
 static const uint32_t neon_cs[]   = { 0x4DDFF9, 0x3B93F0, 0x5171EC, 0x7660F3, 0x9456F0, 0xC251EE, 0xFF3BD6, 0xFF1FA8 };
 static const uint32_t fluoro_cs[] = { 0xCCFF00, 0x39FF14, 0x00FFC8, 0x00E5FF, 0xFF10F0, 0xFF2BB0, 0xFF6A00 };
+/* Sunset (Ian, 25 Oct 19:24): one colour a row, bottom to top, on the 14-row board; other row counts read along it */
+/* Twilight (Ian, 25 Oct 23:11; his second set, named here for now): orange through pink to blue on a deep navy */
+static const uint32_t twilight_cs[14] = { 0xFA3B22, 0xFC5728, 0xFF5E2D, 0xFA6632, 0xFF803D, 0xFD8C4A, 0xFCB366, 0xFD8D94, 0xFBA5E5, 0xFA5D66, 0xFB90DB, 0xE58AF5, 0x597BF7, 0x4771F2 };
+static const uint32_t sunset_cs[14] = { 0xFEB005, 0xFC860A, 0xF26C2F, 0xDF5531, 0xBC4335, 0x995351, 0x8A494B, 0x853940, 0x964E52, 0x92444C, 0x843E46, 0x813F48, 0x6C3E48, 0x57434F };
 
 static void grad_rgb(const uint32_t * cs, int n, float t, float * r, float * g, float * b)
 {
@@ -753,6 +742,8 @@ static void bulb_colour(int row, float pan, float f, float * r, float * g, float
         case STAGE_AMP2000:      grad_rgb(neon_cs, 8, powf(t, 0.7f), r, g, b); break;
         case STAGE_FLUORO:       grad_rgb(fluoro_cs, 7, t, r, g, b); break;
         case STAGE_FLUORO_SWEEP: grad_rgb(fluoro_cs, 7, (pan + 1) / 2, r, g, b); break;
+        case STAGE_SUNSET:       grad_rgb(sunset_cs, 14, t, r, g, b); break;
+        case STAGE_TWILIGHT:     grad_rgb(twilight_cs, 14, t, r, g, b); break;
         default:                 ramp(f, r, g, b); break;
     }
 }
@@ -762,6 +753,8 @@ static void stage_ground(float * r, float * g, float * b)
     switch(stage_look) {
         case STAGE_AMP2000: *r = 0x0B / 255.0f; *g = 0x0F / 255.0f; *b = 0x1E / 255.0f; break;
         case STAGE_FLUORO: case STAGE_FLUORO_SWEEP: *r = *g = *b = 0; break;
+        case STAGE_SUNSET: *r = 0x12 / 255.0f; *g = 0x0C / 255.0f; *b = 0x10 / 255.0f; break;   /* a warm near-black */
+        case STAGE_TWILIGHT: *r = 0; *g = 0x09 / 255.0f; *b = 0x1A / 255.0f; break;             /* Ian's #00091A */
         default: *r = 0.03f; *g = 0.03f; *b = 0.04f; break;
     }
 }
@@ -794,10 +787,24 @@ static const char * OFS =
     "varying vec2 v_uv;\n"
     "void main() { gl_FragColor = texture2D(u_tex, v_uv); }\n";
 
+/* The glow (0.39): off / soft / bright - the quads grow to 3.4 bulb radii
+ * so the halo has room, and the shader adds a wide bloom. */
+static int stage_glow = 1;
+static volatile bool regeom;
+static const char * const stage_glow_codes[3] = { "off", "soft", "bright" };
+void viz_set_stage_glow(const char * code)
+{
+    int g = 1;
+    for(int i = 0; i < 3; i++) if(code && strcmp(code, stage_glow_codes[i]) == 0) g = i;
+    stage_glow = g;
+    regeom = true;
+    fprintf(stderr, "simpleton-ui: viz: soundstage glow %s\n", stage_glow_codes[g]);
+}
+
 void viz_set_stage_look(const char * code)
 {
     stage_look_t l = STAGE_SPECTRUM;
-    for(int i = 0; i < 4; i++) if(code && strcmp(code, stage_look_codes[i]) == 0) l = (stage_look_t)i;
+    for(int i = 0; i < STAGE_LOOK_COUNT; i++) if(code && strcmp(code, stage_look_codes[i]) == 0) l = (stage_look_t)i;
     stage_look = l;
     recolour = true;
     fprintf(stderr, "simpleton-ui: viz: soundstage look %s\n", stage_look_codes[l]);
@@ -954,19 +961,27 @@ static void * gpu_thread(void * arg)
     float * verts = malloc((size_t)nbulbs * 6 * 8 * sizeof(float));
     float * bright = calloc((size_t)nbulbs, sizeof(float));
     if(!verts || !bright) { free(verts); free(bright); goto out; }
-    /* the geometry and colours never change: fill them once, the brightness per frame */
-    for(int i = 0; i < nbulbs; i++) {
-        bulb_t * b = &bulbs[i]; float R = b->r * 1.7f;
-        float x0 = (b->x - R) / VW * 2 - 1, x1 = (b->x + R) / VW * 2 - 1;
-        float y0 = 1 - (b->y + R) / VH * 2, y1 = 1 - (b->y - R) / VH * 2;
-        float q[6][4] = { { x0, y0, -1, -1 }, { x1, y0, 1, -1 }, { x1, y1, 1, 1 }, { x0, y0, -1, -1 }, { x1, y1, 1, 1 }, { x0, y1, -1, 1 } };
-        for(int v = 0; v < 6; v++) { float * o = verts + ((size_t)i * 6 + v) * 8; o[0] = q[v][0]; o[1] = q[v][1]; o[2] = q[v][2]; o[3] = q[v][3]; o[4] = b->cr; o[5] = b->cg; o[6] = b->cb; o[7] = 0; }
-    }
+    /* the geometry and colours change only with the look or the glow: filled here, the brightness per frame */
+    GLint u_R = p_glGetUniformLocation(prog, "u_R"), u_glow = p_glGetUniformLocation(prog, "u_glow");
+    float quad_R = 1.7f;
+#define FILL_GEOMETRY() do { \
+        quad_R = stage_glow ? 3.4f : 1.7f; \
+        for(int i = 0; i < nbulbs; i++) { \
+            bulb_t * b = &bulbs[i]; float R = b->r * quad_R; \
+            float x0 = (b->x - R) / VW * 2 - 1, x1 = (b->x + R) / VW * 2 - 1; \
+            float y0 = 1 - (b->y + R) / VH * 2, y1 = 1 - (b->y - R) / VH * 2; \
+            float q[6][4] = { { x0, y0, -1, -1 }, { x1, y0, 1, -1 }, { x1, y1, 1, 1 }, { x0, y0, -1, -1 }, { x1, y1, 1, 1 }, { x0, y1, -1, 1 } }; \
+            for(int v = 0; v < 6; v++) { float * o = verts + ((size_t)i * 6 + v) * 8; o[0] = q[v][0]; o[1] = q[v][1]; o[2] = q[v][2]; o[3] = q[v][3]; o[4] = b->cr; o[5] = b->cg; o[6] = b->cb; o[7] = 0; } \
+        } \
+        p_glUseProgram(prog); p_glUniform1f(u_R, quad_R); p_glUniform1f(u_glow, (float)stage_glow); \
+    } while(0)
+    FILL_GEOMETRY();
     fprintf(stderr, "simpleton-ui: viz: soundstage %dx%d, %d rows, %d bulbs, GL %s\n", VW, VH, nrows, nbulbs, p_glGetString(GL_RENDERER));
 
     int cur = 0; double next = now_s(), sec_t = next, draw_ms = 0; int frames = 0; frames_total = 0;
     while(!stop_flag) {
         double f0 = now_s();
+        if(regeom) { regeom = false; FILL_GEOMETRY(); }           /* the glow changed: the quads' size, the uniforms */
         if(recolour) {                                        /* a new look: the bulbs' colours, the ground */
             recolour = false;
             for(int i = 0; i < nbulbs; i++) {
@@ -1110,7 +1125,8 @@ bool viz_start(viz_kind_t k)
     viz_set_delay_ms(viz_delay_setting()); fprintf(stderr, "simpleton-ui: viz: delay %d ms (%s)\n", delay_ms_set, viz_delay_key()); memset(prev_logmag, 0, sizeof(prev_logmag)); onset_n = 0;
     { mpd_status_t st; memset(&fmt_next, 0, sizeof(fmt_next)); fmt_new = false;
       viz_set_format(mpd_status(&st) && st.audio[0] ? st.audio : "44100:16:2"); }       /* whatever plays now; the player's changes follow */
-    if(gpu) { char lk[32]; config_read("viz-stage-look", lk, sizeof(lk), "spectrum"); viz_set_stage_look(lk); recolour = false; build_board(); build_kernels(); }
+    if(gpu) { char lk[32]; config_read("viz-stage-look", lk, sizeof(lk), "spectrum"); viz_set_stage_look(lk); recolour = false;
+              config_read("viz-stage-glow", lk, sizeof(lk), "soft"); viz_set_stage_glow(lk); regeom = false; build_board(); build_kernels(); }
     else set_rate(sr);
     stop_flag = false; running = true; gpu_up = gpu;
     pthread_create(&audio_th, NULL, audio_thread, NULL);

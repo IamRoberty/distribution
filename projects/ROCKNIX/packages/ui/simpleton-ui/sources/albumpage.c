@@ -12,6 +12,7 @@
 #include "config.h"
 #include "curation.h"
 #include "mpdc.h"
+#include "playthrough.h"
 #include "objmenu.h"
 #include "nowplaying.h"
 #include "palette.h"
@@ -1300,6 +1301,7 @@ static void play_from(int index)
     for(int i = 0; i < alb.n; i++) uris[i] = alb.tr[i].uri;
     placeholder_prefer_tracks_begin();            /* the page's own colours apply (0.23e: a grid's per-track ones no longer) */
     bool ok = mpd_play_uris(uris, alb.n, index);
+    if(ok) playthrough_note_mixtape(0);
     free(uris);
     if(!ok) return;
     playing = index;

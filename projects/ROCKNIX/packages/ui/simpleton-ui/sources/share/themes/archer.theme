@@ -107,6 +107,16 @@ linerfont AntonSC-Regular.ttf mixed leading=85 share=10
 # faces, Updock is too small to read); their shares go to Jost Medium.
 linerfont Jost-Light.ttf mixed leading=100 share=10
 
+# Mixtape hands (0.38, 25 Oct 2026; Ian's picks): the handwriting a mixtape
+# is written in - dealt once per mixtape and kept, the same hand on its tape
+# on the shelf, its cassette on the list page and the Liner saver's list.
+# Lacquer only ever in lower case (its capitals drip like spray paint).
+#   mixhand <file> upper|lower|mixed [size=N]
+mixhand PermanentMarker-Regular.ttf upper
+mixhand Lacquer-Regular.ttf lower size=105
+mixhand Knewave-Regular.ttf mixed size=95
+mixhand SeaweedScript-Regular.ttf mixed size=115
+
 # Page layouts, one drawn per visit for the screen (every one once before
 # any repeats). Everything a layout decides is on its line:
 #   pagelayout <name> screen=tv|handheld

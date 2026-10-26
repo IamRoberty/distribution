@@ -57,6 +57,8 @@ static page_layout_t layouts[LAYOUT_MAX];
 static int           nlayouts;
 static tile_font_t   liners[FONT_MAX];
 static int           nliners;
+static mix_hand_t    hands[8];
+static int           nhands;
 static int           liner_share;
 static int           ldeck[2][LAYOUT_MAX], ldeck_n[2], ldeck_pos[2];   /* layout decks: TV, handheld */
 
@@ -272,7 +274,7 @@ void tilestyle_load(const char * theme_path)
 {
     mode = TILE_COLOURS_THEME;
     npal = ntheme = nfonts = nset_col = nsets = total_share = 0;
-    nlayouts = nliners = liner_share = 0;
+    nlayouts = nliners = liner_share = 0; nhands = 0;
     ldeck_n[0] = ldeck_n[1] = ldeck_pos[0] = ldeck_pos[1] = 0;
     accent = 0;
     battery = battery_default;
@@ -336,6 +338,17 @@ void tilestyle_load(const char * theme_path)
         else if(strncmp(line, "linerfont", 9) == 0 && nliners < FONT_MAX) {
             tile_font_t * f = &liners[nliners];
             if(parse_font_line(line + 9, f) && f->share > 0) { liner_share += f->share; nliners++; }
+        }
+        else if(strncmp(line, "mixhand", 7) == 0 && nhands < 8) {
+            mix_hand_t * h = &hands[nhands]; memset(h, 0, sizeof(*h)); h->size_pct = 100;
+            char * save; int k = 0, v;
+            for(char * tok = strtok_r(line + 7, " \t\n", &save); tok; tok = strtok_r(NULL, " \t\n", &save), k++) {
+                if(k == 0) snprintf(h->file, sizeof(h->file), "%s", tok);
+                else if(strcmp(tok, "upper") == 0) h->letter_case = HAND_UPPER;
+                else if(strcmp(tok, "lower") == 0) h->letter_case = HAND_LOWER;
+                else if(sscanf(tok, "size=%d", &v) == 1) h->size_pct = v < 50 ? 50 : v > 200 ? 200 : v;
+            }
+            if(h->file[0]) nhands++;
         }
         else if(strncmp(line, "pagelayout", 10) == 0) parse_layout(line + 10);
         else if(sscanf(line, "accent %63s", a) == 1) {
@@ -812,6 +825,16 @@ int tilestyle_liner_pick(unsigned seed)
     int x = (int)(rnd(&r) % (uint32_t)liner_share);
     for(int i = 0; i < nliners; i++) { x -= liners[i].share; if(x < 0) return i; }
     return nliners - 1;
+}
+
+int tilestyle_hand_count(void) { return nhands; }
+const mix_hand_t * tilestyle_hand(int i) { return i >= 0 && i < nhands ? &hands[i] : NULL; }
+const mix_hand_t * tilestyle_hand_for(const char * key)
+{
+    if(nhands == 0) return NULL;
+    unsigned h = 2166136261u;
+    for(const unsigned char * p = (const unsigned char *)(key ? key : ""); *p; p++) h = (h ^ *p) * 16777619u;   /* FNV-1a: the same key, the same hand, always */
+    return &hands[h % (unsigned)nhands];
 }
 
 void tilestyle_page_accents(unsigned seed, uint32_t bg, uint32_t ink, uint32_t * play, uint32_t * sel)

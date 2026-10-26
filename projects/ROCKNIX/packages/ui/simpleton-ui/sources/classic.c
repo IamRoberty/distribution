@@ -58,6 +58,7 @@ typedef struct {
     uint32_t     face, faceink, needle, hot;     /* meters: a face (0 = none, drawn on the ground), its ink, the needle, past 0 */
     bool         ladder;                         /* meters: LED ladders, not needles */
     const uint32_t * spg; int nspg;              /* the spectrogram's ramp, quiet to loud; NULL = ground -> bar -> cap */
+    bool         sweep;                          /* 0.39: the gradient runs across the bars, left to right, not up them */
 } look_t;
 
 static const uint32_t amp95_grad[]   = { 0x189C18, 0x7FC418, 0xCECE18, 0xE08A18, 0xDE2810 };
@@ -69,17 +70,28 @@ static const uint32_t ice_spg[]      = { 0x151C2B, 0x24346E, 0x2E5FBC, 0x44B5F4,
 static const uint32_t uv_spg[]       = { 0x140C26, 0x2D1A50, 0x493A89, 0x764DC9, 0x9456F0, 0xD77AF6, 0xF2A2F8 };
 static const uint32_t black_spg[]    = { 0x1E3A80, 0x2C50A4, 0x7660F3, 0xC251EE, 0x94EDF8 };
 static const uint32_t steam_spg[]    = { 0x120C08, 0x2A170C, 0x5C2E14, 0x8A4B22, 0xB87333, 0xD4A54A, 0xF0DFB0 };
+/* Soundstage's looks on the classics too (Ian, 25 Oct 23:32): Fluoro up the bars and swept across them, Sunset and Twilight up only */
+static const uint32_t fluoro_grad[]   = { 0xCCFF00, 0x39FF14, 0x00FFC8, 0x00E5FF, 0xFF10F0, 0xFF2BB0, 0xFF6A00 };
+static const uint32_t fluoro_spg[]    = { 0x000000, 0x1A3300, 0x39FF14, 0x00E5FF, 0xFF10F0, 0xFF6A00 };
+static const uint32_t sunset_grad[]   = { 0xFEB005, 0xFC860A, 0xF26C2F, 0xDF5531, 0xBC4335, 0x995351, 0x8A494B, 0x853940, 0x964E52, 0x92444C, 0x843E46, 0x813F48, 0x6C3E48, 0x57434F };
+static const uint32_t sunset_spg[]    = { 0x120C10, 0x57434F, 0x853940, 0xBC4335, 0xF26C2F, 0xFEB005 };
+static const uint32_t twilight_grad[] = { 0xFA3B22, 0xFC5728, 0xFF5E2D, 0xFA6632, 0xFF803D, 0xFD8C4A, 0xFCB366, 0xFD8D94, 0xFBA5E5, 0xFA5D66, 0xFB90DB, 0xE58AF5, 0x597BF7, 0x4771F2 };
+static const uint32_t twilight_spg[]  = { 0x00091A, 0x4771F2, 0xE58AF5, 0xFD8D94, 0xFF803D, 0xFA3B22 };
 
 static const look_t looks[] = {
-    { "archer",     S_LOOK_ARCHER,     0x35274A, 0xEABE94, 0xE1BD6D, 0xFAEFD0, NULL, 0,         false, true,  0xEABE94, 0x35274A, 0x35274A, 0x0B775E, false, NULL, 0 },
-    { "record",     S_LOOK_RECORD,     0x1A1612, 0xC0A080, 0xFAEFD0, 0xFAEFD0, NULL, 0,         false, true,  0xFAEFD0, 0x1A1612, 0x1A1612, 0xC0A080, false, NULL, 0 },
-    { "amp95",      S_LOOK_AMP95,      0x000000, 0x189C18, 0xA0A0A0, 0,        amp95_grad, 5,   false, false, 0,        0x5AB45A, 0x5AB45A, 0xDE2810, true,  amp95_spg, 5 },
-    { "phosphor",   S_LOOK_PHOSPHOR,   0x040A06, 0x39FF7A, 0xB8FFD0, 0,        NULL, 0,         false, false, 0,        0x39FF7A, 0x39FF7A, 0x39FF7A, false, phosphor_spg, 5 },
-    { "amp2000",    S_LOOK_AMP2000,    0x0B0F1E, 0x4DDFF9, 0xC3F1FA, 0,        amp2000_grad, 8, true,  false, 0,        0x4DDFF9, 0xF2A2F8, 0xF2A2F8, true,  amp2000_spg, 6 },
-    { "ice",        S_LOOK_ICE,        0x151C2B, 0x6BE9F7, 0xE6E5F4, 0,        NULL, 0,         true,  false, 0,        0x6BE9F7, 0xC3F1FA, 0xC3F1FA, false, ice_spg, 6 },
-    { "uv",         S_LOOK_UV,         0x140C26, 0x9456F0, 0xF2A2F8, 0,        NULL, 0,         true,  false, 0,        0xA282EE, 0xD77AF6, 0xF2A2F8, false, uv_spg, 7 },
-    { "blacklight", S_LOOK_BLACKLIGHT, 0x2C50A4, 0xC251EE, 0x94EDF8, 0x94EDF8, NULL, 0,         true,  false, 0x2E5FBC, 0xE6E5F4, 0x94EDF8, 0xF2A2F8, false, black_spg, 5 },
-    { "steam",      S_LOOK_STEAM,      0x120C08, 0xB87333, 0xF0DFB0, 0xC9A04A, NULL, 0,         false, false, 0xE8D3A2, 0x3B2314, 0x3B2314, 0x8A2E1A, false, steam_spg, 7 },
+    { "archer",     S_LOOK_ARCHER,     0x35274A, 0xEABE94, 0xE1BD6D, 0xFAEFD0, NULL, 0,         false, true,  0xEABE94, 0x35274A, 0x35274A, 0x0B775E, false, NULL, 0, false },
+    { "record",     S_LOOK_RECORD,     0x1A1612, 0xC0A080, 0xFAEFD0, 0xFAEFD0, NULL, 0,         false, true,  0xFAEFD0, 0x1A1612, 0x1A1612, 0xC0A080, false, NULL, 0, false },
+    { "amp95",      S_LOOK_AMP95,      0x000000, 0x189C18, 0xA0A0A0, 0,        amp95_grad, 5,   false, false, 0,        0x5AB45A, 0x5AB45A, 0xDE2810, true,  amp95_spg, 5, false },
+    { "phosphor",   S_LOOK_PHOSPHOR,   0x040A06, 0x39FF7A, 0xB8FFD0, 0,        NULL, 0,         false, false, 0,        0x39FF7A, 0x39FF7A, 0x39FF7A, false, phosphor_spg, 5, false },
+    { "amp2000",    S_LOOK_AMP2000,    0x0B0F1E, 0x4DDFF9, 0xC3F1FA, 0,        amp2000_grad, 8, true,  false, 0,        0x4DDFF9, 0xF2A2F8, 0xF2A2F8, true,  amp2000_spg, 6, false },
+    { "ice",        S_LOOK_ICE,        0x151C2B, 0x6BE9F7, 0xE6E5F4, 0,        NULL, 0,         true,  false, 0,        0x6BE9F7, 0xC3F1FA, 0xC3F1FA, false, ice_spg, 6, false },
+    { "uv",         S_LOOK_UV,         0x140C26, 0x9456F0, 0xF2A2F8, 0,        NULL, 0,         true,  false, 0,        0xA282EE, 0xD77AF6, 0xF2A2F8, false, uv_spg, 7, false },
+    { "blacklight", S_LOOK_BLACKLIGHT, 0x2C50A4, 0xC251EE, 0x94EDF8, 0x94EDF8, NULL, 0,         true,  false, 0x2E5FBC, 0xE6E5F4, 0x94EDF8, 0xF2A2F8, false, black_spg, 5, false },
+    { "steam",      S_LOOK_STEAM,      0x120C08, 0xB87333, 0xF0DFB0, 0xC9A04A, NULL, 0,         false, false, 0xE8D3A2, 0x3B2314, 0x3B2314, 0x8A2E1A, false, steam_spg, 7, false },
+    { "fluoro",     S_LOOK_FLUORO,     0x000000, 0x39FF14, 0xFFFFFF, 0,        fluoro_grad, 7,  false, false, 0,        0x39FF14, 0xFF10F0, 0xFF6A00, true,  fluoro_spg, 6, false },
+    { "fluoro-sweep", S_LOOK_FLUORO_SWEEP, 0x000000, 0x00E5FF, 0xFFFFFF, 0,    fluoro_grad, 7,  false, false, 0,        0x00E5FF, 0xFF10F0, 0xFF6A00, true,  fluoro_spg, 6, true },
+    { "sunset",     S_LOOK_SUNSET,     0x120C10, 0xF26C2F, 0xFEB005, 0,        sunset_grad, 14, false, false, 0,        0xFEB005, 0xFEB005, 0xFA3B22, true,  sunset_spg, 6, false },
+    { "twilight",   S_LOOK_TWILIGHT,   0x00091A, 0xFF803D, 0xFBA5E5, 0,        twilight_grad, 14, false, false, 0,      0xFCB366, 0x4771F2, 0xFA3B22, true,  twilight_spg, 6, false },
 };
 #define NLOOKS ((int)(sizeof(looks) / sizeof(looks[0])))
 
@@ -178,28 +190,42 @@ static void set_look(const char * look)
 
 static lv_obj_t * sp_root;
 static lv_obj_t * bars[VIZ_BANDS], * caps[VIZ_BANDS];
-static lv_image_dsc_t col_dsc, ground_dsc;
-static uint8_t * col_buf, * ground_buf;
+static lv_image_dsc_t col_dsc, ground_dsc, sweep_dsc[VIZ_BANDS];
+static uint8_t * col_buf, * ground_buf, * sweep_buf[VIZ_BANDS];
 static int bw, gap, sp_top, sp_bottom, hr;
 static float level[VIZ_BANDS], peak[VIZ_BANDS];
 static uint32_t peak_at[VIZ_BANDS];
+
+/* one column's picture: the segments in `colour` (0 = the look's gradient up the height) */
+static void fill_column(uint8_t * buf, uint32_t colour)
+{
+    int seg = hr / 54 > 6 ? hr / 54 : 6, gap_px = seg / 4 > 2 ? seg / 4 : 2, step = seg + gap_px;
+    for(int y = 0; y < hr; y++) {
+        int from_bottom = hr - 1 - y;
+        bool lit = (from_bottom % step) < seg;                    /* every look in LED segments (Ian, 19 Oct 22:59) */
+        uint32_t c = lit ? (colour ? colour : cur.grad ? grad_at(cur.grad, cur.ngrad, (float)from_bottom / hr) : cur.bar) : cur.ground;
+        if(scan_row(sp_top + y)) c = dim(c);
+        uint32_t pxv = 0xFF000000u | c;
+        uint32_t * row = (uint32_t *)(buf + (size_t)y * bw * 4);
+        for(int x = 0; x < bw; x++) row[x] = pxv;
+    }
+}
 
 static void make_column(void)
 {
     free(col_buf);
     col_buf = calloc((size_t)bw * (size_t)hr, 4);
     if(!col_buf) return;
-    int seg = hr / 54 > 6 ? hr / 54 : 6, gap_px = seg / 4 > 2 ? seg / 4 : 2, step = seg + gap_px;
-    for(int y = 0; y < hr; y++) {
-        int from_bottom = hr - 1 - y;
-        bool lit = (from_bottom % step) < seg;                    /* every look in LED segments (Ian, 19 Oct 22:59) */
-        uint32_t c = lit ? (cur.grad ? grad_at(cur.grad, cur.ngrad, (float)from_bottom / hr) : cur.bar) : cur.ground;
-        if(scan_row(sp_top + y)) c = dim(c);
-        uint32_t pxv = 0xFF000000u | c;
-        uint32_t * row = (uint32_t *)(col_buf + (size_t)y * bw * 4);
-        for(int x = 0; x < bw; x++) row[x] = pxv;
-    }
+    fill_column(col_buf, 0);
     image_dsc(&col_dsc, col_buf, bw, hr);
+    for(int i = 0; i < VIZ_BANDS; i++) {                           /* a sweep: every bar its own colour across the gradient (0.39) */
+        free(sweep_buf[i]); sweep_buf[i] = NULL;
+        if(!cur.sweep) continue;
+        sweep_buf[i] = calloc((size_t)bw * (size_t)hr, 4);
+        if(!sweep_buf[i]) continue;
+        fill_column(sweep_buf[i], grad_at(cur.grad, cur.ngrad, (float)i / (VIZ_BANDS - 1)));
+        image_dsc(&sweep_dsc[i], sweep_buf[i], bw, hr);
+    }
 }
 
 /* the ground with scanlines: an opaque tile the screen's width and three
@@ -251,7 +277,7 @@ static void spectrum_colours(void)
     make_column();
     for(int i = 0; i < VIZ_BANDS; i++) {
         lv_obj_t * img = lv_obj_get_child(bars[i], 0);
-        if(img) { lv_image_set_src(img, NULL); lv_image_set_src(img, &col_dsc); }
+        if(img) { lv_image_set_src(img, NULL); lv_image_set_src(img, cur.sweep && sweep_buf[i] ? &sweep_dsc[i] : &col_dsc); }
         lv_obj_set_style_bg_color(caps[i], lv_color_hex(cur.cap), 0);
     }
 }
