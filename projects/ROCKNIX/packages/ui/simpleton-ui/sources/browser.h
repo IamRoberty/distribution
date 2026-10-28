@@ -28,6 +28,7 @@ void browser_reload_options(void);
 
 /* The Settings button on the view: the view picker panel, or away again (0.15). */
 void browser_toggle_picker(void);
+void browser_show_picker_style(void);
 
 /* 0.16: the browser shares its picker with the grids; call when the browser
  * screen is shown again. A grid opens an album's folder straight in
@@ -40,6 +41,7 @@ bool browser_open_folder(const char * uri);   /* false: the folder could not be 
  * holds one album as the album page - and the browser then stays where it
  * is, so Back from the page lands on the folder's row. */
 void browser_set_folder_hook(bool (*hook)(const char * uri));
+void browser_set_panel_hook(void (*hook)(void));
 void browser_open_root(void);
 /* Open at a folder with Back climbing its parents (0.19: coming back out
  * of a folder view to the browser), the cursor on `child` if given. */

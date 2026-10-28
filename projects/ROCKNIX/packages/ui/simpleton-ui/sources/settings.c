@@ -34,6 +34,7 @@
 #include "mpdc.h"
 #include "power.h"
 #include "strings.h"
+#include "textfit.h"
 #include "theme.h"
 #include "tilestyle.h"
 
@@ -66,7 +67,7 @@ typedef struct {
     lv_obj_t *    val_label;
 } row_t;
 
-enum { ACT_SCAN = 1, ACT_BT_DEVICE = 2, ACT_RESET = 3, ACT_UPDATE = 4, ACT_VERSION = 5, ACT_SAVER = 6, ACT_SYNC = 7 };
+enum { ACT_SCAN = 1, ACT_BT_DEVICE = 2, ACT_RESET = 3, ACT_UPDATE = 4, ACT_VERSION = 5, ACT_SAVER = 6, ACT_SYNC = 7, ACT_THEME = 8, ACT_LANGUAGE = 9 };
 
 typedef struct { char code[32]; char name[96]; } choice_t;
 
@@ -397,6 +398,7 @@ static const char * group_title(const char * p)
     if(strcmp(p, "power") == 0)    return T(S_SET_POWER);
     if(strcmp(p, "btdevices") == 0) return T(S_SET_BT_DEVICES);
     if(strcmp(p, "developer") == 0) return T(S_SET_DEVELOPER);
+    if(strcmp(p, "language") == 0) return T(S_SET_LANGUAGE);
     if(strcmp(p, "tv") == 0) return T(S_SET_TV);
     if(strcmp(p, "savers") == 0 || strcmp(p, "vizset") == 0) return T(S_HOME_VISUALIZATION);
     if(strncmp(p, "viz-", 4) == 0) { for(int i = 0; i < NSAVERS; i++) if(strcmp(p + 4, saver_codes[i]) == 0) return T((str_id_t)saver_ids[i]); }
@@ -610,12 +612,28 @@ static void build_rows(void)
         library_rows();
     }
     else if(strcmp(page, "display") == 0) {
+        /* the theme and the language are not switched as you browse (0.42,
+         * Ian: "too big a change"): the theme row opens a pop-up applied on
+         * Select, the language row a page of languages */
         scan_choices("themes", ".theme", true);
-        add_choice(T(S_SET_THEME), "theme", CH_THEME, config_theme_name());
+        { row_t * r = add_row(ROW_ACTION, T(S_SET_THEME)); r->action = ACT_THEME; snprintf(r->value, sizeof(r->value), "%s", choices[choice_index(config_theme_name())].name); }
         scan_choices("lang", ".txt", false);
-        add_choice(T(S_SET_LANGUAGE), "language", CH_LANGUAGE, strings_language());
+        add_page_row(T(S_SET_LANGUAGE), "language");
+        snprintf(rows[row_count - 1].value, sizeof(rows[row_count - 1].value), "%s", choices[choice_index(strings_language())].name);
         add_toggle(T(S_SET_HIGH_CONTRAST), "high_contrast", false);
+        add_toggle(T(S_SET_HIDE_BRACKETS), "hide_brackets", false);   /* 0.41: the views without "( )" and "[ ]" (Ian) */
         add_power_choice(S_SET_BRIGHTNESS, "brightness", "100");   /* 0.28: the panel's backlight */
+    }
+    else if(strcmp(page, "language") == 0) {
+        /* every language a row, the current one marked; Select picks it and
+         * comes back to Display with the new one (0.42) */
+        scan_choices("lang", ".txt", false);
+        for(int i = 0; i < choice_count; i++) {
+            row_t * r = add_row(ROW_ACTION, choices[i].name);
+            r->action = ACT_LANGUAGE;
+            snprintf(r->key, sizeof(r->key), "%s", choices[i].code);
+            if(strcmp(choices[i].code, strings_language()) == 0) snprintf(r->value, sizeof(r->value), LV_SYMBOL_OK);
+        }
     }
     else if(strcmp(page, "controls") == 0) {
         add_toggle(T(S_SET_SWAP_AB), "swap_ab", false);         /* 0.26a (Ian): A selects by its label; this flips A and B on every pad */
@@ -779,21 +797,34 @@ static void render(void)
         /* one line tall, so a long label ends in "..." instead of wrapping */
         const lv_font_t * rf = lv_obj_get_style_text_font(row, 0);
         int lw = lv_obj_get_style_width(list_box, 0) - 2 * lm.margin;
-        lv_obj_set_size(l, r->value[0] || r->kind == ROW_TOGGLE || r->kind == ROW_CHOICE ? lw * 65 / 100 : lw,
-                        lv_font_get_line_height(rf) * UI_GROW_PCT / 100 + 2);   /* room for the grown face when selected */
+        /* the label's width leaves room for the value as it is (plus the
+         * grown face): a long card name and "531 albums · 5591 tracks"
+         * overlapped at a fixed 65 % (0.40, Ian's consistency run, 16) */
+        int label_w = lw;
+        char txt[120] = "";
+        if(r->kind == ROW_TOGGLE || r->kind == ROW_CHOICE || r->value[0]) {
+            if(r->kind == ROW_CHOICE) snprintf(txt, sizeof(txt), LV_SYMBOL_LEFT " %s " LV_SYMBOL_RIGHT, r->value);
+            else if(r->kind == ROW_PAGE) snprintf(txt, sizeof(txt), "%s  " LV_SYMBOL_RIGHT, r->value);   /* "English  >" (0.42) */
+            else snprintf(txt, sizeof(txt), "%s", r->value);
+            int vw = text_w(rf, txt) * UI_GROW_PCT / 100 + lm.margin;
+            if(vw > lw * 60 / 100) vw = lw * 60 / 100;
+            label_w = lw - vw;
+        }
+        else if(r->kind == ROW_PAGE) label_w = lw * 85 / 100;
+        lv_obj_set_size(l, label_w, lv_font_get_line_height(rf) * UI_GROW_PCT / 100 + 2);   /* room for the grown face when selected */
         lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
         r->obj = row;
         r->val_label = NULL;
-        if(r->kind == ROW_TOGGLE || r->kind == ROW_CHOICE || r->value[0]) {
+        if(txt[0]) {
             lv_obj_t * v = lv_label_create(row);
-            char txt[120];
-            if(r->kind == ROW_CHOICE) snprintf(txt, sizeof(txt), LV_SYMBOL_LEFT " %s " LV_SYMBOL_RIGHT, r->value);
-            else snprintf(txt, sizeof(txt), "%s", r->value);
             lv_label_set_text(v, txt);
+            lv_label_set_long_mode(v, LV_LABEL_LONG_MODE_DOTS);
+            lv_obj_set_width(v, lw * 60 / 100);
+            lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
             lv_obj_align(v, LV_ALIGN_RIGHT_MID, 0, 0);
             r->val_label = v;
         }
-        if(r->kind == ROW_PAGE) {
+        if(r->kind == ROW_PAGE && !txt[0]) {
             lv_obj_t * v = lv_label_create(row);
             lv_label_set_text(v, LV_SYMBOL_RIGHT);
             lv_obj_align(v, LV_ALIGN_RIGHT_MID, 0, 0);
@@ -870,6 +901,7 @@ static void flip_toggle(row_t * r)
     if(strcmp(r->key, "swap_ab") == 0) input_reload_settings();   /* at once: the next press is already swapped */
     if(strcmp(r->key, "bluetooth") == 0) bt_set_enabled(on);        /* the service starts or stops now (0.27) */
     if(strcmp(r->key, "ssh") == 0) service_set("sshd", on);          /* developer options (0.28) */
+    if(strcmp(r->key, "hide_brackets") == 0) { title_hide_brackets_set(on); if(restart_cb) restart_cb(page); }   /* every view has its titles laid out: a fresh start (0.41) */
     if(strcmp(r->key, "high_contrast") == 0) {
         /* takes effect now: the floors move, this visit is dealt again */
         tilestyle_set_high_contrast(on);
@@ -941,6 +973,21 @@ static void factory_reset(void)
     if(restart_cb) restart_cb("hub");
 }
 
+static const char * theme_names[MAX_CHOICES];
+
+/* the theme pop-up's pick (0.42): written, then the UI comes back on Display */
+static void theme_picked(int index, void * ctx)
+{
+    (void)ctx;
+    if(index < 0 || index >= choice_count) return;
+    if(strcmp(choices[index].code, config_theme_name()) == 0) return;
+    if(!config_write("theme", choices[index].code)) { fprintf(stderr, "simpleton-ui: settings: cannot write theme\n"); return; }
+    fprintf(stderr, "simpleton-ui: settings: theme = %s\n", choices[index].code);
+    if(restart_cb) restart_cb("display");
+}
+
+static set_result_t go_back(void);
+
 static void run_action(row_t * r)
 {
     if(r->action == ACT_RESET) {
@@ -962,6 +1009,20 @@ static void run_action(row_t * r)
         return;
     }
     if(r->action == ACT_SAVER) { saver_start_manual(saver_kind_from_code(r->key)); return; }
+    if(r->action == ACT_THEME) {
+        scan_choices("themes", ".theme", true);
+        if(choice_count < 1) return;
+        for(int i = 0; i < choice_count; i++) theme_names[i] = choices[i].name;
+        objmenu_open_choice(T(S_SET_THEME), T(S_SET_THEME_HINT), theme_names, choice_count, choice_index(config_theme_name()), theme_picked, NULL);
+        return;
+    }
+    if(r->action == ACT_LANGUAGE) {
+        if(strcmp(r->key, strings_language()) == 0) { go_back(); return; }
+        if(!config_write("language", r->key)) { fprintf(stderr, "simpleton-ui: settings: cannot write language\n"); return; }
+        fprintf(stderr, "simpleton-ui: settings: language = %s\n", r->key);
+        if(restart_cb) restart_cb("display");
+        return;
+    }
     if(r->action == ACT_SYNC) { sync_open(); return; }
     if(r->action == ACT_UPDATE) {
         objmenu_toast(T(S_SET_UPDATE_LATER));   /* installing comes with the image round (offline-updates-plan.md) */
@@ -1043,6 +1104,21 @@ void settings_mpd_changed(void)
         if(rows[i].kind == ROW_ACTION && rows[i].action == ACT_SCAN) { scan_row_value(&rows[i]); refresh_value(&rows[i]); }
 }
 
+/* Back: to the page this one was opened from, else the hub, else out. */
+static set_result_t go_back(void)
+{
+    if(return_to[0]) {
+        char to[32]; snprintf(to, sizeof(to), "%s", return_to); return_to[0] = 0;
+        open_page(to);
+        if(return_focus > 0 && return_focus < row_count && rows[return_focus].kind != ROW_TEXT) set_focus(return_focus);
+        return SET_HANDLED;
+    }
+    if(strcmp(page, "hub") == 0 || from_view) return SET_EXIT;
+    open_page("hub");
+    if(hub_focus > 0 && hub_focus < row_count && rows[hub_focus].kind != ROW_TEXT) set_focus(hub_focus);
+    return SET_HANDLED;
+}
+
 set_result_t settings_handle_action(ui_action_t a)
 {
     row_t * r = row_count ? &rows[focus] : NULL;
@@ -1073,7 +1149,15 @@ set_result_t settings_handle_action(ui_action_t a)
                     else { snprintf(return_to, sizeof(return_to), "%s", page); return_focus = focus; }
                     open_page(r->page); break;
                 case ROW_TOGGLE: flip_toggle(r); break;
-                case ROW_CHOICE: step_choice(r, 1); break;
+                case ROW_CHOICE: {
+                    /* Select never steps a ‹ › row (Ian, 26 Oct): it means "this one" -
+                     * on to the next ‹ › row below, and from the last one back to the
+                     * page before, the shown value kept */
+                    int next = -1;
+                    for(int i = focus + 1; i < row_count; i++) if(rows[i].kind == ROW_CHOICE) { next = i; break; }
+                    if(next >= 0) set_focus(next); else return go_back();
+                    break;
+                }
                 case ROW_ACTION: run_action(r); break;
                 case ROW_HUB:    from_view = false; open_page("hub"); break;
                 default: break;
@@ -1092,16 +1176,7 @@ set_result_t settings_handle_action(ui_action_t a)
             }
             return SET_HANDLED;
         case ACT_BACK:
-            if(return_to[0]) {
-                char to[32]; snprintf(to, sizeof(to), "%s", return_to); return_to[0] = 0;
-                open_page(to);
-                if(return_focus > 0 && return_focus < row_count && rows[return_focus].kind != ROW_TEXT) set_focus(return_focus);
-                return SET_HANDLED;
-            }
-            if(strcmp(page, "hub") == 0 || from_view) return SET_EXIT;
-            open_page("hub");
-            if(hub_focus > 0 && hub_focus < row_count && rows[hub_focus].kind != ROW_TEXT) set_focus(hub_focus);
-            return SET_HANDLED;
+            return go_back();
         default:
             return SET_HANDLED;
     }

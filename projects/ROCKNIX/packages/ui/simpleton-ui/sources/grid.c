@@ -208,9 +208,9 @@ static const char * artist_text(const lib_album_t * a);
 static const char * entry_title(int e)
 {
     const lib_track_t * t = track_of(e);
-    if(t) return t->title[0] ? t->title : (album_of(e) ? album_of(e)->title : "");
+    if(t) return title_shown(t->title[0] ? t->title : (album_of(e) ? album_of(e)->title : ""));
     if(entries[e].kind == ENTRY_FOLDER || entries[e].kind == ENTRY_ARTIST) return entries[e].name;
-    return album_of(e)->title;
+    return title_shown(album_of(e)->title);
 }
 
 static const char * entry_artist(int e)
@@ -1501,7 +1501,7 @@ static void after_enter(void)
 {
     if(suppress_overlay) { suppress_overlay = false; return; }
     if(nentries == 0) return;
-    if(!visited) { open_full(); return; }
+    /* no first-visit panel (0.43, Ian): the panel comes with a long hold; the Jump Bar over a long list */
     if(view_opts.strip && grid_is_long()) open_strip();
 }
 
@@ -1765,6 +1765,7 @@ void grid_show_picker_style(void)
 {
     if(!shown || nentries == 0) return;
     if(picker_mode() != PICKER_FULL) { if(picker_mode() != PICKER_NONE) picker_close(); open_full(); }
+    visited_before_open = false;                    /* the Jump Bar follows the panel on a long list (0.43) */
     picker_focus_style();
 }
 

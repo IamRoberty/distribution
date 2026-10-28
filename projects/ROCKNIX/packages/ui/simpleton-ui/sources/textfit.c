@@ -16,6 +16,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
 
 
@@ -110,20 +111,57 @@ int fit_rung(const char * file, int leading, const int * lad, int from, int last
     return -1;
 }
 
-/* Split "Title (Deluxe Edition)" at its first bracket; returns false when
- * there is nothing before it or nothing in it. */
+/* Split "Title (Deluxe Edition)" at its first bracket - or ":" / ";" (kept
+ * with the head) or a spaced dash (dropped), 0.41; a comma is not a split,
+ * too many titles carry one (0.41a, Ian). Returns false when there is
+ * nothing before it or nothing in it. */
 bool split_bracket(const char * title, char * main, size_t mlen, char * br, size_t blen)
 {
-    const char * q = NULL;
-    for(const char * p = title; *p; p++) if(*p == '(' || *p == '[') { q = p; break; }
+    const char * q = NULL; size_t head_n = 0; const char * tail = NULL;
+    bool letters = false;                                        /* in the head so far: "04 - Title", "' (x)" - a number or a mark is no head, so the scan goes on to the next mark ("14 - Title (Live)" splits at the bracket, 0.41b) */
+    for(const char * p = title; *p && !q; p++) {
+        if(isalpha((unsigned char)*p) || (unsigned char)*p >= 0x80) { letters = true; continue; }
+        if(!letters) continue;
+        if(*p == '(' || *p == '[') { q = p; head_n = (size_t)(p - title); tail = p; }
+        else if((*p == ':' || *p == ';') && (p[1] == ' ' || p[1] == 0)) { q = p; head_n = (size_t)(p - title) + 1; tail = p + 1; }
+        else if(*p == ' ' && (p[1] == '-' || (unsigned char)p[1] == 0xE2) ) {                      /* " - ", " – ", " — " */
+            const char * d = p + 1; size_t dl = *d == '-' ? 1 : (memcmp(d, "\xE2\x80\x93", 3) == 0 || memcmp(d, "\xE2\x80\x94", 3) == 0) ? 3 : 0;
+            if(dl && d[dl] == ' ') { q = p; head_n = (size_t)(p - title); tail = d + dl + 1; }
+        }
+    }
     if(!q || q == title) return false;
-    size_t n = (size_t)(q - title);
+    while(tail && *tail == ' ') tail++;
+    if(!tail || !*tail) return false;
+    size_t n = head_n;
     while(n > 0 && title[n - 1] == ' ') n--;
     if(n == 0 || n >= mlen) return false;
     memcpy(main, title, n);
     main[n] = 0;
-    snprintf(br, blen, "%s", q);
+    snprintf(br, blen, "%s", tail);
     return br[0] != 0;
+}
+
+static bool hide_brackets;
+void title_hide_brackets_set(bool on) { hide_brackets = on; }
+bool title_hide_brackets(void) { return hide_brackets; }
+
+const char * title_shown(const char * title)
+{
+    if(!hide_brackets || !title) return title;
+    if(!strchr(title, '(') && !strchr(title, '[')) return title;
+    static char bufs[4][300]; static int next;
+    char * out = bufs[next++ & 3]; size_t o = 0; int depth = 0; char open = 0;
+    for(const char * p = title; *p && o < sizeof(bufs[0]) - 1; p++) {
+        if(!depth && (*p == '(' || *p == '[')) { depth = 1; open = *p; continue; }
+        if(depth) { if(*p == open) depth++; else if(*p == (open == '(' ? ')' : ']')) depth--; continue; }
+        out[o++] = *p;
+    }
+    out[o] = 0;
+    while(o > 0 && out[o - 1] == ' ') out[--o] = 0;         /* "Title (Live)" -> "Title" */
+    for(char * a = out; *a; a++) if(a[0] == ' ' && a[1] == ' ') { memmove(a, a + 1, strlen(a)); a--; }   /* "A (x) B" -> "A B" */
+    bool letters = false;
+    for(const char * p = out; *p; p++) if(isalnum((unsigned char)*p) || (unsigned char)*p >= 0x80) letters = true;
+    return letters ? out : title;                           /* a title that was all brackets (or a mark and brackets) stays */
 }
 
 void caps_inplace(char * s)

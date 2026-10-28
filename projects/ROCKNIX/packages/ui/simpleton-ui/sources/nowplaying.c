@@ -57,6 +57,7 @@
 #include "npicons.h"
 #include "palette.h"
 #include "strings.h"
+#include "textfit.h"
 #include "theme.h"
 #include "tilestyle.h"
 #include "viz.h"
@@ -72,7 +73,8 @@
 
 #define CLOCK_MS         500     /* local progress-clock tick; no MPD traffic */
 #define ART_POLL_MS      100
-#define IDLE_HIDE_MS     4000
+#define IDLE_HIDE_MS     4000       /* the controls go when nothing was pressed */
+#define IDLE_USED_MS     10000      /* ...and stay this long once they are being used (0.40, Ian: "goes away very quickly after pushing a button") */
 #define FADE_MS          250
 #define SEEK_STEP_S      10.0f
 #define BADGE_FLASH_MS   1500
@@ -111,6 +113,7 @@ static lv_obj_t * placeholder;        /* plain fallback: only when the themed pl
 static lv_obj_t * placeholder_letter;
 static lv_obj_t * overlay;
 static lv_obj_t * title_lbl, * artist_lbl, * format_lbl;
+static lv_obj_t * tail_lbl;                /* the title's tail, smaller, after it (0.41) */
 static lv_obj_t * bar, * knob, * elapsed_lbl, * duration_lbl;
 static lv_obj_t * tr_img[TR_COUNT];
 static lv_obj_t * bt_img[BT_COUNT];
@@ -430,6 +433,7 @@ static void apply_colours(void)
     lv_obj_set_style_bg_grad(overlay, &grad, 0);
     lv_obj_invalidate(overlay);
     lv_obj_set_style_text_color(title_lbl, lv_color_hex(c_ink), 0);
+    if(tail_lbl) lv_obj_set_style_text_color(tail_lbl, lv_color_hex(c_ink), 0);
     lv_obj_set_style_text_color(artist_lbl, lv_color_hex(c_dim), 0);
     lv_obj_set_style_text_color(format_lbl, lv_color_hex(c_dim), 0);
     lv_obj_set_style_text_color(elapsed_lbl, lv_color_hex(c_ink), 0);
@@ -578,10 +582,33 @@ static void update_text(void)
 {
     if(!st.file[0]) {
         lv_label_set_text(title_lbl, T(S_NP_NOTHING));
+        lv_obj_set_width(title_lbl, UI_BASE - 2 * UI_MARGIN);
+        if(tail_lbl) lv_obj_add_flag(tail_lbl, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(artist_lbl, T(S_NP_PICK_A_TRACK));
         return;
     }
-    lv_label_set_text(title_lbl, st.title);
+    {
+        /* the title's tail smaller, on the same baseline after the head (0.41, Ian's consistency run, 1) */
+        char head[300], tl[200];
+        const int x0 = UI_MARGIN, w = UI_BASE - 2 * UI_MARGIN;
+        const lv_font_t * ft = FONT_TITLE, * fx = ui_font(36 * 70 / 100);
+        if(tail_lbl && split_bracket(st.title, head, sizeof(head), tl, sizeof(tl))) {
+            int gap = PX(7), tail_w = text_w(fx, tl); if(tail_w > w / 2) tail_w = w / 2;
+            int head_w = text_w(ft, head); if(head_w > w - tail_w - gap) head_w = w - tail_w - gap;
+            lv_label_set_text(title_lbl, head);
+            lv_obj_set_width(title_lbl, head_w);
+            lv_label_set_text(tail_lbl, tl);
+            lv_obj_set_width(tail_lbl, tail_w);
+            int lht = lv_font_get_line_height(ft), lhx = lv_font_get_line_height(fx);
+            lv_obj_set_pos(tail_lbl, x0 + head_w + gap, Y_TITLE - PX(22) + (lht - ft->base_line) - (lhx - fx->base_line));
+            lv_obj_remove_flag(tail_lbl, LV_OBJ_FLAG_HIDDEN);
+        }
+        else {
+            lv_label_set_text(title_lbl, st.title);
+            lv_obj_set_width(title_lbl, w);
+            if(tail_lbl) lv_obj_add_flag(tail_lbl, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
     char sub[600];
     if(st.artist[0] && st.album[0]) snprintf(sub, sizeof(sub), "%s  \xE2\x80\xA2  %s", st.artist, st.album);
     else snprintf(sub, sizeof(sub), "%s", st.artist[0] ? st.artist : st.album);
@@ -852,8 +879,9 @@ static void hide_controls(void)
     if(on_display()) power_indicator_set_hidden(true);    /* the cover is the whole screen */
 }
 
-static void show_controls(void)
+static void show_controls_for(uint32_t ms)
 {
+    lv_timer_set_period(idle_timer, ms);
     lv_timer_reset(idle_timer);
     lv_timer_resume(idle_timer);
     if(controls_visible) return;
@@ -862,6 +890,9 @@ static void show_controls(void)
     badge_refresh();
     if(on_display()) power_indicator_set_hidden(false);
 }
+
+static void show_controls(void) { show_controls_for(IDLE_HIDE_MS); }       /* up on their own: brief */
+static void show_controls_used(void) { show_controls_for(IDLE_USED_MS); }  /* after a press: they stay */
 
 static void idle_timer_cb(lv_timer_t * t)
 {
@@ -974,7 +1005,7 @@ static void panel_close(void)
     lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_opa(overlay, LV_OPA_COVER, 0);
     controls_visible = true;
-    show_controls();
+    show_controls_used();                   /* back from the panel: the user is in the controls */
     badge_refresh();
 }
 
@@ -1075,6 +1106,8 @@ void nowplaying_create(void)
 
     const int x0 = UI_MARGIN, w = UI_BASE - 2 * UI_MARGIN;
     title_lbl  = make_label(overlay, FONT_TITLE,   c_ink, x0, Y_TITLE - PX(22),  w);
+    tail_lbl   = make_label(overlay, ui_font(36 * 70 / 100), c_ink, x0, Y_TITLE - PX(22), w);
+    lv_obj_add_flag(tail_lbl, LV_OBJ_FLAG_HIDDEN);
     artist_lbl = make_label(overlay, FONT_ARTIST,  c_dim, x0, Y_ARTIST - PX(16), w);
     format_lbl = make_label(overlay, UI_FONT_HINT, c_dim, x0, Y_FORMAT - PX(12), w);
 
@@ -1409,11 +1442,11 @@ np_result_t nowplaying_handle_action(ui_action_t a)
         switch(a) {
             case ACT_BACK:  return NP_EXIT;
             case ACT_UP: case ACT_DOWN:
-                show_controls();
+                show_controls_used();
                 return NP_HANDLED;
             case ACT_SELECT:                /* as on the album page: the next picture (Ian, 17 Oct) */
                 if(art_count > 1 || pan_n > 0) { browse_art(1); badge_single = true; badge_flash(); }
-                else show_controls();
+                else show_controls_used();
                 return NP_HANDLED;
             case ACT_LEFT: case ACT_RIGHT:
                 browse_art(a == ACT_RIGHT ? 1 : -1);
@@ -1423,7 +1456,7 @@ np_result_t nowplaying_handle_action(ui_action_t a)
         }
     }
 
-    show_controls();                        /* any input restarts the idle clock */
+    show_controls_used();                   /* any input restarts the idle clock, the long one */
     switch(a) {
         case ACT_UP:   if(row > 0) row--; apply_focus(); break;
         case ACT_DOWN: if(row < ROW_COUNT - 1) row++; apply_focus(); break;
@@ -1444,10 +1477,10 @@ np_result_t nowplaying_handle_action(ui_action_t a)
             else if(bt_cur == BT_FAV) toggle_favorite();
             else if(bt_cur == BT_MODE) cycle_mode();
             else if(bt_cur == BT_LIST) { if(!embedded) panel_open_now(); }
-            else if(bt_cur == BT_MORE && st.file[0]) objmenu_open_track(st.file, st.title, st.artist, 0, -1);
+            else if(bt_cur == BT_MORE && st.file[0]) objmenu_open_np(st.file, st.title, st.artist);
             break;
         case ACT_MENU:
-            if(st.file[0]) objmenu_open_track(st.file, st.title, st.artist, 0, -1);   /* hold A anywhere on the page: the track's menu */
+            if(st.file[0]) objmenu_open_np(st.file, st.title, st.artist);   /* hold A anywhere on the page: the track's menu, with Reset DAC (0.43) */
             break;
         case ACT_BACK:
             hide_controls();

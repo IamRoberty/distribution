@@ -572,15 +572,60 @@ static void render_line(uint32_t * out, const line_t * ln, int fi, bool caps, co
 }
 
 /* ... shrinking no further than `shrink_min` (1 = trim at the given size) */
+/* A title's tail, as textfit.c's split_bracket has it (the cache links no
+ * LVGL, so the rule lives here too): after the first "(", "[" (kept with the
+ * tail), ":", ";" (kept with the head) or a spaced dash (dropped); not a
+ * comma - too many titles have one (0.41a, Ian). */
+static bool tail_split(const char * title, char * head, size_t hl, char * tail, size_t tl)
+{
+    const char * q = NULL, * t = NULL; size_t hn = 0;
+    bool letters = false;                                        /* a head with no letters yet is no head: scan on (0.41b) */
+    for(const char * p = title; *p && !q; p++) {
+        if(isalpha((unsigned char)*p) || (unsigned char)*p >= 0x80) { letters = true; continue; }
+        if(!letters) continue;
+        if(*p == '(' || *p == '[') { q = p; hn = (size_t)(p - title); t = p; }
+        else if((*p == ':' || *p == ';') && (p[1] == ' ' || p[1] == 0)) { q = p; hn = (size_t)(p - title) + 1; t = p + 1; }
+        else if(*p == ' ' && p[1] == '-' && p[2] == ' ') { q = p; hn = (size_t)(p - title); t = p + 3; }
+        else if(*p == ' ' && memcmp(p + 1, "\xE2\x80\x93", 3) == 0 && p[4] == ' ') { q = p; hn = (size_t)(p - title); t = p + 5; }
+    }
+    if(!q || q == title) return false;
+    while(t && *t == ' ') t++;
+    if(!t || !*t) return false;
+    while(hn > 0 && title[hn - 1] == ' ') hn--;
+    if(hn == 0 || hn >= hl) return false;
+    memcpy(head, title, hn); head[hn] = 0;
+    snprintf(tail, tl, "%s", t);
+    return tail[0] != 0;
+}
+
 static void render_line_min(uint32_t * out, const line_t * ln, int fi, bool caps, const char * text, uint32_t ink, float shrink_min)
 {
     if(fi < 0 || !text || !text[0]) return;
     const font_t * f = &fonts[fi];
-    char buf[512];
-    snprintf(buf, sizeof(buf), "%s", text);
-    if(caps) upper_ascii(buf);
+    char buf[512], tail[256];
+    bool has_tail = tail_split(text, buf, sizeof(buf), tail, sizeof(tail));
+    if(!has_tail) snprintf(buf, sizeof(buf), "%s", text);
+    if(caps) { upper_ascii(buf); if(has_tail) upper_ascii(tail); }
 
     float scale = ln->cap / f->cap_units;
+    if(has_tail) {
+        /* the tail at 70 % after the head, on the baseline (0.41): both
+         * shrink together to the room; a tail that would take half the room
+         * is dropped rather than squeezing the head */
+        float gap = ln->cap * 0.35f;
+        float wh = text_width(f, buf, scale), wt = text_width(f, tail, scale * 0.7f);
+        if(wh + gap + wt > ln->room) {
+            float s2 = scale * ln->room / (wh + gap + wt);
+            if(s2 >= scale * shrink_min && wt * s2 / scale < ln->room / 2) { scale = s2; gap = ln->cap * 0.35f * s2 / (ln->cap / f->cap_units); wh = text_width(f, buf, scale); wt = text_width(f, tail, scale * 0.7f); }
+            else has_tail = false;                                /* the head alone, as any line */
+        }
+        if(has_tail) {
+            float x = ln->cx - (wh + gap + wt) / 2;
+            draw_text(out, f, buf, scale, x, ln->baseline, ink);
+            draw_text(out, f, tail, scale * 0.7f, x + wh + gap, ln->baseline, ink);
+            return;
+        }
+    }
     float w = text_width(f, buf, scale);
     if(w > ln->room) {
         float s2 = scale * ln->room / w;

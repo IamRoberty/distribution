@@ -64,21 +64,50 @@ static uint32_t pick_ink(uint32_t bg, const uint32_t * set, int n)
 }
 
 /* The selected colour: a set colour apart from the ink and the ground that
- * reads on the ground (the theme's floor; the list floor in high contrast). */
+ * reads on the ground (the theme's floor; the list floor in high contrast).
+ * "Apart from the ink" is SEL_APART in redmean distance (0.42: 70 let a
+ * near-black through beside a black ink - "both black", Ian, 26 Oct); when
+ * no set colour is far enough, sel_apart() finds one that is. */
+#define SEL_APART 150.0
+
+static bool reads_as_sel(uint32_t c, uint32_t bg, uint32_t ink, double floor)
+{
+    return c != bg && c != ink && tilestyle_distance(c, bg) >= 70 && tilestyle_distance(c, ink) >= SEL_APART && tilestyle_contrast(bg, c) >= floor;
+}
+
+/* A selected colour apart from `ink` on `bg` when the set offers none: the
+ * set colour that reads best, the accent, the cream or the dark ink, each
+ * at a 3.0 floor (the selected row is set large); last, the ink let down
+ * towards the ground as far as it still reads. */
+static uint32_t sel_apart(uint32_t bg, uint32_t ink, const uint32_t * set, int n)
+{
+    uint32_t best = 0; double bc = 0;
+    for(int k = 0; k < n; k++) if(reads_as_sel(set[k], bg, ink, 3.0) && tilestyle_contrast(bg, set[k]) > bc) { best = set[k]; bc = tilestyle_contrast(bg, set[k]); }
+    if(best) return best;
+    uint32_t cream = tilestyle_cream() ? tilestyle_cream() : 0xFAEFD0, dark = tilestyle_dark_ink(), a = tilestyle_accent();
+    if(a && reads_as_sel(a, bg, ink, 3.0)) return a;
+    if(reads_as_sel(cream, bg, ink, 3.0)) return cream;
+    if(reads_as_sel(dark, bg, ink, 3.0)) return dark;
+    /* a mid-tone ground (teal, gold): the cream or the dark at 2.6 still
+     * reads large and tells apart better than a muddied ink */
+    if(reads_as_sel(cream, bg, ink, 2.6)) return cream;
+    if(reads_as_sel(dark, bg, ink, 2.6)) return dark;
+    for(int pct = 45; pct >= 20; pct -= 5) {
+        uint32_t m = ui_mix(ink, bg, pct);
+        if(tilestyle_contrast(bg, m) >= 3.0 && tilestyle_distance(m, ink) >= SEL_APART * 0.6) return m;
+    }
+    return ui_mix(ink, bg, 35);
+}
+
 static uint32_t pick_sel(uint32_t bg, uint32_t ink, const uint32_t * set, int n, unsigned seed)
 {
     double floor = tilestyle_high_contrast() ? tilestyle_list_contrast() : tilestyle_min_contrast();
     uint32_t cand[16]; int nc = 0;
-    for(int k = 0; k < n && nc < 16; k++) {
-        uint32_t c = set[k];
-        if(c == bg || c == ink || tilestyle_distance(c, bg) < 70 || tilestyle_distance(c, ink) < 70) continue;
-        if(tilestyle_contrast(bg, c) < floor) continue;
-        cand[nc++] = c;
-    }
+    for(int k = 0; k < n && nc < 16; k++) if(reads_as_sel(set[k], bg, ink, floor)) cand[nc++] = set[k];
     if(nc) return cand[seed % (unsigned)nc];
     uint32_t a = tilestyle_accent();
-    if(a && tilestyle_distance(a, ink) >= 70 && tilestyle_contrast(bg, a) >= floor) return a;
-    return ink;
+    if(a && reads_as_sel(a, bg, ink, floor)) return a;
+    return sel_apart(bg, ink, set, n);
 }
 
 static void deal(void)
@@ -161,10 +190,11 @@ ui_colours_t ui_colours_inverse(void)
 {
     ui_colours_t inv = { cur.ink, cur.ground, cur.sel };
     double floor = tilestyle_high_contrast() ? tilestyle_list_contrast() : tilestyle_min_contrast();
-    if(tilestyle_contrast(inv.ground, cur.sel) < floor || tilestyle_distance(cur.sel, inv.ink) < 70) {
-        uint32_t cream = tilestyle_cream() ? tilestyle_cream() : 0xFAEFD0, dark = tilestyle_dark_ink();
-        uint32_t pick = tilestyle_contrast(inv.ground, cream) >= tilestyle_contrast(inv.ground, dark) ? cream : dark;
-        inv.sel = tilestyle_distance(pick, inv.ink) >= 70 ? pick : inv.ink;
+    if(!reads_as_sel(cur.sel, inv.ground, inv.ink, floor)) {
+        /* the page's selected colour doesn't read turned round: the set's
+         * best, else one apart from the ink (0.42, the same floor as a page) */
+        uint32_t set[16]; int n = last_set >= 0 ? tilestyle_set(last_set, set, 16) : 0;
+        inv.sel = sel_apart(inv.ground, inv.ink, set, n);
     }
     return inv;
 }

@@ -69,7 +69,8 @@ static picker_opts_t view_opts;      /* .strip is the per-view alphabet-picker s
 #define strip_enabled (view_opts.strip)
 static bool visited;                 /* the full picker has been shown on this screen type */
 static bool suppress_overlay;        /* a load that must not open the strip (refresh, resume) */
-static bool visited_before_open;     /* `visited` as the overlay opened (first-visit panel -> pill after) */
+static bool visited_before_open;     /* `visited` as the overlay opened (first-visit panel -> pill after)   */
+static bool enter_with_panel;        /* the next listing entered opens with the panel (A held on a folder, 0.43) */
 static void (*exit_cb)(void);        /* Back at the top level: leave the view */
 
 #define STRIP_SCREENS 3              /* the strip appears past this many screenfuls... */
@@ -86,6 +87,7 @@ static bool waiting_for_mpd;
 static bool lib_scanning;            /* a library rescan is running (from MPD's notices) */
 static void (*play_cb)(void);
 static bool (*folder_hook)(const char * uri);   /* an album folder opens as the album page (0.17b) */
+static void (*panel_hook)(void);                 /* after the hook opened a folder grid with A held: its panel (0.43) */
 
 static void view_key(const char * what, char * out, size_t len)
 {
@@ -456,8 +458,21 @@ static void after_enter(void)
 {
     if(suppress_overlay) { suppress_overlay = false; return; }
     if(cur.count == 0) return;
-    if(!visited) { open_full(); return; }
+    /* no first-visit panel (0.43, Ian); a folder entered with A held opens
+     * with the panel when it is a page of folders - a music folder's tracks
+     * are just the tracks - and the Jump Bar follows the panel on a long one */
+    if(enter_with_panel) { enter_with_panel = false; if(cur.count && cur.items[0].kind == MPD_ENTRY_DIR) { open_full(); visited_before_open = false; picker_focus_style(); return; } }
     if(strip_enabled && listing_is_long()) open_strip();
+}
+
+/* A long hold on the Home tape (0.20c / 0.43): the panel on the View row,
+ * the Jump Bar following it on a long listing. */
+void browser_show_picker_style(void)
+{
+    if(cur.count == 0) return;
+    if(picker_mode() != PICKER_FULL) { if(picker_mode() != PICKER_NONE) picker_close(); open_full(); }
+    visited_before_open = false;
+    picker_focus_style();
 }
 
 /* The Settings button on the view: the panel, or away again. */
@@ -815,6 +830,7 @@ bool browser_opened_at_folder(void) { return exit_depth != 0; }
 
 const char * browser_current_uri(void) { return cur_uri(); }
 void browser_set_folder_hook(bool (*hook)(const char * uri)) { folder_hook = hook; }
+void browser_set_panel_hook(void (*hook)(void)) { panel_hook = hook; }
 bool browser_at_root(void) { return depth == 0; }
 
 /* Focus the row whose uri is `uri`, if it's in the listing on screen. */
@@ -867,7 +883,16 @@ void browser_handle_action(ui_action_t a)
             if(e->kind == MPD_ENTRY_FILE) { objmenu_open_track(e->uri, e->display, "", 0, -1); break; }
             const lib_folder_t * fo;
             const lib_source_t * src = libs_find_folder(e->uri, &fo);
-            if(!src || fo->type != FOLDER_ALBUM || fo->album < 0) break;
+            if(!src || fo->type != FOLDER_ALBUM || fo->album < 0) {
+                /* a plain folder: enter it with the options panel up (0.43,
+                 * Ian: "a long hold of Select opens the page with the options
+                 * panel up and the Jump Bar") */
+                if(e->kind == MPD_ENTRY_DIR) {
+                    if(folder_hook && folder_hook(e->uri)) { if(panel_hook) panel_hook(); }   /* a folder grid: its panel */
+                    else { enter_with_panel = true; push_and_enter(e->uri); }
+                }
+                break;
+            }
             const lib_album_t * a = &src->lib.albums[fo->album];
             const char ** uris = calloc((size_t)a->track_count + 1, sizeof(char *));
             int n = 0;

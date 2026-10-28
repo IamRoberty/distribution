@@ -24,6 +24,16 @@
 #define PROBE_EVERY_MS    2000
 
 static bool     playing, known, our_suspend, started;
+
+/* the reset (0.43): its stages run from the poll */
+typedef enum { RESET_IDLE, RESET_DOWN, RESET_UP } reset_stage_t;
+static reset_stage_t reset_stage;
+static uint32_t reset_ms;
+static bool     reset_resume;
+static char     reset_dev[PATH_MAX], reset_port[PATH_MAX], reset_how[16];   /* reset_port: the hub port's folder, resolved before the device folder goes */
+#define RESET_HOLD_MS   1000
+#define RESET_WAIT_MS   6000
+static void (*reset_cb)(bool back);
 static uint32_t last_play_ms, last_poll_ms, last_probe_ms;
 static int      validity = -2;     /* last value read: -2 none yet, -1 no such control */
 static char     probe_card_name[64];
@@ -140,6 +150,103 @@ static void wake_cycle(const char * why)
     else fprintf(stderr, "simpleton-ui: dac: %s: its link didn't suspend (in use, or it doesn't do runtime suspend); left on (%u ms)\n", name, (unsigned)(now_ms() - t0));
 }
 
+/* a sysfs attribute under `dev` itself (not power/) */
+static bool write_dev_attr(const char * dev, const char * rel, const char * value)
+{
+    char path[PATH_MAX + 64];
+    snprintf(path, sizeof(path), "%s/%s", dev, rel);
+    FILE * f = fopen(path, "w");
+    if(!f) return false;
+    bool ok = fputs(value, f) >= 0;
+    if(fclose(f) != 0) ok = false;
+    return ok;
+}
+
+bool dacpower_resetting(void) { return reset_stage != RESET_IDLE; }
+void dacpower_set_reset_callback(void (*cb)(bool back)) { reset_cb = cb; }
+
+bool dacpower_reset(void)
+{
+    if(reset_stage != RESET_IDLE) return true;
+    int card;
+    char name[96];
+    if(!find_dac(&card, reset_dev, sizeof(reset_dev))) return false;
+    product_of(reset_dev, name, sizeof(name));
+    mpd_status_t st;
+    reset_resume = mpd_status(&st) && strcmp(st.state, "play") == 0;
+    if(reset_resume) mpd_pause();
+    /* the hub port switched off is a real unplug (port/disable, newer
+     * kernels); deauthorizing the device is the next best (it is
+     * deconfigured and, on authorizing, enumerated again) */
+    /* the port's own folder (usbN-portM), resolved now: the device's folder,
+     * and its `port` link with it, is gone once the port is off (0.43a - the
+     * first try wrote the re-enable through the vanished link and left the
+     * port off, the DAC unreachable until the port was re-enabled by hand) */
+    char link[PATH_MAX + 8];
+    snprintf(link, sizeof(link), "%s/port", reset_dev);
+    bool port = realpath(link, reset_port) != NULL;
+    if(port) { char probe[PATH_MAX + 16]; snprintf(probe, sizeof(probe), "%s/disable", reset_port); port = access(probe, W_OK) == 0; }
+    bool ok = port ? write_dev_attr(reset_port, "disable", "1") : write_dev_attr(reset_dev, "authorized", "0");
+    snprintf(reset_how, sizeof(reset_how), "%s", port ? "port" : "authorized");
+    if(!ok) { fprintf(stderr, "simpleton-ui: dac: %s: reset: cannot disconnect (%s)\n", name, reset_how); if(reset_resume) mpd_toggle_pause(); return false; }
+    reset_stage = RESET_DOWN;
+    reset_ms = now_ms();
+    fprintf(stderr, "simpleton-ui: dac: %s: reset: disconnected (%s), %d ms\n", name, reset_how, RESET_HOLD_MS);
+    return true;
+}
+
+static void reset_poll(uint32_t t)
+{
+    if(reset_stage == RESET_DOWN) {
+        if(t - reset_ms < RESET_HOLD_MS) return;
+        bool ok = strcmp(reset_how, "port") == 0 ? write_dev_attr(reset_port, "disable", "0") : write_dev_attr(reset_dev, "authorized", "1");
+        if(!ok && strcmp(reset_how, "port") == 0) {
+            /* never leave a port off: every disabled port on the bus is re-enabled */
+            fprintf(stderr, "simpleton-ui: dac: reset: cannot re-enable %s - re-enabling every disabled port\n", reset_port);
+            char base[300]; snprintf(base, sizeof(base), "%s/bus/usb/devices", sys_root());
+            DIR * d = opendir(base);
+            struct dirent * e;
+            while(d && (e = readdir(d))) {
+                if(strncmp(e->d_name, "usb", 3) != 0) continue;
+                char hub[700]; snprintf(hub, sizeof(hub), "%s/%s", base, e->d_name);
+                DIR * h = opendir(hub);
+                struct dirent * f;
+                while(h && (f = readdir(h))) {
+                    if(!strchr(f->d_name, ':')) continue;
+                    char ifc[1100]; snprintf(ifc, sizeof(ifc), "%s/%s", hub, f->d_name);
+                    DIR * g = opendir(ifc);
+                    struct dirent * q;
+                    while(g && (q = readdir(g))) {
+                        if(!strstr(q->d_name, "-port")) continue;
+                        char pd[1500]; snprintf(pd, sizeof(pd), "%s/%s", ifc, q->d_name);
+                        char v[8] = ""; FILE * pf; char pp[1600]; snprintf(pp, sizeof(pp), "%s/disable", pd);
+                        if((pf = fopen(pp, "r"))) { if(fgets(v, sizeof(v), pf)) v[strcspn(v, "\n")] = 0; fclose(pf); }
+                        if(strcmp(v, "1") == 0 && write_dev_attr(pd, "disable", "0")) { ok = true; fprintf(stderr, "simpleton-ui: dac: reset: %s re-enabled\n", pd); }
+                    }
+                    if(g) closedir(g);
+                }
+                if(h) closedir(h);
+            }
+            if(d) closedir(d);
+        }
+        fprintf(stderr, "simpleton-ui: dac: reset: reconnecting (%s)%s\n", reset_how, ok ? "" : " - the write failed");
+        reset_stage = RESET_UP;
+        reset_ms = t;
+        return;
+    }
+    if(reset_stage == RESET_UP) {
+        int card;
+        char dev[PATH_MAX], name[96];
+        bool back = find_dac(&card, dev, sizeof(dev));
+        if(!back && t - reset_ms < RESET_WAIT_MS) return;
+        if(back) { product_of(dev, name, sizeof(name)); fprintf(stderr, "simpleton-ui: dac: reset: %s back as card %d after %u ms\n", name, card, (unsigned)(t - reset_ms)); }
+        else fprintf(stderr, "simpleton-ui: dac: reset: no DAC back after %u ms\n", (unsigned)(t - reset_ms));
+        reset_stage = RESET_IDLE;
+        if(reset_resume && back) { reset_resume = false; mpd_toggle_pause(); }
+        if(reset_cb) reset_cb(back);
+    }
+}
+
 void dacpower_before_play(void)
 {
     if(playing) return;
@@ -222,6 +329,7 @@ static void probe(void)
 void dacpower_poll(void)
 {
     uint32_t t = now_ms();
+    if(reset_stage != RESET_IDLE) { reset_poll(t); return; }       /* the reset's stages, every pass (0.43) */
     if(t - last_poll_ms < 1000) return;
     last_poll_ms = t;
     if(!known) return;

@@ -53,8 +53,18 @@ typedef struct {
     int        tx0, tw0;         /* first line: start x in the column and width, at the normal size */
     int        tx1, tw1;         /* ... and at the grown size */
     lv_obj_t * num, * lab, * heart;
+    lv_obj_t * tail;             /* the title's tail, smaller (0.41): after the last line, or a line of its own */
+    char       tail_text[200];
+    bool       tail_inline;
     char       wrapped[400];
 } track_t;
+
+/* the last line of a wrapped title: its width in `f` */
+static int last_line_w(const track_t * t, const lv_font_t * f)
+{
+    const char * nl = strrchr(t->wrapped, '\n');
+    return text_w(f, nl ? nl + 1 : t->wrapped);
+}
 
 static struct {
     char   title[300], artist[300], folder[1024], card[64], thumb[320];
@@ -187,7 +197,7 @@ static void open_look(const library_t * lib, int album, const char * card, const
 {
     const lib_album_t * a = &lib->albums[album];
     album_free();
-    snprintf(alb.title, sizeof(alb.title), "%s", a->title);
+    snprintf(alb.title, sizeof(alb.title), "%s", title_shown(a->title));
     snprintf(alb.artist, sizeof(alb.artist), "%s", a->various ? T(S_VARIOUS_ARTISTS) : a->artist);
     snprintf(alb.release, sizeof(alb.release), "%s", a->release ? a->release : "");
     snprintf(alb.folder, sizeof(alb.folder), "%s", a->folder);
@@ -205,7 +215,7 @@ static bool add_track(const lib_track_t * t)
 {
     track_t * p = &alb.tr[alb.n++];
     p->uri = strdup(t->uri);
-    p->title = strdup(t->title[0] ? t->title : "");
+    p->title = strdup(title_shown(t->title[0] ? t->title : ""));
     p->disc = t->disc;
     p->track = t->track;
     p->rank = library_format_rank(t->format);
@@ -793,6 +803,7 @@ static void build_square(lv_obj_t * parent, int ax, int ay)
 static int build_release_line(lv_obj_t * parent, int x, int y, int w, bool centred, int px);
 
 /* One name of the handheld header, fitted into w; returns its height. */
+static int last_name_px;                          /* the size build_name settled on */
 static int build_name(const char * text_in, const tile_font_t * face, int start_px, int maxh, int max_lines,
                       bool centred, int x, int y, int w)
 {
@@ -822,7 +833,29 @@ static int build_name(const char * text_in, const tile_font_t * face, int start_
     lv_obj_set_pos(l, x, y);
     lv_obj_set_size(l, w, ft.h);
     lv_label_set_text(l, ft.text);
+    last_name_px = ft.px;
     return ft.h;
+}
+
+/* A name's tail ("(Deluxe Edition)", ": The Sessions") under it, one line
+ * at 70 % of the size the name ended up in, the same face (0.41, Ian's
+ * consistency run, 1). Returns its height. */
+static int build_name_tail(const char * tail_in, const tile_font_t * face, int name_px, bool centred, int x, int y, int w)
+{
+    char text[300];
+    snprintf(text, sizeof(text), "%s", tail_in);
+    if(face && face->caps) caps_inplace(text);
+    int px = name_px * 70 / 100; if(px < PX(18)) px = PX(18);
+    const lv_font_t * f = face_px(face ? face->file : NULL, px);
+    lv_obj_t * l = lv_label_create(page);
+    lv_obj_set_style_text_font(l, f, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(c_ink), 0);
+    lv_obj_set_style_text_align(l, centred ? LV_TEXT_ALIGN_CENTER : LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_pos(l, x, y);
+    lv_obj_set_size(l, w, lv_font_get_line_height(f));
+    lv_label_set_text(l, text);
+    return lv_font_get_line_height(f);
 }
 
 /* The handheld's names, the heading above the list (Ian, 10 Oct 18:20: one
@@ -861,8 +894,12 @@ static int build_header(int x, int y, int w, int budget)
         int px, maxh, max_lines;
         if(line[k].big) { px = big_px; maxh = big_maxh; max_lines = MAX_LINES; }
         else            { px = PX(40); maxh = small_maxh; max_lines = 2; }
-        int h = build_name(line[k].text, line[k].face, px, maxh, max_lines, centred, x, y, w);
-        y += h + gap;
+        /* the album's tail smaller, on its own line under the name (0.41) */
+        char head[300], tail[300]; bool has_tail = line[k].text == alb.title && split_bracket(alb.title, head, sizeof(head), tail, sizeof(tail));
+        int h = build_name(has_tail ? head : line[k].text, line[k].face, px, maxh, max_lines, centred, x, y, w);
+        y += h;
+        if(has_tail) y += PX(2) + build_name_tail(tail, line[k].face, last_name_px, centred, x, y + PX(2), w);
+        y += gap;
     }
     if(alb.release[0]) y += build_release_line(page, x, y, w, centred, PX(26)) + gap;
     return y + PX(6);
@@ -946,7 +983,29 @@ static void row_style(int i)
     lv_obj_set_style_text_font(t->lab, f, 0);
     lv_obj_set_style_text_line_space(t->lab, lh - lv_font_get_line_height(f), 0);
     lv_obj_set_style_text_color(t->lab, lv_color_hex(col), 0);
-    if(t->num) lv_obj_set_style_text_color(t->num, lv_color_hex(col), 0);
+    /* the rows are spaced for the grown face; the plain one sits centred in
+     * that space, so a selection grows from the centre, not from the top
+     * down (0.40, Ian's consistency run, 10) */
+    int dy = (lv_font_get_line_height(f_grown) - lv_font_get_line_height(f)) / 2;
+    lv_obj_set_y(t->lab, t->y + dy);
+    if(t->tail) {
+        const lv_font_t * fx = face_px(liner_file, (is_sel ? lsize * GROW_PCT / 100 : lsize) * 70 / 100);
+        lv_obj_set_style_text_font(t->tail, fx, 0);
+        lv_obj_set_style_text_color(t->tail, lv_color_hex(col), 0);
+        int lhf = lv_font_get_line_height(f), lhx = lv_font_get_line_height(fx);
+        if(t->tail_inline) {
+            int n = t->lines - 1, lw = last_line_w(t, f), gap = lsize / 4;
+            int line_top = t->y + dy + n * lh;
+            lv_obj_set_pos(t->tail, lead + gutter + lw + gap, line_top + (lhf - f->base_line) - (lhx - fx->base_line));
+            lv_obj_set_size(t->tail, col_w[t->side] - lw - gap, lhx);
+        }
+        else {
+            int line_top = t->y + dy + (t->lines - 1) * lh;
+            lv_obj_set_pos(t->tail, lead + gutter, line_top + (lhf - f->base_line) - (lhx - fx->base_line));
+            lv_obj_set_size(t->tail, col_w[t->side], lhx);
+        }
+    }
+    if(t->num) { lv_obj_set_style_text_color(t->num, lv_color_hex(col), 0); lv_obj_set_y(t->num, t->y + (lv_font_get_line_height(f_grown) - lv_font_get_line_height(f_list)) / 2); }
     int tx = is_sel ? t->tx1 : t->tx0, tw = is_sel ? t->tw1 : t->tw0;
     int cy = t->y + lh / 2;
     if(t->heart) {
@@ -955,6 +1014,12 @@ static void row_style(int i)
          * where the field clips it (Ian, 15 Oct) */
         int r = lsize * 26 / 100;
         int hx = tx + tw + lsize * 55 / 100 - r - 1;
+        if(t->tail && t->tail_inline && t->lines == 1) {
+            /* the tail shares the first line (0.41): the heart goes after it
+             * (0.41b, Ian: the heart over "(Live)") */
+            const lv_font_t * fx = face_px(liner_file, (is_sel ? lsize * GROW_PCT / 100 : lsize) * 70 / 100);
+            hx = tx + tw + lsize / 4 + text_w(fx, t->tail_text) + lsize * 55 / 100 - r - 1;
+        }
         int col_w_s = col_w[t->side];
         if(hx + 2 * r + 2 > col_w_s) hx = col_w_s - 2 * r - 2;
         lv_obj_set_pos(t->heart, lead + gutter + hx, cy - r - 1);
@@ -1023,12 +1088,27 @@ static void build_list(void)
         for(int i = side_first(s); i < side_first(s) + side_count(s); i++) {
             track_t * t = &alb.tr[i];
             t->side = s;
-            char title[400];
+            char title[400], tl[200];
             snprintf(title, sizeof(title), "%s", t->title);
-            if(liner_caps) caps_inplace(title);
+            /* the title's tail smaller (0.41): inline after the last line
+             * when it fits there (left-aligned lists), else a line of its own */
+            bool has_tail = split_bracket(t->title, title, sizeof(title), tl, sizeof(tl));
+            if(!has_tail) snprintf(title, sizeof(title), "%s", t->title);
+            if(liner_caps) { caps_inplace(title); caps_inplace(tl); }
             bool whole;
             int lines = wrap_words(f_grown, title, col_w[s], t->wrapped, sizeof(t->wrapped), &whole);
             if(lines > MAX_LINES) lines = MAX_LINES;
+            t->tail = NULL; t->tail_inline = false;
+            if(has_tail && whole) {
+                const lv_font_t * fx = face_px(liner_file, lsize * GROW_PCT / 100 * 70 / 100);
+                int tail_w = text_w(fx, tl), gap = lsize / 4;
+                int heart_w = (t->fav && lines == 1) ? lsize * 55 / 100 + lsize * 26 / 100 : 0;   /* room for the heart after it (0.41b) */
+                if(lay->align == PAGE_ALIGN_LEFT && last_line_w(t, f_grown) + gap + tail_w + heart_w <= col_w[s]) t->tail_inline = true;
+                else if(lines < MAX_LINES) lines++;                      /* its own line */
+                else has_tail = false;
+                if(has_tail) snprintf(t->tail_text, sizeof(t->tail_text), "%s", tl);
+            }
+            else has_tail = false;
             t->lines = lines;
             t->y = y;
             t->h = lines * lh;
@@ -1048,6 +1128,12 @@ static void build_list(void)
             lv_obj_set_pos(t->lab, lead + gutter, y);
             lv_obj_set_size(t->lab, col_w[s], t->h);
             lv_label_set_text(t->lab, whole ? t->wrapped : title);
+            if(has_tail) {
+                t->tail = lv_label_create(content[s]);
+                lv_obj_set_style_text_align(t->tail, lay->align == PAGE_ALIGN_CENTRE ? LV_TEXT_ALIGN_CENTER : lay->align == PAGE_ALIGN_RIGHT ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT, 0);
+                lv_label_set_long_mode(t->tail, LV_LABEL_LONG_MODE_DOTS);
+                lv_label_set_text(t->tail, t->tail_text);
+            }
             first_line(t, f_list, col_w[s], &t->tx0, &t->tw0);
             first_line(t, f_grown, col_w[s], &t->tx1, &t->tw1);
             if(t->fav) t->heart = make_heart(content[s], lsize * 26 / 100, FAV_RED);

@@ -142,6 +142,8 @@ static const list_memory_t * memory_find(void)
 static lv_obj_t * shelf;          /* the Mixtapes shelf (0.21a), NULL otherwise */
 static liner_sheet_t * sheet;     /* a mixtape's track list on ruled paper (0.38a), NULL otherwise */
 static liner_row_t * sheet_rows;
+static char ** sheet_text;        /* the rows' own copies (item_title's buffer rotates, 0.41) */
+static int sheet_n;
 static int sheet_first;           /* the page's first item */
 static unsigned seed;
 static int  sel;                 /* -1 = the jump row */
@@ -167,6 +169,8 @@ static int  gen;                 /* thumbs request generation */
 typedef struct {
     int        item;             /* -2 = free */
     lv_obj_t * obj, * tile, * img, * title, * artist, * mark, * heart;   /* heart (0.21a): a favourite's, else NULL */
+    lv_obj_t * tail;                                                       /* a plain row's title tail, smaller (0.41), else NULL */
+    char       tail_text[200];
     uint8_t *  px;
     lv_image_dsc_t dsc;
     int        px_side;
@@ -265,9 +269,9 @@ static const char * file_title(const lib_track_t * t)
 
 static const char * item_title(int i)
 {
-    if(items[i].kind == ITEM_HEADER) return album_of(i) ? album_of(i)->title : "";
+    if(items[i].kind == ITEM_HEADER) return title_shown(album_of(i) ? album_of(i)->title : "");
     const lib_track_t * t = track_of(i);
-    if(t) return t->title[0] ? t->title : file_title(t);
+    if(t) return title_shown(t->title[0] ? t->title : file_title(t));
     const lib_folder_t * f = folder_of(i);
     if(f) return base_name(f->uri);
     const artist_t * ar = artist_of(i);
@@ -1020,6 +1024,20 @@ static uint32_t heart_colour(void)
     return (rr > gg + 60 && rr > bb + 60) ? c_ink : 0xE0242C;
 }
 
+/* A list of one (0.40, Ian's consistency run, 8): nothing to compare the
+ * selected row with, so it wears a bar; and Up/Down that can't go anywhere
+ * blink it to its plain state for a moment, so the user sees where they are. */
+static bool blinking;
+static lv_timer_t * blink_timer;
+static void row_style(row_t * r);
+static void blink_cb(lv_timer_t * t) { (void)t; blinking = false; lv_timer_pause(blink_timer); row_style(row_of(sel)); }
+static void blink_sel(void)
+{
+    if(!blink_timer) { blink_timer = lv_timer_create(blink_cb, 180, NULL); lv_timer_set_repeat_count(blink_timer, -1); }
+    blinking = true; row_style(row_of(sel));
+    lv_timer_reset(blink_timer); lv_timer_resume(blink_timer);
+}
+
 static void row_style(row_t * r)
 {
     if(!r || r->item < 0) return;
@@ -1029,8 +1047,13 @@ static void row_style(row_t * r)
         if(r->mark) lv_obj_set_style_bg_color(r->mark, lv_color_hex(c_ink), 0);
         return;
     }
-    bool is_sel = r->item == sel, is_play = r->item == playing;
+    bool is_sel = r->item == sel && !blinking, is_play = r->item == playing;
     uint32_t col = is_sel ? c_sel : is_play ? c_play : c_ink;    /* selected wins; the play mark says playing (0.25, Ian 17 Oct) */
+    /* the bar round the only row of a list */
+    bool lone = nitems == 1 && r->item == sel;
+    lv_obj_set_style_border_width(r->obj, lone && is_sel ? (PX(2) > 1 ? PX(2) : 2) : 0, 0);
+    lv_obj_set_style_border_color(r->obj, lv_color_hex(c_sel), 0);
+    lv_obj_set_style_border_opa(r->obj, LV_OPA_COVER, 0);
     if(gridstyle) {
         /* a want-ad cell in its own dealt colours; the selected one turns
          * its colours round - the text in the background colour, the
@@ -1053,12 +1076,29 @@ static void row_style(row_t * r)
         if(is_sel) lv_obj_move_foreground(r->obj);
         return;
     }
-    lv_obj_set_style_text_font(r->title, jost(is_sel ? f_title_px * GROW_PCT / 100 : f_title_px), 0);
+    const lv_font_t * ft_now = jost(is_sel ? f_title_px * GROW_PCT / 100 : f_title_px);
+    lv_obj_set_style_text_font(r->title, ft_now, 0);
     lv_obj_set_style_text_color(r->title, lv_color_hex(col), 0);
+    int heart_room = r->heart ? 2 * (f_title_px * 26 / 100) + f_title_px * 55 / 100 : 0;
+    int title_w = text_w(ft_now, lv_label_get_text(r->title));
+    if(r->tail) {
+        /* the tail at 70 % of the title, on its baseline, right after the head (0.41) */
+        const lv_font_t * fx = jost((is_sel ? f_title_px * GROW_PCT / 100 : f_title_px) * 70 / 100);
+        lv_obj_set_style_text_font(r->tail, fx, 0);
+        lv_obj_set_style_text_color(r->tail, lv_color_hex(col), 0);
+        int gap = f_title_px / 5, tail_w = text_w(fx, r->tail_text), avail = col_w - heart_room;
+        if(tail_w > avail / 2) tail_w = avail / 2;
+        int head_w = title_w; if(head_w > avail - tail_w - gap) head_w = avail - tail_w - gap;
+        int th_t = lv_font_get_line_height(ft_now), th_x = lv_font_get_line_height(fx);
+        int ty = lv_obj_get_y(r->title);
+        lv_obj_set_size(r->title, head_w, th_t);
+        lv_obj_set_size(r->tail, tail_w, th_x);
+        lv_obj_set_pos(r->tail, col_x + head_w + gap, ty + (th_t - ft_now->base_line) - (th_x - fx->base_line));
+        title_w = head_w + gap + tail_w;
+    }
     if(r->heart) {
-        const lv_font_t * ft = jost(is_sel ? f_title_px * GROW_PCT / 100 : f_title_px);
         int hr = f_title_px * 26 / 100;
-        int tw = text_w(ft, item_title(r->item));
+        int tw = title_w;
         int maxw = col_w - 2 * hr - f_title_px * 55 / 100;             /* the title's width with a heart */
         if(tw > maxw) tw = maxw;
         int th = lv_font_get_line_height(jost(f_title_px * GROW_PCT / 100)), ah = lv_font_get_line_height(jost(f_artist_px));
@@ -1247,7 +1287,17 @@ static row_t * row_create(int item)
     r->title = lv_label_create(r->obj);
     lv_label_set_long_mode(r->title, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_pos(r->title, col_x, 0);
-    lv_label_set_text(r->title, item_title(item));
+    {
+        char head[300], tl[200];
+        if(split_bracket(item_title(item), head, sizeof(head), tl, sizeof(tl))) {
+            lv_label_set_text(r->title, head);
+            r->tail = lv_label_create(r->obj);
+            lv_label_set_long_mode(r->tail, LV_LABEL_LONG_MODE_DOTS);
+            snprintf(r->tail_text, sizeof(r->tail_text), "%s", tl);
+            lv_label_set_text(r->tail, tl);
+        }
+        else lv_label_set_text(r->title, item_title(item));
+    }
     r->artist = lv_label_create(r->obj);
     lv_label_set_long_mode(r->artist, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_style_text_font(r->artist, jost(f_artist_px), 0);
@@ -2336,6 +2386,8 @@ static bool shelf_build(void)
 static void sheet_drop(void)
 {
     if(sheet) { liner_sheet_delete(sheet); sheet = NULL; }
+    if(sheet_text) { for(int i = 0; i < 2 * sheet_n; i++) free(sheet_text[i]); free(sheet_text); sheet_text = NULL; }
+    sheet_n = 0;
     free(sheet_rows); sheet_rows = NULL;
 }
 
@@ -2351,8 +2403,13 @@ static bool sheet_build(void)
     sheet_drop();
     if(kind != LIST_MIXTAPE || nitems == 0) return false;
     sheet_rows = calloc((size_t)nitems, sizeof(liner_row_t));
-    if(!sheet_rows) return false;
-    for(int i = 0; i < nitems; i++) { sheet_rows[i].title = item_title(i); sheet_rows[i].artist = item_artist(i); }
+    sheet_text = calloc((size_t)nitems * 2, sizeof(char *));
+    if(!sheet_rows || !sheet_text) { free(sheet_rows); sheet_rows = NULL; free(sheet_text); sheet_text = NULL; return false; }
+    sheet_n = nitems;
+    for(int i = 0; i < nitems; i++) {
+        sheet_text[2 * i] = strdup(item_title(i)); sheet_text[2 * i + 1] = strdup(item_artist(i));
+        sheet_rows[i].title = sheet_text[2 * i] ? sheet_text[2 * i] : ""; sheet_rows[i].artist = sheet_text[2 * i + 1] ? sheet_text[2 * i + 1] : "";
+    }
     sheet = liner_sheet_create(scr);
     if(!sheet) { free(sheet_rows); sheet_rows = NULL; return false; }
     liner_sheet_place(sheet, fx, 0, fw, ui_screen.h);
@@ -2490,7 +2547,7 @@ static void after_enter(void)
 {
     if(suppress_overlay) { suppress_overlay = false; return; }
     if(nitems == 0) return;
-    if(!visited) open_full();
+    /* no first-visit panel (0.43, Ian): the panel comes with a long hold */
 }
 
 /* ------------------------------------------------------------ public */
@@ -2756,6 +2813,7 @@ void listpage_show_picker_style(void)
 {
     if(!shown || nitems == 0) return;
     if(picker_mode() != PICKER_FULL) { if(picker_mode() != PICKER_NONE) picker_close(); open_full(); }
+    visited_before_open = false;                    /* the Jump Bar follows the panel on a long list (0.43) */
     picker_focus_style();
 }
 
@@ -2855,6 +2913,7 @@ void listpage_handle_action(ui_action_t a)
     }
     int c = ncols;
     if(a != ACT_UP) up_run = false;
+    if(nitems == 1 && sel == 0 && (a == ACT_UP || a == ACT_DOWN || a == ACT_LEFT || a == ACT_RIGHT)) { blink_sel(); return; }   /* a list of one: nowhere to go, say so */
     switch(a) {
         case ACT_UP:
             if(sel == -1) {

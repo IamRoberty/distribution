@@ -424,6 +424,13 @@ bool cache_build(const char * card, bool verbose)
     library_t old;
     bool have_old = library_load(&old, idx);
 
+    /* the thumbnails became centre-cropped squares in 0.43: a cache made
+     * before that is thumbnailed again once (the marker says it was) */
+    char marker[1300];
+    snprintf(marker, sizeof(marker), "%s/%s/thumbs/.square", cache_root(), card);
+    bool square = access(marker, F_OK) == 0;
+    if(!square) fprintf(stderr, "simpleton-cache: %s: thumbnails from before the square crop - making them again\n", card);
+
     int kept = 0, made = 0, noart = 0, made_pal = 0;
     for(int i = 0; i < lib.nalbums; i++) {
         lib_album_t * a = &lib.albums[i];
@@ -438,7 +445,7 @@ bool cache_build(const char * card, bool verbose)
          * looked up again every build (0.16): a cover file dropped into its
          * folder changes nothing in the tracks' fingerprint, and the lookup
          * of a bare folder is cheap. */
-        if(o && o->has_art && all_thumbs_present(card, a)) {
+        if(square && o && o->has_art && all_thumbs_present(card, a)) {
             a->has_art = o->has_art;
             a->colour = o->colour;
             a->thumb_sizes = o->thumb_sizes;
@@ -461,6 +468,7 @@ bool cache_build(const char * card, bool verbose)
     bool ok = library_save(&lib, idx);
     if(!ok) fprintf(stderr, "simpleton-cache: %s: could not write %s\n", card, idx);
     prune_thumbs(card, &lib);
+    if(!square) { FILE * mf = fopen(marker, "w"); if(mf) fclose(mf); }
     fprintf(stderr, "simpleton-cache: %s: %d albums unchanged (%d given palettes), %d thumbnailed, %d without art; index %s\n",
             card, kept, made_pal, made, noart, ok ? "written" : "NOT written");
 

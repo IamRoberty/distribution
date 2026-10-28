@@ -73,6 +73,7 @@
 #include "rows.h"
 #include "settings.h"
 #include "strings.h"
+#include "textfit.h"
 #include "theme.h"
 
 #include <execinfo.h>
@@ -592,6 +593,13 @@ static bool browser_folder_hook(const char * uri)
     return true;
 }
 
+/* A folder entered from the browser with A held (0.43): a folder grid
+ * opens with its panel; an album page or a track list is left alone. */
+static void browser_panel_hook(void)
+{
+    if(cur == SCR_ALBUMS) grid_show_picker_style();
+}
+
 /* The browser is about to enter a folder (0.19): its type's view, else
  * the browser's own list. */
 static bool browser_enter_hook(const char * uri)
@@ -636,11 +644,16 @@ static void resume_viz(void)
     saver_kind_t k = viz_parked;
     viz_parked = SAVER_NONE;
     viz_resuming = true;
+    /* Soundstage first, then the page under it (0.40, Ian: the Visualization
+     * page blipped on the way back): starting it stops the UI drawing at
+     * once, so the page change below never reaches the screen - Now Playing
+     * stays up until the board's first frame takes the plane. A classic is
+     * drawn by LVGL over the page, so for those the page comes first. */
+    if(k == SAVER_STAGE) saver_start_manual(k);
     if(back_to == SCR_SETTINGS) { back_to = SCR_HOME; leave_current(); cur = SCR_SETTINGS; settings_show("savers", true); }   /* the Visualization page it came from */
     else go_back();
     viz_resuming = false;
-    if(k != SAVER_STAGE) classic_keep_colours();              /* a classic keeps its deal (Soundstage left the flag set for the next classic: 0.36c crash) */
-    saver_start_manual(k);
+    if(k != SAVER_STAGE) { classic_keep_colours(); saver_start_manual(k); }   /* a classic keeps its deal (Soundstage left the flag set for the next classic: 0.36c crash) */
 }
 
 static void go_back(void)
@@ -697,9 +710,15 @@ static void open_view_with_picker(home_view_t v)
         case SCR_ALBUMS:  grid_show_picker_style(); break;
         case SCR_LIST:    listpage_show_picker_style(); break;
         case SCR_ROWS:    rows_show_picker_style(); break;
-        case SCR_BROWSER: if(!browser_overlay_active()) browser_toggle_picker(); picker_focus_style(); break;
+        case SCR_BROWSER: browser_show_picker_style(); break;
         default: break;
     }
+}
+
+/* Reset DAC ended (0.43): say how. */
+static void dac_reset_done(bool back)
+{
+    objmenu_toast(T(back ? S_TOAST_DAC_BACK : S_TOAST_DAC_GONE));
 }
 
 /* The browser started a track: show it. */
@@ -1063,12 +1082,14 @@ int main(int argc, char ** argv)
 
     if(!input_init()) fprintf(stderr, "simpleton-ui: running without joypad input\n");
     cec_init();      /* optional: TV remote via HDMI-CEC; quiet no-op without it */
+    title_hide_brackets_set(config_read_bool("hide_brackets", false));   /* the views' titles without "( )" / "[ ]" (0.41) */
     power_set_external(di.external);             /* first: on a TV the panel is left alone */
     power_init(after_resume, before_poweroff);   /* battery, screen, sleep, the power key (0.18) */
 
     mpd_connect();   /* may fail: browser shows "Starting library" and retries */
     mpd_idle_start();
     dacpower_init();                         /* wake the DAC on play, let it sleep when idle (0.21c) */
+    dacpower_set_reset_callback(dac_reset_done);   /* Reset DAC's outcome as a toast (0.43) */
     bt_init();                               /* the radio, when the setting says so (0.27) */
     saver_create();                          /* the TV's screensavers (0.29) */
     dacpower_mpd_changed();/* change notices; retried with the connection if MPD isn't up */
@@ -1090,6 +1111,7 @@ int main(int argc, char ** argv)
     history_init(listpage_history_changed);          /* what was played, for Recent (0.19a) */
     albumpage_create(albumpage_exited, albumpage_played);
     browser_set_folder_hook(browser_enter_hook);
+    browser_set_panel_hook(browser_panel_hook);
     nowplaying_create();
     settings_create(restart_for_setting, view_options_changed);
     notice_create();

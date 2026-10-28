@@ -29,6 +29,8 @@
 #ifndef SIMPLETON_DACPOWER_H
 #define SIMPLETON_DACPOWER_H
 
+#include <stdbool.h>
+
 #define DACPOWER_WAKE_AFTER_S 60
 
 void dacpower_init(void);
@@ -38,5 +40,15 @@ void dacpower_mpd_changed(void);
 void dacpower_poll(void);
 /* mpdc.c calls this before any command that starts playback. */
 void dacpower_before_play(void);
+/* Reset DAC (0.43, Ian): a full one-second USB disconnect and
+ * re-enumeration, for the DACs the wake doesn't reach. Staged from the
+ * poll so the UI keeps drawing: playback paused if playing, the port
+ * disabled (the hub port's `disable`; else the device deauthorized), a
+ * second later enabled again, and once the card is back playback resumed.
+ * Returns false when there is no DAC. */
+bool dacpower_reset(void);
+bool dacpower_resetting(void);
+/* Told when the reset ends: the DAC came back, or not (a toast). */
+void dacpower_set_reset_callback(void (*cb)(bool back));
 
 #endif

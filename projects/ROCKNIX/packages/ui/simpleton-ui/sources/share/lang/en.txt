@@ -77,16 +77,18 @@ settings.view_page = {view} view
 settings.on = On
 settings.off = Off
 settings.play_through = Play through folders
-settings.autoscan = Scan a card when it is inserted
-settings.cache_on_card = Save the library cache on the card
-settings.scan_now = Scan the library now
+settings.autoscan = Scan card on insertion
+settings.cache_on_card = Save library cache on card
+settings.scan_now = Scan library now
 settings.scanning = Scanning…
 settings.theme = Theme
 settings.language = Language
+settings.theme_hint = Applied when selected
 settings.high_contrast = High contrast
 settings.size = Size
 settings.version = Version
 settings.brightness = Brightness
+settings.hide_brackets = Hide bracketed text
 settings.cards = Cards
 settings.card_info = {albums} albums, {tracks} tracks
 settings.no_cards = No card
@@ -182,7 +184,7 @@ bt.hint = {a} pair or connect   hold {a} forget
 picker.style = View
 picker.size = Size
 picker.sort = Sort
-picker.strip = Alphabet picker
+picker.strip = Jump Bar
 
 style.list = List
 
@@ -245,7 +247,7 @@ sort.album_order = Album order
 page.side = Side
 page.disc = Disc
 
-settings.jump_strip = Alphabet picker
+settings.jump_strip = Jump Bar
 
 power.sleeping = Sleeping…
 power.shutting_down = Shutting down…
@@ -296,6 +298,11 @@ menu.new_collection = + New collection
 menu.remove_from = Remove from {name}
 menu.delete = Delete {name}
 menu.cancel = Cancel
+menu.reset_dac = Reset DAC
+toast.dac_resetting = Resetting the DAC…
+toast.dac_back = DAC reset
+toast.dac_gone = The DAC didn’t come back
+toast.no_dac = No DAC connected
 menu.pick_mixtape = Which mixtape?
 menu.pick_collection = Which collection?
 

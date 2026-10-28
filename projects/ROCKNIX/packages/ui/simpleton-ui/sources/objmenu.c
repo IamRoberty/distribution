@@ -2,6 +2,7 @@
  * SimpletonOS UI - the object menu (implementation). See objmenu.h.
  */
 #include "objmenu.h"
+#include "dacpower.h"
 #include "curation.h"
 #include "keyboard.h"
 #include "layout.h"
@@ -17,8 +18,8 @@
 #define ROWS_ON   6                      /* rows of the second list on screen at once */
 #define TOAST_MS  3000
 
-typedef enum { LEVEL_NONE, LEVEL_MAIN, LEVEL_PICK } level_t;
-typedef enum { ACT_FAV, ACT_UNFAV, ACT_TO_MIXTAPE, ACT_TO_COLLECTION, ACT_REMOVE, ACT_RENAME, ACT_DELETE, ACT_CANCEL } main_act_t;
+typedef enum { LEVEL_NONE, LEVEL_MAIN, LEVEL_PICK, LEVEL_CHOICE } level_t;
+typedef enum { ACT_FAV, ACT_UNFAV, ACT_TO_MIXTAPE, ACT_TO_COLLECTION, ACT_REMOVE, ACT_RENAME, ACT_DELETE, ACT_RESET_DAC, ACT_CANCEL } main_act_t;
 
 /* the target */
 static bool    is_album, is_list;
@@ -27,9 +28,17 @@ static char ** t_uris;
 static int     t_n;
 static int     in_uid, in_pos, list_uid;
 
+/* a choice pop-up (0.42): one "< name >" row, Left/Right between the names,
+ * Select applies, Back leaves it as it was (the theme, Ian: "too big a
+ * change" to switch while browsing) */
+static const char * const * ch_names; static int ch_n, ch_index;
+static char ch_title[96], ch_hint[160];
+static void (*ch_pick)(int index, void * ctx); static void * ch_ctx;
+
 /* the menu */
 static level_t   level;
-static main_act_t main_acts[7];
+static main_act_t main_acts[8];
+static bool       np_menu;              /* opened from Now Playing (0.43): Reset DAC is on it */
 static int       nmain, focus, first;
 static cur_kind_t pick_kind;
 static int       npick;                  /* "+ New" and the lists */
@@ -83,6 +92,7 @@ static void main_text(int i, char * out, size_t len)
         case ACT_REMOVE:        ui_strf(out, len, S_MENU_REMOVE_FROM, "name", list_name(in_uid), NULL); break;
         case ACT_RENAME:        snprintf(out, len, "%s", T(S_MENU_RENAME)); break;
         case ACT_DELETE:        ui_strf(out, len, S_MENU_DELETE, "name", list_name(list_uid), NULL); break;
+        case ACT_RESET_DAC:     snprintf(out, len, "%s", T(S_MENU_RESET_DAC)); break;
         default:                snprintf(out, len, "%s", T(S_MENU_CANCEL)); break;
     }
 }
@@ -98,7 +108,7 @@ static const char * pick_text(int i)
 
 static void render(void)
 {
-    int n = level == LEVEL_MAIN ? nmain : npick;
+    int n = level == LEVEL_MAIN ? nmain : level == LEVEL_CHOICE ? 1 : npick;
     int on = n < ROWS_ON ? n : ROWS_ON;
     if(focus < first) first = focus;
     if(focus >= first + on) first = focus - on + 1;
@@ -108,7 +118,9 @@ static void render(void)
     for(int i = 0; i < on; i++) {
         int k = first + i;
         char text[400], caps[400];
-        if(level == LEVEL_MAIN) main_text(k, text, sizeof(text)); else snprintf(text, sizeof(text), "%s", pick_text(k));
+        if(level == LEVEL_MAIN) main_text(k, text, sizeof(text));
+        else if(level == LEVEL_CHOICE) snprintf(text, sizeof(text), LV_SYMBOL_LEFT "  %s  " LV_SYMBOL_RIGHT, ch_names[ch_index]);
+        else snprintf(text, sizeof(text), "%s", pick_text(k));
         ui_caps(text, caps, sizeof(caps));                     /* the rows in bold caps (0.25a: "more all caps") */
         lv_label_set_text(rows[i], level == LEVEL_MAIN ? caps : text);
         bool f = k == focus;
@@ -124,9 +136,9 @@ static void render(void)
     /* the sign's header: the title in small caps, the artist (or the pick's
      * title) under it, a rule, the rows (0.25) */
     char caps[200];
-    ui_caps(level == LEVEL_PICK ? T(pick_kind == CUR_MIXTAPE ? S_MENU_PICK_MIXTAPE : S_MENU_PICK_COLLECTION) : t_title, caps, sizeof(caps));
+    ui_caps(level == LEVEL_CHOICE ? ch_title : level == LEVEL_PICK ? T(pick_kind == CUR_MIXTAPE ? S_MENU_PICK_MIXTAPE : S_MENU_PICK_COLLECTION) : t_title, caps, sizeof(caps));
     lv_label_set_text(header, caps);
-    lv_label_set_text(title_l, level == LEVEL_PICK ? t_title : t_artist);
+    lv_label_set_text(title_l, level == LEVEL_CHOICE ? ch_hint : level == LEVEL_PICK ? t_title : t_artist);
     lv_obj_set_style_text_color(header, lv_color_hex(c.ink), 0);
     lv_obj_set_style_text_color(title_l, lv_color_hex(ui_mix(c.ground, c.ink, 70)), 0);
     lv_obj_set_style_bg_color(box, lv_color_hex(c.ground), 0);
@@ -199,6 +211,7 @@ static void build_main(void)
         if(is_album) main_acts[nmain++] = ACT_TO_COLLECTION;
         main_acts[nmain++] = ACT_TO_MIXTAPE;
         if(in_uid > 0 && in_pos >= 0) main_acts[nmain++] = ACT_REMOVE;
+        if(np_menu) main_acts[nmain++] = ACT_RESET_DAC;                    /* 0.43 */
     }
     main_acts[nmain++] = ACT_CANCEL;
 }
@@ -208,6 +221,7 @@ void objmenu_open_track(const char * uri, const char * title, const char * artis
     if(!sheet || !uri) return;
     target_clear();
     is_album = is_list = false;
+    np_menu = false;
     snprintf(t_uri, sizeof(t_uri), "%s", uri);
     snprintf(t_title, sizeof(t_title), "%s", title ? title : "");
     snprintf(t_artist, sizeof(t_artist), "%s", artist ? artist : "");
@@ -352,6 +366,10 @@ static void do_main(void)
             close_box();
             name_list(list_uid);
             return;
+        case ACT_RESET_DAC:
+            close_box();
+            objmenu_toast(T(dacpower_reset() ? S_TOAST_DAC_RESETTING : S_TOAST_NO_DAC));
+            return;
         case ACT_DELETE: {
             char name[300];
             snprintf(name, sizeof(name), "%s", list_name(list_uid));
@@ -390,6 +408,18 @@ static void do_pick(void)
 void objmenu_handle_action(ui_action_t a)
 {
     if(level == LEVEL_NONE) return;
+    if(level == LEVEL_CHOICE) {
+        switch(a) {
+            case ACT_LEFT:   if(ch_n > 1) { ch_index = (ch_index + ch_n - 1) % ch_n; render(); } break;
+            case ACT_RIGHT:  if(ch_n > 1) { ch_index = (ch_index + 1) % ch_n; render(); } break;
+            case ACT_SELECT: { int i = ch_index; close_box(); if(ch_pick) ch_pick(i, ch_ctx); break; }
+            case ACT_BACK:
+            case ACT_MENU:
+            case ACT_SETTINGS: close_box(); break;
+            default: break;
+        }
+        return;
+    }
     int n = level == LEVEL_MAIN ? nmain : npick;
     switch(a) {
         case ACT_UP:     focus = (focus + n - 1) % n; render(); break;
@@ -402,6 +432,31 @@ void objmenu_handle_action(ui_action_t a)
             break;
         default: break;
     }
+}
+
+/* Now Playing's menu (0.43): the track's, with Reset DAC. */
+void objmenu_open_np(const char * uri, const char * title, const char * artist)
+{
+    objmenu_open_track(uri, title, artist, 0, -1);
+    if(level != LEVEL_MAIN) return;
+    np_menu = true;
+    build_main();
+    render();
+}
+
+void objmenu_open_choice(const char * title, const char * hint, const char * const * names, int n, int current, void (*on_pick)(int index, void * ctx), void * ctx)
+{
+    if(!sheet || !names || n < 1) return;
+    ch_names = names; ch_n = n; ch_index = current >= 0 && current < n ? current : 0;
+    snprintf(ch_title, sizeof(ch_title), "%s", title ? title : "");
+    snprintf(ch_hint, sizeof(ch_hint), "%s", hint ? hint : "");
+    ch_pick = on_pick; ch_ctx = ctx;
+    level = LEVEL_CHOICE;
+    focus = first = 0;
+    lv_obj_remove_flag(sheet, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(sheet);
+    if(toast) lv_obj_move_foreground(toast);
+    render();
 }
 
 /* ------------------------------------------------------------ the heart */

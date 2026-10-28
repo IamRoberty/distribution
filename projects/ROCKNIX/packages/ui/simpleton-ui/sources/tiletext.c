@@ -12,7 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define BIG_TILE_PX   260                     /* no-art tiles this big show the artist too */
+#define BIG_TILE_PX   200                     /* no-art tiles this big show the artist too (0.41: 260 → 200 - the handheld's L and the TV's M tiles fit most names, Ian) */
+#define PAGE_TILE_PX  600                     /* the album page's square: the artist may take two lines, the title five */
 
 /* The no-art text (0.16b, Ian 8 Oct): centred; whole words only, shrinking
  * the type down a ladder of sizes rather than breaking a word across lines;
@@ -66,7 +67,7 @@ void tiletext_make_lines(lv_obj_t * parent, int side, const char * title_in, con
     }
 
     char title[300], main[300], br[300], artist[300], raw_main[300], raw_br[300];
-    snprintf(title, sizeof(title), "%s", title_in);
+    snprintf(title, sizeof(title), "%s", title_shown(title_in));
     snprintf(artist, sizeof(artist), "%s", artist_in ? artist_in : "");
     bool has_br = split_bracket(title, raw_main, sizeof(raw_main), raw_br, sizeof(raw_br));
     if(!has_br) { snprintf(raw_main, sizeof(raw_main), "%s", title); raw_br[0] = 0; }
@@ -76,13 +77,18 @@ void tiletext_make_lines(lv_obj_t * parent, int side, const char * title_in, con
     /* artist: up to two lines on its own, shrinking by whole words */
     fit_t fa = { 0 };
     int used_h = 0;
+    bool page_tile = side >= PAGE_TILE_PX;
     if(big && artist[0]) {
         int lad[LADDER_STEPS];
-        /* side/12, 12..34 px on grid tiles; past 476 px (the page's cover
+        /* side/12, 12..34 px on grid tiles, then one rung up the type scale
+         * (0.41a, Ian: "a size larger"); past 476 px (the page's cover
          * square) it keeps growing at side/14 (Ian, 10 Oct: proportionally
-         * larger on the TV square) */
+         * larger on the TV square). Up to two lines everywhere (0.41a, Ian:
+         * "they don't take up much space"), shrinking down the ladder first,
+         * then dots. */
         int start = side / 12 < 12 ? 12 : side / 12 > 34 ? 34 : side / 12;
         if(side / 14 > 34) start = side / 14;
+        else { int k = 0; while(type_scale[k + 1] <= start) k++; start = type_scale[k + 1]; }
         ladder_fill(lad, start);
         if(fit_rung(file_a, 100, lad, 0, 4, artist, w, avail / 3, 2, &fa) < 0) {
             fa.font = face_px(file_a, lad[4]); fa.px = lad[4]; fa.whole = false; fa.space = 0;
@@ -95,7 +101,7 @@ void tiletext_make_lines(lv_obj_t * parent, int side, const char * title_in, con
     /* the title: the dealt cover font first, then the next faces that fit
      * its rules, and the theme's trio last (0.16i, Ian's type notes) */
     int room = avail - used_h;
-    int max_lines = title_lines > 0 ? title_lines : big ? 5 : 4;
+    int max_lines = title_lines > 0 ? title_lines : page_tile ? 5 : 3;   /* a grid tile: three, the third ending in dots when there is more (0.41) */
     fit_t fm = { 0 }, fb = { 0 };
     bool placed = false, done = false, show_br = false;
     int lad[LADDER_STEPS];
@@ -155,11 +161,27 @@ void tiletext_make_lines(lv_obj_t * parent, int side, const char * title_in, con
     lv_obj_set_style_transform_pivot_x(box, side / 2, 0);
     lv_obj_set_style_transform_pivot_y(box, side / 2, 0);
     out->box = box;
-    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    if(used_h) out->artist = tile_label(box, &fa, w, 0);
-    out->title = tile_label(box, &fm, w, used_h ? gap : 0);
-    if(has_br) out->extra = tile_label(box, &fb, w, gap / 2);
+    if(used_h) {
+        /* with an artist (0.41a, Ian): the title block sits at the tile's
+         * centre, pushed down only when the artist needs the room above it,
+         * and the artist is centred in whatever space is left above the
+         * title */
+        int title_h = fm.h + (has_br ? gap / 2 + fb.h : 0);
+        int title_top = (side - title_h) / 2;
+        if(title_top < pad + used_h) title_top = pad + used_h;
+        int artist_top = pad + (title_top - pad - fa.h) / 2;
+        out->artist = tile_label(box, &fa, w, 0);
+        lv_obj_set_pos(out->artist, pad, artist_top);
+        out->title = tile_label(box, &fm, w, 0);
+        lv_obj_set_pos(out->title, pad, title_top);
+        if(has_br) { out->extra = tile_label(box, &fb, w, 0); lv_obj_set_pos(out->extra, pad, title_top + fm.h + gap / 2); }
+    }
+    else {
+        lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        out->title = tile_label(box, &fm, w, 0);
+        if(has_br) out->extra = tile_label(box, &fb, w, gap / 2);
+    }
     out->px = fm.px;
     out->lines = fm.lines;
     out->file = file_t;

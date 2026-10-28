@@ -41,7 +41,17 @@ int  lines_height(const lv_font_t * f, int lines, int space);
  * in whole words and at most max_lines lines. Returns the rung, or -1. */
 int  fit_rung(const char * file, int leading, const int * lad, int from, int last, const char * text,
               int maxw, int maxh, int max_lines, fit_t * out);
+/* A title's tail (0.41, Ian's consistency run, 1): the rest after the first
+ * "(", "[", ":", ";", "," or spaced " - " / " – " is set smaller everywhere.
+ * A bracket goes with the tail ("(Deluxe)"); ":", ";" and "," stay with the
+ * head ("Highway 61 Revisited:" big, "The Sessions" small); a spaced dash is
+ * dropped. Hyphenated words and "1,000" (no space after) don't count. */
 bool split_bracket(const char * title, char * main, size_t mlen, char * br, size_t blen);
+/* The "hide bracketed text" setting (0.41, 2): the browsing views show
+ * titles without their "( )" and "[ ]" parts; Now Playing never. */
+void         title_hide_brackets_set(bool on);
+bool         title_hide_brackets(void);
+const char * title_shown(const char * title);   /* as the views show it (a rotating buffer; copy it if it must last) */
 void caps_inplace(char * s);
 int  count_letters(const char * s);
 int  text_min_px(int side);                              /* the theme's floor for a box of this side */

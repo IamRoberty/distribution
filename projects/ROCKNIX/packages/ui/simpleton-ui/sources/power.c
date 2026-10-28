@@ -50,6 +50,7 @@ static bool   playing;
 static bool   screen_off, dimmed;
 static unsigned awake_mask;
 static uint32_t last_activity_ms;
+static bool     disc_due;                   /* the first button after a start brings the disc up (0.40: without pretending a quiet minute) */
 static int    saved_brightness = -1;
 static int    set_brightness_pct;      /* Settings -> Display -> Brightness (0.28), 0 = as found */
 /* the TV (0.29, stationary-mode-proposal.md): after this long without a
@@ -497,7 +498,8 @@ bool power_activity(ui_action_t a)
     /* the disc comes up on the first button after a quiet minute (or on the
      * one that lights the screen), not on every press while browsing (Ian,
      * 12 Oct 22:34: "you start browsing and it quickly fades away") */
-    if(was_off || now_ms() - last_activity_ms >= IND_QUIET_MS) indicator_moment();
+    if(was_off || disc_due || now_ms() - last_activity_ms >= IND_QUIET_MS) indicator_moment();
+    disc_due = false;
     bool transport = a == ACT_PLAYPAUSE || a == ACT_NEXT || a == ACT_PREV || a == ACT_PLAY || a == ACT_PAUSE;
     if(was_off && transport) {
         /* X and Y work in the dark and leave it dark (Ian, 12 Oct) */
@@ -869,7 +871,12 @@ void power_init(void (*on_resume)(void), void (*on_poweroff)(void))
     poweroff_cb = on_poweroff;
     const char * env = getenv("SIMPLETON_SYS");
     sys_root = env && env[0] ? env : "/sys";
-    last_activity_ms = now_ms() - IND_QUIET_MS;   /* the first button after a start brings the disc up */
+    /* 0.40 (Ian's consistency run, 3): the start counts as activity. It used
+     * to be set a quiet minute back so the first button brought the disc up,
+     * which with a 60 s screen-off timed the screen out the moment the UI
+     * came up - at boot, back from HDMI, after a theme change */
+    last_activity_ms = now_ms();
+    disc_due = true;
     power_reload_settings();
 
     lv_obj_t * top = lv_layer_top();

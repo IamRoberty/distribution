@@ -299,20 +299,35 @@ static bool same_bytes(const char * path, const uint8_t * data, size_t len)
 
 /* ------------------------------------------------------------- decode */
 
-typedef struct { uint8_t * rgb; int w, h; int src_w, src_h; int dst_w, dst_h; int box; } rgb_image_t;
+typedef struct { uint8_t * rgb; int w, h; int src_w, src_h; int dst_w, dst_h; int box; bool crop; } rgb_image_t;
 
 /* Wider than this and a page is shown full height and panned instead of
  * shrunk to fit: a 2:1 gatefold fitted to a square is a thin strip. */
 #define WIDE_ASPECT 1.2
 #define MAX_ASPECT  4.0
 
+/* Close to square (within WIDE_ASPECT either way) and the picture fills
+ * its square: scaled so the shorter side is the box and the longer side's
+ * overhang cropped from both ends (0.43, Ian: the strip of ground above
+ * and below a 1:1.1 scan "doesn't look good"). Wider or taller than that
+ * it is fitted as before (and a wide page pans). */
+static bool near_square(int sw, int sh)
+{
+    double aspect = (double)sw / sh;
+    return aspect < WIDE_ASPECT && aspect > 1.0 / WIDE_ASPECT;
+}
+
 /* On-screen size for a source image. Fitted inside the box, or for a wide
- * page (`pan` true) the box height with the width following, up to 4:1. */
-static void target_size(int sw, int sh, bool pan, int box, int * dw, int * dh)
+ * page (`pan` true) the box height with the width following, up to 4:1;
+ * a near-square one scaled to fill the box (`crop`, cropped by the
+ * resampler). */
+static void target_size(int sw, int sh, bool pan, int box, int * dw, int * dh, bool * crop)
 {
     double aspect = (double)sw / sh, scale;
+    *crop = false;
     if(pan && aspect >= WIDE_ASPECT)
         scale = aspect <= MAX_ASPECT ? (double)box / sh : box * MAX_ASPECT / sw;
+    else if(near_square(sw, sh) && sw != sh) { scale = (double)box / (sw < sh ? sw : sh); *crop = true; }
     else
         scale = (double)box / (sw > sh ? sw : sh);
     *dw = (int)lround(sw * scale);
@@ -344,7 +359,7 @@ static bool decode_jpeg(const uint8_t * data, size_t len, bool pan, rgb_image_t 
 
     /* DCT scaling: shrink as far as possible while staying >= the final
      * size, so the resampler below only ever works on <= 2x. */
-    target_size(out->src_w, out->src_h, pan, out->box, &out->dst_w, &out->dst_h);
+    target_size(out->src_w, out->src_h, pan, out->box, &out->dst_w, &out->dst_h, &out->crop);
     unsigned denom = 1;
     while(denom < 8 && out->src_w / (int)(denom * 2) >= out->dst_w && out->src_h / (int)(denom * 2) >= out->dst_h) denom *= 2;
     cinfo.scale_num = 1;
@@ -418,7 +433,7 @@ static bool decode_png(const uint8_t * data, size_t len, bool pan, rgb_image_t *
     out->rgb = rgb;
     out->w = out->src_w = (int)w;
     out->h = out->src_h = (int)h;
-    target_size(out->w, out->h, pan, out->box, &out->dst_w, &out->dst_h);
+    target_size(out->w, out->h, pan, out->box, &out->dst_w, &out->dst_h, &out->crop);
     return true;
 }
 
@@ -488,6 +503,18 @@ static uint8_t * resample_fit(const rgb_image_t * src, int * out_w, int * out_h)
                 }
                 dst[(size_t)y * dw + x] = 0xFF000000u | (c[0] << 16) | (c[1] << 8) | c[2];
             }
+        }
+    }
+    if(src->crop && (dw > src->box || dh > src->box)) {
+        /* the centre square of it (0.43) */
+        int b = src->box, ox = (dw - b) / 2, oy = (dh - b) / 2;
+        uint32_t * sq = malloc((size_t)b * (size_t)b * 4);
+        if(sq) {
+            for(int y = 0; y < b; y++) memcpy(sq + (size_t)y * b, dst + (size_t)(y + oy) * dw + ox, (size_t)b * 4);
+            free(dst);
+            *out_w = b;
+            *out_h = b;
+            return (uint8_t *)sq;
         }
     }
     *out_w = dw;

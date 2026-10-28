@@ -232,10 +232,15 @@ void vizmenu_handle_action(ui_action_t a)
             return;
         }
         case ACT_SELECT:
+            /* "this one" (0.42, Ian's rule for every ‹ › row): on to the next
+             * row, and from the last one the box closes, the looks kept */
+            if(focus < nopts - 1) { focus++; render(); hand_over(); return; }
+            vizmenu_close();
+            return;
         case ACT_BACK:
         case ACT_MENU:
         case ACT_SETTINGS:                                    /* the button that opened it closes it */
-            vizmenu_close();                                  /* the visualizer stays (Ian: select closes the box) */
+            vizmenu_close();                                  /* the visualizer stays */
             return;
         default:
             return;                                           /* the rest is swallowed while the box is up */
