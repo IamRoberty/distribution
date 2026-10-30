@@ -1,0 +1,17 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2026 Simpleton
+# simpleton-profile: one journal line at boot saying what the appliance
+# profile switched off (image-round-plan.md), and a check that each mask
+# is in force - an unmasked service here is a build problem worth a line.
+masks="@MASKS@"
+missing=""
+for u in $masks; do
+  s=$(systemctl is-enabled "$u" 2>/dev/null)
+  [ "$s" = "masked" ] || missing="$missing $u($s)"
+done
+echo "simpleton-profile: masked: $(echo $masks | tr '\n' ' ')"
+[ -n "$missing" ] && echo "simpleton-profile: NOT masked:$missing"
+rfkill list 2>/dev/null | grep -A2 -i wlan | grep -q 'Soft blocked: yes' && echo "simpleton-profile: wlan rfkill-blocked"
+lsmod 2>/dev/null | grep -q '^rtw88' && echo "simpleton-profile: a Wi-Fi driver is loaded (the blacklist didn't hold)"
+exit 0

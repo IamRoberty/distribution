@@ -1,0 +1,10 @@
+[Unit]
+Description=SimpletonOS appliance profile (boot log line)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/simpleton-profile
+
+[Install]
+WantedBy=multi-user.target

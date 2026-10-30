@@ -8,28 +8,28 @@
   HARDENING_SUPPORT="no"
 
 # The name of the parent organization for updates
-  GIT_ORGANIZATION="ROCKNIX"
+  GIT_ORGANIZATION="IamRoberty"
 
 # The name of the github project for updates
   GIT_REPO="distribution"
 
 # Name of the Distro to build (full name, without special characters)
-  DISTRONAME="ROCKNIX"
+  DISTRONAME="SimpletonOS"
 
 # Name of the OS to build (full name, lower case, without special characters)
-  OSNAME="rocknix"
+  OSNAME="simpletonos"
 
 # short project description
-  DESCRIPTION="An Open Source firmware."
+  DESCRIPTION="SimpletonOS: a bit-perfect USB audio transport, built on ROCKNIX and JELOS (GPLv2)."
 
 # Distribution Home URL
-  HOME_URL="https://rocknix.org"
+  HOME_URL="https://github.com/IamRoberty/distribution"
 
 # Documentation URL
-  WIKI_URL="https://rocknix.org"
+  WIKI_URL="https://github.com/IamRoberty/distribution"
 
 # Where to report bugs
-  BUG_REPORT_URL="https://rocknix.org"
+  BUG_REPORT_URL="https://github.com/IamRoberty/distribution/issues"
 
 # Root password to integrate in the target system
   ROOT_PASSWORD="rocknix"

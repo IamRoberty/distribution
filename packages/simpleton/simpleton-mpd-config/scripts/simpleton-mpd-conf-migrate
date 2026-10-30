@@ -18,6 +18,8 @@
 #                              tracks and the four-thread DST decoder both took the
 #                              unit down - see the mpd.conf template)
 #   (no restore_paused)    ->  restore_paused "yes" (a boot never resumes playing)
+#   bind_to_address "any"  ->  "127.0.0.1" + "::1"; zeroconf_enabled "yes" -> "no"
+#                              (image round 1, 28 Oct 2026: loopback only, no mDNS)
 #
 # A missing decoder block is logged: the blocks vanished once from a unit's
 # mpd.conf (11 Oct) and nothing here, in simpleton-dac-detect or in
@@ -102,6 +104,18 @@ if ! grep -q '^[[:space:]]*restore_paused' "$CONF"; then
     fi
     changed=1
     echo "simpleton-mpd-conf-migrate: restore_paused \"yes\" added (a boot never resumes playing by itself)"
+fi
+
+if grep -q '^[[:space:]]*bind_to_address[[:space:]]*"any"' "$CONF"; then
+    awk '/^[[:space:]]*bind_to_address[[:space:]]*"any"/ { print "bind_to_address  \"127.0.0.1\""; print "bind_to_address  \"::1\""; next } { print }' "$CONF" > "$CONF.new" && mv "$CONF.new" "$CONF"
+    changed=1
+    echo "simpleton-mpd-conf-migrate: MPD bound to loopback only (was any)"
+fi
+
+if grep -q '^[[:space:]]*zeroconf_enabled[[:space:]]*"yes"' "$CONF"; then
+    sed -i 's/^\([[:space:]]*zeroconf_enabled[[:space:]]*\)"yes"/\1"no"/' "$CONF"
+    changed=1
+    echo "simpleton-mpd-conf-migrate: zeroconf off"
 fi
 
 mkdir -p "$CACHE_DIR"

@@ -1,0 +1,84 @@
+Simpleton: one open SACD/DFF/DVD-A container per thread, not per process
+
+The sacdiso, dsdiff and dvdaiso plugins (patch 0001) keep the container
+they have open - path, media, reader - in plugin-wide globals, shared by
+every thread that calls into the plugin: the decoder thread playing a
+track, the update thread scanning the library, the client thread reading
+tags. A library scan while a track from an ISO plays (or sits restored-
+paused after a restart: restore_paused "yes") reopens the globals under
+the decoder, which then reads frames from a disc with no track selected
+and MPD dies with SIGSEGV. Seen on the unit 11 Oct (an MPD restart while
+a DST track played), 26 Oct, and 28 Oct 2026 four times in 70 s after a
+DAC swap (the hotplug restart + the card rescan that followed it).
+
+thread_local on the three plugins' container state gives each thread its
+own open container. Every entry point (container_scan, file_decode,
+scan_file) already opens through container_update() on the calling
+thread, so nothing else changes; a thread's container is closed when the
+thread ends (the update threads are per job).
+
+diff --git a/src/decoder/plugins/DffDecoderPlugin.cxx b/src/decoder/plugins/DffDecoderPlugin.cxx
+index 6810d3c..23eaa39 100644
+--- a/src/decoder/plugins/DffDecoderPlugin.cxx
++++ b/src/decoder/plugins/DffDecoderPlugin.cxx
+@@ -57,9 +57,13 @@ bool      param_lsbitfirst;
+ area_id_e param_playable_area;
+ bool      param_use_stdio;
+ 
+-AllocatedPath                  dsdiff_path{ nullptr };
+-std::unique_ptr<sacd_media_t>  sacd_media;
+-std::unique_ptr<sacd_reader_t> sacd_reader;
++/* thread_local (Simpleton 0007, 29 Oct 2026): the decoder thread, the
++ * update thread and the client thread each keep their own open container.
++ * Shared, a library scan reopened the container under a playing (or
++ * restored-paused) decoder and MPD crashed with SIGSEGV. */
++thread_local AllocatedPath                  dsdiff_path{ nullptr };
++thread_local std::unique_ptr<sacd_media_t>  sacd_media;
++thread_local std::unique_ptr<sacd_reader_t> sacd_reader;
+ 
+ static unsigned
+ get_subsong(Path path_fs) {
+diff --git a/src/decoder/plugins/DvdaIsoDecoderPlugin.cxx b/src/decoder/plugins/DvdaIsoDecoderPlugin.cxx
+index 7ff59c4..2ed351d 100644
+--- a/src/decoder/plugins/DvdaIsoDecoderPlugin.cxx
++++ b/src/decoder/plugins/DvdaIsoDecoderPlugin.cxx
+@@ -62,10 +62,14 @@ std::string param_tags_path;
+ bool        param_tags_with_iso;
+ bool        param_use_stdio;
+ 
+-AllocatedPath                      dvda_path{ nullptr };
+-std::unique_ptr<dvda_media_t>      dvda_media;
+-std::unique_ptr<dvda_reader_t>     dvda_reader;
+-std::unique_ptr<dvda_metabase_t>   dvda_metabase;
++/* thread_local (Simpleton 0007, 29 Oct 2026): the decoder thread, the
++ * update thread and the client thread each keep their own open container.
++ * Shared, a library scan reopened the container under a playing (or
++ * restored-paused) decoder and MPD crashed with SIGSEGV. */
++thread_local AllocatedPath                      dvda_path{ nullptr };
++thread_local std::unique_ptr<dvda_media_t>      dvda_media;
++thread_local std::unique_ptr<dvda_reader_t>     dvda_reader;
++thread_local std::unique_ptr<dvda_metabase_t>   dvda_metabase;
+ 
+ static bool
+ get_subsong(Path path_fs, unsigned& index, bool& downmix) {
+diff --git a/src/decoder/plugins/SacdIsoDecoderPlugin.cxx b/src/decoder/plugins/SacdIsoDecoderPlugin.cxx
+index 8338c00..534f685 100644
+--- a/src/decoder/plugins/SacdIsoDecoderPlugin.cxx
++++ b/src/decoder/plugins/SacdIsoDecoderPlugin.cxx
+@@ -60,9 +60,13 @@ std::string param_tags_path;
+ bool        param_tags_with_iso;
+ bool        param_use_stdio;
+ 
+-AllocatedPath                    sacd_path{ nullptr };
+-std::unique_ptr<sacd_media_t>    sacd_media;
+-std::unique_ptr<sacd_reader_t>   sacd_reader;
++/* thread_local (Simpleton 0007, 29 Oct 2026): the decoder thread, the
++ * update thread and the client thread each keep their own open container.
++ * Shared, a library scan reopened the container under a playing (or
++ * restored-paused) decoder and MPD crashed with SIGSEGV. */
++thread_local AllocatedPath                    sacd_path{ nullptr };
++thread_local std::unique_ptr<sacd_media_t>    sacd_media;
++thread_local std::unique_ptr<sacd_reader_t>   sacd_reader;
+ 
+ static unsigned
+ get_subsong(Path path_fs) {

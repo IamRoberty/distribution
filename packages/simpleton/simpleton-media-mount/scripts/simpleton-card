@@ -25,6 +25,10 @@
 # "remount-all" (from mpd.service) repairs the symlinks and finishes any
 # copying after a restart.
 #
+# remount-all scans only a card MPD did not already have (28 Oct 2026: a
+# rescan at every MPD restart, i.e. every DAC switch, crashed MPD while the
+# queue held an SACD ISO track - see mount_in_mpd).
+#
 # remove: unmount from MPD, then detach the card's mount at once, even if a
 #         file on it is still open (MPD playing from it). A plain unmount
 #         fails with "busy" and leaves a dead mount behind that blocks the
@@ -137,6 +141,16 @@ mount_in_mpd() {
 
     if is_mounted_in_mpd "$name"; then
         log "$name: already mounted in MPD"
+        # MPD restarted (a DAC switch, a crash) and restored the card from its
+        # own state: nothing on the card changed, so no scan. The scan here
+        # was what crashed MPD (28 Oct 2026): the queue's SACD ISO track is
+        # restored paused, its decoder holds the ISO open, and a scan opening
+        # ISOs through the same plugin (its state is plugin-wide) segfaults
+        # it - again on every restart (four times in 70 s after a DAC swap).
+        if [ "$SCAN_IF_NEW_ONLY" = 1 ]; then
+            log "$name: restored by MPD, no scan needed"
+            return 0
+        fi
     else
         if [ -f "$cache" ]; then known="from its saved library"; else known="new library"; fi
         reply=$(mpd_cmd "mount $name $(mpd_quote "$2")")
@@ -233,6 +247,7 @@ remount-all)
     # its place in MPD (usually already restored by MPD itself) and its
     # scan; nothing to do when no card is in
     wait_mpd || exit 0
+    SCAN_IF_NEW_ONLY=1
     awk '$1 ~ /^\/dev\/mmcblk[0-9]+p[0-9]+$/ && $2 ~ /^\/var\/media\// { sub("/dev/", "", $1); print $1, $2 }' "$MOUNTS" |
     while read -r kname mp; do
         mp=$(printf '%b' "$mp")
