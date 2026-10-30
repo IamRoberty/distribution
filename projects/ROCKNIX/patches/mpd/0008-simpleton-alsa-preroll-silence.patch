@@ -1,0 +1,75 @@
+Simpleton: "preroll" for the ALSA output - silence before the first audio
+
+A USB DAC mutes itself for a moment whenever a stream starts (clock lock,
+and on the DX5 II the PCM/DSD relays), and MPD sends music the instant
+the PCM opens, so the first fraction of a second of a track started from
+a closed output is lost - every track started from a list, where the
+queue is replaced and playback stops first. "Next" keeps the stream
+running and is not affected. (Ian, 30 Oct 2026.)
+
+preroll "<ms>" on an alsa audio_output: right after the PCM is set up,
+whole periods of silence in the output's own format (so DSD gets the
+DSD silence pattern) are written blocking, before the I/O thread takes
+over; the music follows once the DAC has unmuted. Default 0 (off).
+
+diff --git a/src/output/plugins/AlsaOutputPlugin.cxx b/src/output/plugins/AlsaOutputPlugin.cxx
+index 3b93d36..fd5c1e5 100644
+--- a/src/output/plugins/AlsaOutputPlugin.cxx
++++ b/src/output/plugins/AlsaOutputPlugin.cxx
+@@ -137,6 +137,15 @@ class AlsaOutput final
+ 	/** libasound's period_time setting (in microseconds) */
+ 	const unsigned period_time;
+ 
++	/**
++	 * Simpleton (patch 0008): silence played right after the PCM
++	 * opens, before the first real audio, in milliseconds. A USB DAC
++	 * mutes while it locks onto a freshly started stream, so the first
++	 * fraction of a second of a track started from a closed output
++	 * was lost (not on "next", where the stream keeps running).
++	 */
++	const unsigned preroll_ms;
++
+ 	/** the mode flags passed to snd_pcm_open */
+ 	const int mode;
+ 
+@@ -434,6 +443,7 @@ AlsaOutput::AlsaOutput(EventLoop &_loop, const ConfigBlock &block)
+ 	 buffer_time(block.GetPositiveValue("buffer_time",
+ 					    MPD_ALSA_BUFFER_TIME_US)),
+ 	 period_time(block.GetPositiveValue("period_time", 0U)),
++	 preroll_ms(block.GetBlockValue("preroll", 0U)),
+ 	 mode(GetAlsaOpenMode(block)),
+ #ifdef ENABLE_DSD
+ 	 dop_setting(block.GetBlockValue("dop", false) ||
+@@ -831,6 +841,32 @@ AlsaOutput::Open(AudioFormat &audio_format)
+ 						       GetDevice()));
+ 	}
+ 
++	/* Simpleton (patch 0008): the pre-roll - whole periods of silence
++	   in the output's own format, written blocking before the I/O
++	   thread takes over, so the DAC has unmuted by the time the music
++	   arrives */
++	if (preroll_ms > 0 && period_frames > 0) {
++		const auto want = std::chrono::milliseconds(preroll_ms);
++		unsigned periods = effective_period_duration.count() > 0
++			? (unsigned)((want + effective_period_duration - Event::Duration(1)) / effective_period_duration)
++			: 0;
++		if (periods > 0) {
++			snd_pcm_nonblock(pcm, 0);
++			int perr = snd_pcm_prepare(pcm);
++			for (unsigned i = 0; perr >= 0 && i < periods; ++i) {
++				snd_pcm_sframes_t w = snd_pcm_writei(pcm, silence, period_frames);
++				if (w == -EPIPE || w == -ESTRPIPE)
++					w = snd_pcm_recover(pcm, (int)w, 1) == 0 ? 0 : w;
++				if (w < 0) {
++					FmtWarning(alsa_output_domain, "pre-roll silence failed after {} periods: {}", i, snd_strerror((int)w));
++					break;
++				}
++			}
++			if (perr >= 0)
++				FmtDebug(alsa_output_domain, "pre-roll: {} periods of silence ({} ms asked)", periods, preroll_ms);
++		}
++	}
++
+ 	snd_pcm_nonblock(pcm, 1);
+ 
+ #ifdef ENABLE_DSD

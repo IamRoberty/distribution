@@ -20,6 +20,7 @@
 #   (no restore_paused)    ->  restore_paused "yes" (a boot never resumes playing)
 #   bind_to_address "any"  ->  "127.0.0.1" + "::1"; zeroconf_enabled "yes" -> "no"
 #                              (image round 1, 28 Oct 2026: loopback only, no mDNS)
+#   (no preroll)           ->  preroll "400" in the DAC output (patch 0008, 30 Oct 2026)
 #
 # A missing decoder block is logged: the blocks vanished once from a unit's
 # mpd.conf (11 Oct) and nothing here, in simpleton-dac-detect or in
@@ -116,6 +117,14 @@ if grep -q '^[[:space:]]*zeroconf_enabled[[:space:]]*"yes"' "$CONF"; then
     sed -i 's/^\([[:space:]]*zeroconf_enabled[[:space:]]*\)"yes"/\1"no"/' "$CONF"
     changed=1
     echo "simpleton-mpd-conf-migrate: zeroconf off"
+fi
+
+if ! grep -q '^[[:space:]]*preroll' "$CONF"; then
+    awk '{ print } /^[[:space:]]*mixer_type[[:space:]]/ && !done { print "    preroll     \"400\""; done = 1 }' "$CONF" > "$CONF.new" && mv "$CONF.new" "$CONF"
+    if grep -q '^[[:space:]]*preroll' "$CONF"; then
+        changed=1
+        echo "simpleton-mpd-conf-migrate: preroll \"400\" added to the DAC output (MPD patch 0008)"
+    fi
 fi
 
 mkdir -p "$CACHE_DIR"
