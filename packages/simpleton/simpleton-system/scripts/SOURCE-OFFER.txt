@@ -1,0 +1,37 @@
+SimpletonOS - open source notice and written offer for source code
+
+SimpletonOS is built from free and open source software. It is a fork of
+ROCKNIX (https://rocknix.org), itself a fork of JELOS, and of the
+LibreELEC build system; our thanks to all three projects. The ROCKNIX
+name and artwork are not used by SimpletonOS: ROCKNIX's branding is
+licensed for non-commercial use only, and this credit is the only place
+the name appears.
+
+The software in this image is covered by the licences of its components:
+the Linux kernel, busybox, systemd and most of the system under the GNU
+GPL version 2 or 3 (some parts under the LGPL), the Music Player Daemon
+(MPD) under the GPL version 2 or later, LVGL and many libraries under the
+MIT or BSD licences, the fonts under the SIL Open Font License, and the
+ARM Mali user-space GPU driver under ARM's end user licence (all texts in
+/usr/share/licenses on this system). SimpletonOS's own code - the player
+interface (simpleton-ui), the cache tool, the card and DAC scripts and
+the MPD patches - is released under the GNU GPL version 2.
+
+Source code
+
+The complete source of SimpletonOS, including the build system, every
+patch and the configuration that produced this image, is published at
+
+    https://github.com/IamRoberty/distribution   (branch: next)
+
+The exact commit this image was built from is the BUILD_ID line of
+/etc/os-release on the device (Settings > System shows the version).
+
+Written offer (GPL v2 section 3(b), GPL v3 section 6(b)): for three years
+from the date you received this product, Simpleton will provide, to any
+third party, a complete machine-readable copy of the corresponding source
+code for the GPL- and LGPL-licensed components of this image, on a
+medium customarily used for software interchange, for a charge no more
+than the cost of physically performing the distribution. Requests may be
+made through the project page above (open an issue) or in writing to the
+address on the product's documentation.

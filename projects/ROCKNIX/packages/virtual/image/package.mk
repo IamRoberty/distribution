@@ -10,10 +10,12 @@ PKG_LONGDESC="Root package used to build and create complete image"
 
 PKG_DEPENDS_TARGET="toolchain squashfs-tools:host dosfstools:host fakeroot:host kmod:host \
                     mtools:host populatefs:host libc gcc linux linux-drivers linux-firmware \
-                    ${BOOTLOADER} busybox lsof umtprd util-linux usb-modeswitch poppler jq socat \
-                    p7zip file initramfs grep util-linux btrfs-progs zstd lz4 empty lzo libzip \
-                    bash coreutils system-utils autostart quirks powerstate sdl2notify \
-                    gzip six xmlstarlet pyudev dialog network rocknix simpleton-ui"
+                    ${BOOTLOADER} busybox lsof umtprd util-linux usb-modeswitch jq socat \
+                    file initramfs grep util-linux btrfs-progs zstd lz4 empty lzo libzip \
+                    bash coreutils system-utils autostart quirks powerstate \
+                    gzip six xmlstarlet pyudev network rocknix simpleton-ui"
+# SimpletonOS (image round 2, 29 Oct 2026): poppler, p7zip, sdl2notify and
+# dialog dropped from the base - nothing in the base scripts uses them.
 
 PKG_UI="emulationstation es-themes textviewer lowerdeck"
 

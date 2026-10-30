@@ -51,7 +51,8 @@ if [ "${DISPLAYSERVER}" = "wl" ]; then
       true
       ;;
     *)
-      PKG_DEPENDS_TARGET+=" ${WINDOWMANAGER}"
+      # SimpletonOS: no window manager is a valid choice (image round 2)
+      [ -n "${WINDOWMANAGER}" -a "${WINDOWMANAGER}" != "no" ] && PKG_DEPENDS_TARGET+=" ${WINDOWMANAGER}"
       ;;
   esac
   PKG_CMAKE_OPTS_TARGET+=" -DSDL_WAYLAND=ON \

@@ -17,6 +17,8 @@
 #   - the Wi-Fi driver (rtw88_8723ds on the RGB20SX) is blacklisted; the
 #     Bluetooth stack shares no module with it.
 #   - systemd-resolved's LLMNR responder is off.
+#   - /usr/share/licenses (every licence text of the tree) and the written
+#     source offer, /usr/share/simpleton/SOURCE-OFFER.txt (round 2).
 #   - simpleton-profile.service writes one journal line at boot listing
 #     the masks, so "why doesn't X run" has its answer.
 # MPD's own lines (loopback only, zeroconf off) are in simpleton-mpd-config.
@@ -40,6 +42,14 @@ makeinstall_target() {
   # SIMPLETON_MASKS is the list the boot line checks against
   mkdir -p ${INSTALL}/usr/lib/systemd/resolved.conf.d
   cp ${PKG_DIR}/scripts/10-simpleton-llmnr.conf ${INSTALL}/usr/lib/systemd/resolved.conf.d/
+
+  # the licence texts of everything in the image, and the written source
+  # offer the GPL asks for, on the system itself (image round 2, 29 Oct 2026)
+  mkdir -p ${INSTALL}/usr/share/licenses ${INSTALL}/usr/share/simpleton
+  cp ${ROOT}/licenses/*.txt ${INSTALL}/usr/share/licenses/
+  cp ${ROOT}/LICENSE.md ${INSTALL}/usr/share/licenses/ROCKNIX-LICENSE.md
+  cp ${PKG_DIR}/scripts/SOURCE-OFFER.txt ${INSTALL}/usr/share/simpleton/SOURCE-OFFER.txt
+  ln -sf ../simpleton/SOURCE-OFFER.txt ${INSTALL}/usr/share/licenses/SOURCE-OFFER.txt
 
   mkdir -p ${INSTALL}/usr/bin
   cp ${PKG_DIR}/scripts/simpleton-profile ${INSTALL}/usr/bin

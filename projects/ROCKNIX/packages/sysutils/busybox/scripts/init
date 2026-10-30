@@ -564,7 +564,7 @@ recovery_mode() {
   echo "0x0104" > ${g}/idProduct
   mkdir ${g}/strings/0x409
   echo "00000000" > ${g}/strings/0x409/serialnumber
-  echo "ROCKNIX" > ${g}/strings/0x409/manufacturer
+  echo "@DISTRONAME@" > ${g}/strings/0x409/manufacturer
   echo "RECOVERY" > ${g}/strings/0x409/product
   mkdir ${g}/configs/c.1
   echo 120 > ${g}/configs/c.1/MaxPower

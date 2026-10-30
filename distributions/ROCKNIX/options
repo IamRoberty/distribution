@@ -32,7 +32,7 @@
   BUG_REPORT_URL="https://github.com/IamRoberty/distribution/issues"
 
 # Root password to integrate in the target system
-  ROOT_PASSWORD="rocknix"
+  ROOT_PASSWORD="simpleton"
 
 # Install glibc locales to the build (yes / no)
   GLIBC_LOCALES="yes"
@@ -72,31 +72,31 @@
   BLUETOOTH_SUPPORT="yes"
 
 # build and install Avahi (Zeroconf) daemon (yes / no)
-  AVAHI_DAEMON="yes"
+  AVAHI_DAEMON="no"
 
 # build with NFS support (mounting nfs shares via the OS) (yes / no)
-  NFS_SUPPORT="yes"
+  NFS_SUPPORT="no"
 
 # build with Samba Client support (mounting samba shares via the OS) (yes / no)
   SAMBA_SUPPORT="no"
 
 # build and install Samba Server (yes / no)
-  SAMBA_SERVER="yes"
+  SAMBA_SERVER="no"
 
 # build and install SFTP Server (yes / no)
   SFTP_SERVER="yes"
 
 # build and install Simple HTTP Server (yes / no)
-  SIMPLE_HTTP_SERVER="yes"
+  SIMPLE_HTTP_SERVER="no"
 
 # build and install OpenVPN support (yes / no)
   OPENVPN_SUPPORT="no"
 
 # build and install ZeroTier support (yes / no)
-  ZEROTIER_SUPPORT="yes"
+  ZEROTIER_SUPPORT="no"
 
 # build and install WireGuard support (yes / no)
-  WIREGUARD_SUPPORT="yes"
+  WIREGUARD_SUPPORT="no"
 
 # build and install diskmounter support (udevil)
 # this service provide auto mounting support for external drives in the
@@ -119,10 +119,10 @@
   CONTAINER_SUPPORT="${CONTAINER_SUPPORT:-no}"
 
 # Build modules packages
-  MODULES_PKG="${MODULES_PKG:-yes}"
+  MODULES_PKG="${MODULES_PKG:-no}"
 
 # Support for debug tools such as strace
-  DEBUG_PACKAGES="${DEBUG_PACKAGES:-yes}"
+  DEBUG_PACKAGES="${DEBUG_PACKAGES:-no}"
 
 # Windowmanager to use (weston / swaywm-env / no)
   WINDOWMANAGER="none"
@@ -180,7 +180,7 @@
   HTOP_TOOL="yes"
 
 # btop tool (yes / no)
-  BTOP_TOOL="yes"
+  BTOP_TOOL="no"
 
 # Distribution Specific source location
   DISTRO_MIRROR="https://github.com/ROCKNIX/distribution-sources/releases/download/sources-v2"

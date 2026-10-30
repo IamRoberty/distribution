@@ -49,7 +49,9 @@ case "${DEVICE}" in
     PKG_VERSION="4233031d818e97a19e8a9cdbbd5c15795ededd93"
     # zip format makes extract very fast (<1s). tgz takes 20 seconds to scan the whole file
     PKG_URL="${PKG_SITE}/archive/${PKG_VERSION}.zip"
-    PKG_DEPENDS_TARGET+=" mesa vulkan-tools vulkan-headers vulkan-wsi-layer"
+    PKG_DEPENDS_TARGET+=" mesa"
+    # SimpletonOS (image round 2): the Vulkan pieces only when Vulkan is built
+    [ "${VULKAN_SUPPORT}" = "yes" ] && PKG_DEPENDS_TARGET+=" vulkan-tools vulkan-headers vulkan-wsi-layer"
     DRIVER_VERSION="g29p1"
     PLATFORM=""
     ZIPDIRNAME="mirrors"
